@@ -70,11 +70,11 @@ class DamageAssessmentController extends Controller
         if (!empty($validated['severity'])) {
             $severity = strtolower((string) $validated['severity']);
             if ($severity === 'low') {
-                $query->where('damage_percentage', '<', 30);
+                $query->where('damage_percentage', '<', 50);
             } elseif ($severity === 'moderate') {
-                $query->whereBetween('damage_percentage', [30, 60]);
+                $query->where('damage_percentage', '>=', 50)->where('damage_percentage', '<', 100);
             } elseif ($severity === 'severe') {
-                $query->where('damage_percentage', '>', 60);
+                $query->where('damage_percentage', '>=', 100);
             }
         }
 
@@ -137,6 +137,7 @@ class DamageAssessmentController extends Controller
             'calamity_type' => ['required', Rule::in(['Typhoon', 'Flood', 'Drought', 'Pest Outbreak', 'Hail', 'Other'])],
             'calamity_name' => 'nullable|string|max:255',
             'crop_stage' => ['nullable', Rule::in(['Seedling', 'Vegetative', 'Reproductive', 'Maturity', 'Harvested'])],
+            'variety' => 'nullable|string|max:128',
             'area_destroyed_ha' => 'nullable|numeric|min:0',
             'area_planted_ha' => 'nullable|numeric|min:0',
             'date_of_calamity' => 'required|date',
@@ -174,9 +175,16 @@ class DamageAssessmentController extends Controller
             return $barangayResult;
         }
 
-        $areaError = $this->assertDestroyedAreaWithinPlot(
+        $destroyedHa = $this->resolveDestroyedArea(
             $validated['farm_plot_id'],
             isset($validated['area_destroyed_ha']) ? (float) $validated['area_destroyed_ha'] : null,
+            isset($validated['area_planted_ha']) ? (float) $validated['area_planted_ha'] : null,
+            (float) $validated['damage_percentage'],
+        );
+
+        $areaError = $this->assertDestroyedAreaWithinPlot(
+            $validated['farm_plot_id'],
+            $destroyedHa,
             isset($validated['area_planted_ha']) ? (float) $validated['area_planted_ha'] : null,
         );
         if ($areaError) {
@@ -207,7 +215,8 @@ class DamageAssessmentController extends Controller
             'calamity_type' => $validated['calamity_type'],
             'calamity_name' => $validated['calamity_name'] ?? $validated['calamity_type'],
             'crop_stage' => $validated['crop_stage'] ?? null,
-            'area_destroyed_ha' => $validated['area_destroyed_ha'] ?? null,
+            'variety' => $validated['variety'] ?? null,
+            'area_destroyed_ha' => $destroyedHa,
             'area_planted_ha' => $validated['area_planted_ha'] ?? null,
             'date_of_calamity' => $validated['date_of_calamity'],
             'damage_percentage' => $validated['damage_percentage'],
@@ -274,17 +283,27 @@ class DamageAssessmentController extends Controller
             'photo_base64' => 'required|string',
             'area_destroyed_ha' => 'nullable|numeric|min:0',
             'damage_percentage' => 'nullable|numeric|min:0|max:100',
+            'variety' => 'nullable|string|max:128',
             'crop_stage' => ['nullable', Rule::in(['Seedling', 'Vegetative', 'Reproductive', 'Maturity', 'Harvested'])],
             'remarks' => 'nullable|string|max:1000',
             'estimated_value_lost' => 'nullable|numeric|min:0',
         ]);
 
         $assessment = DamageAssessment::findOrFail($id);
-        $areaError = $this->assertDestroyedAreaWithinPlot(
+        $pct = array_key_exists('damage_percentage', $validated)
+            ? (float) $validated['damage_percentage']
+            : (float) $assessment->damage_percentage;
+        $destroyedHa = $this->resolveDestroyedArea(
             $assessment->farm_plot_id,
             array_key_exists('area_destroyed_ha', $validated)
                 ? (float) $validated['area_destroyed_ha']
                 : (float) $assessment->area_destroyed_ha,
+            (float) ($assessment->area_planted_ha ?? 0),
+            $pct,
+        );
+        $areaError = $this->assertDestroyedAreaWithinPlot(
+            $assessment->farm_plot_id,
+            $destroyedHa,
             (float) ($assessment->area_planted_ha ?? 0),
         );
         if ($areaError) {
@@ -304,8 +323,9 @@ class DamageAssessmentController extends Controller
             'longitude' => $validated['longitude'],
             'photo_evidence_path' => $path,
             'technician_id' => $request->user()->id,
-            'area_destroyed_ha' => $validated['area_destroyed_ha'] ?? $assessment->area_destroyed_ha,
+            'area_destroyed_ha' => $destroyedHa,
             'damage_percentage' => $validated['damage_percentage'] ?? $assessment->damage_percentage,
+            'variety' => $validated['variety'] ?? $assessment->variety,
             'crop_stage' => $validated['crop_stage'] ?? $assessment->crop_stage,
             'remarks' => $validated['remarks'] ?? $assessment->remarks,
             'estimated_value_lost' => $validated['estimated_value_lost'] ?? $assessment->estimated_value_lost,
@@ -352,6 +372,28 @@ class DamageAssessmentController extends Controller
             'message' => "Assessment marked as {$validated['decision']}.",
             'data' => $assessment->fresh(),
         ], 200);
+    }
+
+    private function resolveDestroyedArea(
+        string $farmPlotId,
+        ?float $areaDestroyed,
+        ?float $areaPlanted,
+        float $damagePercentage,
+    ): float {
+        if ($areaDestroyed !== null && $areaDestroyed > 0) {
+            return $areaDestroyed;
+        }
+
+        $plot = FarmPlot::find($farmPlotId);
+        $base = ($areaPlanted !== null && $areaPlanted > 0)
+            ? $areaPlanted
+            : (float) ($plot?->size_ha ?? 0);
+
+        if ($base <= 0) {
+            return 0.0;
+        }
+
+        return round($base * ($damagePercentage / 100), 4);
     }
 
     private function assertDestroyedAreaWithinPlot(

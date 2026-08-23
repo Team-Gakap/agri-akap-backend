@@ -152,6 +152,8 @@ Route::middleware('auth:sanctum')->group(function () {
     // Technician personal contribution history
     Route::get('/technician/activity-log', [DashboardController::class, 'activityLog'])
         ->middleware('role:technician');
+    Route::get('/technician/history', [DashboardController::class, 'fieldHistory'])
+        ->middleware('role:technician');
 
     // SMS Broadcast
     Route::get('/broadcasts', [BroadcastController::class, 'index']);

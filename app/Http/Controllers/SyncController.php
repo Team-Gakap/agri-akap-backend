@@ -204,6 +204,7 @@ class SyncController extends Controller
             'calamity_type' => ['required', Rule::in(['Typhoon', 'Flood', 'Drought', 'Pest Outbreak', 'Hail', 'Other'])],
             'calamity_name' => 'nullable|string|max:255',
             'crop_stage' => ['nullable', Rule::in(['Seedling', 'Vegetative', 'Reproductive', 'Maturity', 'Harvested'])],
+            'variety' => 'nullable|string|max:128',
             'area_destroyed_ha' => 'nullable|numeric|min:0',
             'date_of_calamity' => 'required|date',
             'damage_percentage' => 'required|numeric|min:0|max:100',
@@ -240,7 +241,8 @@ class SyncController extends Controller
                 'calamity_type' => $item['calamity_type'],
                 'calamity_name' => $item['calamity_name'] ?? $item['calamity_type'],
                 'crop_stage' => $item['crop_stage'] ?? null,
-                'area_destroyed_ha' => $item['area_destroyed_ha'] ?? null,
+                'variety' => $item['variety'] ?? null,
+                'area_destroyed_ha' => $this->resolveSyncedDestroyedArea($plot, $item),
                 'date_of_calamity' => $item['date_of_calamity'],
                 'damage_percentage' => $item['damage_percentage'],
                 'estimated_value_lost' => $item['estimated_value_lost'] ?? null,
@@ -904,6 +906,21 @@ class SyncController extends Controller
         }
 
         return null;
+    }
+
+    private function resolveSyncedDestroyedArea(?FarmPlot $plot, array $item): ?float
+    {
+        if (isset($item['area_destroyed_ha']) && (float) $item['area_destroyed_ha'] > 0) {
+            return (float) $item['area_destroyed_ha'];
+        }
+
+        $base = (float) ($item['area_planted_ha'] ?? $plot?->size_ha ?? 0);
+        $pct = (float) ($item['damage_percentage'] ?? 0);
+        if ($base <= 0) {
+            return isset($item['area_destroyed_ha']) ? (float) $item['area_destroyed_ha'] : null;
+        }
+
+        return round($base * ($pct / 100), 4);
     }
 
     private function itemResult(?string $clientId, string $outcome, string $message): array

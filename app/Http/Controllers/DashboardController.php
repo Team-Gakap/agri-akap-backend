@@ -7,6 +7,7 @@ use App\Models\DamageAssessment;
 use App\Models\Distribution;
 use App\Models\Farmer;
 use App\Models\FarmPlot;
+use App\Models\GeoTag;
 use App\Models\PestMonitoring;
 use App\Models\PestOutbreak;
 use App\Models\PlantingLog;
@@ -962,6 +963,131 @@ class DashboardController extends Controller
                 ],
                 'recent' => $recent,
             ],
+        ]);
+    }
+
+    /**
+     * Combined recent field work for the technician History tab.
+     */
+    public function fieldHistory(Request $request): JsonResponse
+    {
+        $techId = $request->user()->id;
+        $items = collect();
+
+        GeoTag::with('farmer:id,first_name,surname')
+            ->where('technician_id', $techId)
+            ->orderByDesc('created_at')
+            ->limit(10)
+            ->get()
+            ->each(function (GeoTag $row) use ($items) {
+                $farmer = trim((string) ($row->farmer?->surname ?? '').', '.($row->farmer?->first_name ?? ''), ' ,');
+                $items->push([
+                    'type' => 'Geo-Tag',
+                    'title' => $farmer !== '' ? $farmer : ($row->crop_planted ?: 'Mapped parcel'),
+                    'detail' => trim(($row->crop_planted ?: 'Parcel').($row->crop_variety ? ' · '.$row->crop_variety : '')),
+                    'created_at' => optional($row->created_at)?->toIso8601String(),
+                ]);
+            });
+
+        PlantingLog::with('farmer:id,first_name,surname')
+            ->where('technician_id', $techId)
+            ->orderByDesc('created_at')
+            ->limit(10)
+            ->get()
+            ->each(function (PlantingLog $row) use ($items) {
+                $farmer = trim((string) ($row->farmer?->surname ?? '').', '.($row->farmer?->first_name ?? ''), ' ,');
+                $items->push([
+                    'type' => 'Planting',
+                    'title' => $farmer !== '' ? $farmer : ($row->crop_type ?: 'Planting log'),
+                    'detail' => trim(($row->crop_type ?: 'Crop').($row->variety ? ' · '.$row->variety : '')),
+                    'created_at' => optional($row->created_at)?->toIso8601String(),
+                ]);
+            });
+
+        PestMonitoring::with('farmer:id,first_name,surname')
+            ->where('technician_id', $techId)
+            ->orderByDesc('created_at')
+            ->limit(10)
+            ->get()
+            ->each(function (PestMonitoring $row) use ($items) {
+                $farmer = trim((string) ($row->farmer?->surname ?? '').', '.($row->farmer?->first_name ?? ''), ' ,');
+                $items->push([
+                    'type' => 'Pest',
+                    'title' => $farmer !== '' ? $farmer : ($row->pest_name ?: 'Pest report'),
+                    'detail' => trim(($row->pest_name ?: $row->crop ?: 'Pest').($row->severity ? ' · '.$row->severity : '')),
+                    'created_at' => optional($row->created_at)?->toIso8601String(),
+                ]);
+            });
+
+        DamageAssessment::with('farmer:id,first_name,surname')
+            ->where('technician_id', $techId)
+            ->orderByDesc('created_at')
+            ->limit(10)
+            ->get()
+            ->each(function (DamageAssessment $row) use ($items) {
+                $farmer = trim((string) ($row->farmer?->surname ?? '').', '.($row->farmer?->first_name ?? ''), ' ,');
+                $items->push([
+                    'type' => 'Calamity',
+                    'title' => $farmer !== '' ? $farmer : ($row->calamity_name ?: 'Damage report'),
+                    'detail' => trim(($row->calamity_name ?: $row->calamity_type ?: 'Calamity').($row->status ? ' · '.$row->status : '')),
+                    'created_at' => optional($row->created_at)?->toIso8601String(),
+                ]);
+            });
+
+        Distribution::with(['farmer:id,first_name,surname', 'program:id,name'])
+            ->where('distributed_by', $techId)
+            ->orderByDesc('claimed_at')
+            ->limit(10)
+            ->get()
+            ->each(function (Distribution $row) use ($items) {
+                $farmer = trim((string) ($row->farmer?->surname ?? '').', '.($row->farmer?->first_name ?? ''), ' ,');
+                $items->push([
+                    'type' => 'Subsidy',
+                    'title' => $farmer !== '' ? $farmer : ($row->item_released ?: 'Subsidy release'),
+                    'detail' => trim(($row->program?->name ?: $row->item_released ?: 'Subsidy').' · '.($row->quantity_claimed ?? '')),
+                    'created_at' => optional($row->claimed_at ?? $row->created_at)?->toIso8601String(),
+                ]);
+            });
+
+        if (Schema::hasColumn('tbl_subsidy_beneficiaries', 'claimed_by')) {
+            DB::table('tbl_subsidy_beneficiaries')
+                ->leftJoin('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
+                ->leftJoin('tbl_subsidy_programs', 'tbl_subsidy_programs.id', '=', 'tbl_subsidy_beneficiaries.program_id')
+                ->where('tbl_subsidy_beneficiaries.claimed_by', $techId)
+                ->orderByDesc('tbl_subsidy_beneficiaries.claimed_at')
+                ->limit(10)
+                ->get([
+                    'tbl_subsidy_beneficiaries.id',
+                    'tbl_subsidy_beneficiaries.claimed_at',
+                    'tbl_subsidy_beneficiaries.calculated_allocation',
+                    'farmers.surname',
+                    'farmers.first_name',
+                    'tbl_subsidy_programs.program_name',
+                    'tbl_subsidy_programs.unit_of_measurement',
+                ])
+                ->each(function ($row) use ($items) {
+                    $farmer = trim((string) ($row->surname ?? '').', '.($row->first_name ?? ''), ' ,');
+                    $items->push([
+                        'type' => 'Subsidy',
+                        'title' => $farmer !== '' ? $farmer : ($row->program_name ?: 'Subsidy release'),
+                        'detail' => trim(($row->program_name ?: 'Subsidy').' · '.($row->calculated_allocation ?? '').' '.($row->unit_of_measurement ?? '')),
+                        'created_at' => $row->claimed_at
+                            ? Carbon::parse($row->claimed_at)->toIso8601String()
+                            : null,
+                    ]);
+                });
+        }
+
+        $data = $items
+            ->filter(fn ($row) => ! empty($row['created_at']))
+            ->sortByDesc('created_at')
+            ->values()
+            ->take(30)
+            ->all();
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $data,
         ]);
     }
 

@@ -209,12 +209,21 @@ class BrgyDashboardController extends Controller
                         ->orWhereHas('farmPlot', fn ($plot) => $plot->where('location_brgy', $barangay));
                 })
                 ->whereDate('date_of_calamity', '>=', $start->toDateString())
-                ->get(['date_of_calamity', 'area_destroyed_ha', 'created_at'])
+                ->with('farmPlot:id,size_ha')
+                ->get(['date_of_calamity', 'area_destroyed_ha', 'area_planted_ha', 'damage_percentage', 'farm_plot_id', 'created_at'])
                 ->each(function (DamageAssessment $row) use (&$buckets) {
                     $date = $row->date_of_calamity ?? $row->created_at;
                     $key = optional($date)?->format('Y-m');
                     if ($key && isset($buckets[$key])) {
-                        $buckets[$key]['damage'] += (float) ($row->area_destroyed_ha ?? 0);
+                        $ha = (float) ($row->area_destroyed_ha ?? 0);
+                        if ($ha <= 0) {
+                            $base = (float) ($row->area_planted_ha ?? 0);
+                            if ($base <= 0) {
+                                $base = (float) ($row->farmPlot?->size_ha ?? 0);
+                            }
+                            $ha = $base * ((float) ($row->damage_percentage ?? 0) / 100);
+                        }
+                        $buckets[$key]['damage'] += $ha;
                     }
                 });
         }

@@ -338,7 +338,12 @@ class SubsidyController extends Controller
 
             DB::table('tbl_subsidy_beneficiaries')
                 ->where('id', $beneficiaryId)
-                ->update(['status' => 'Claimed', 'claimed_at' => now(), 'updated_at' => now()]);
+                ->update([
+                    'status' => 'Claimed',
+                    'claimed_at' => now(),
+                    'claimed_by' => auth()->id(),
+                    'updated_at' => now(),
+                ]);
 
             return ['program' => $program->fresh()];
         });
@@ -436,7 +441,8 @@ class SubsidyController extends Controller
         }
 
         $primaryPlot = $farmer->farmPlots()->first();
-        $totalFarmSize = (float) $farmer->farmPlots()->sum('size_ha');
+        $cropLike = '%' . strtolower((string) $program->target_crop) . '%';
+        $totalFarmSize = $this->cropAreaForFarmer($farmer->id, $cropLike);
         $cap = (float) ($program->max_hectares_limit ?? $totalFarmSize);
         $eligibleSize = $cap > 0 ? min($totalFarmSize, $cap) : $totalFarmSize;
 
@@ -523,7 +529,12 @@ class SubsidyController extends Controller
 
             DB::table('tbl_subsidy_beneficiaries')
                 ->where('id', $beneficiary->id)
-                ->update(['status' => 'Claimed', 'claimed_at' => now(), 'updated_at' => now()]);
+                ->update([
+                    'status' => 'Claimed',
+                    'claimed_at' => now(),
+                    'claimed_by' => auth()->id(),
+                    'updated_at' => now(),
+                ]);
 
             return [
                 'program' => $program->fresh(),
@@ -575,6 +586,23 @@ class SubsidyController extends Controller
      *
      * @return array{0: \Illuminate\Database\Query\Builder, 1: \Illuminate\Database\Query\Builder}
      */
+    private function cropAreaForFarmer(string $farmerId, string $cropLike): float
+    {
+        $plotHa = (float) (DB::table('farm_plots')
+            ->where('farmer_id', $farmerId)
+            ->whereNull('deleted_at')
+            ->whereRaw('LOWER(commodity) like ?', [$cropLike])
+            ->sum('size_ha') ?? 0);
+
+        $plantHa = (float) (DB::table('planting_logs')
+            ->where('farmer_id', $farmerId)
+            ->where('status', 'Active')
+            ->whereRaw('LOWER(crop_type) like ?', [$cropLike])
+            ->sum('area_planted') ?? 0);
+
+        return $plantHa > 0 ? $plantHa : $plotHa;
+    }
+
     private function cropAreaSubqueries(string $cropLike): array
     {
         $plotArea = DB::table('farm_plots')

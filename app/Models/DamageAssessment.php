@@ -19,6 +19,7 @@ class DamageAssessment extends Model
         'calamity_name',
         'calamity_type',
         'crop_stage',
+        'variety',
         'area_destroyed_ha',
         'area_planted_ha',
         'date_of_calamity',
