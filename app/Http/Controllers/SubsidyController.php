@@ -36,6 +36,7 @@ class SubsidyController extends Controller
                 'program_name' => $p->program_name,
                 'target_crop' => $p->target_crop,
                 'max_hectares_limit' => (float) $p->max_hectares_limit,
+                'min_hectares_limit' => (float) ($p->min_hectares_limit ?? 0),
                 'items_per_hectare' => (int) $p->items_per_hectare,
                 'status' => $p->status,
                 'unit_of_measurement' => $p->unit_of_measurement,
@@ -62,8 +63,9 @@ class SubsidyController extends Controller
     {
         $validated = $request->validate([
             'program_name' => 'required|string|max:255',
-            'target_crop' => ['required', Rule::in(['Rice', 'Corn'])],
+            'target_crop' => ['required', Rule::in(['Rice', 'Corn', 'Both'])],
             'max_hectares_limit' => 'required|numeric|min:0.01|max:9999',
+            'min_hectares_limit' => 'nullable|numeric|min:0|max:9999|lte:max_hectares_limit',
             'items_per_hectare' => 'required|integer|min:1|max:1000',
             'status' => ['nullable', Rule::in(['Draft', 'Active', 'Completed'])],
             'unit_of_measurement' => 'nullable|string|max:64',
@@ -77,6 +79,7 @@ class SubsidyController extends Controller
             'program_name' => $validated['program_name'],
             'target_crop' => $validated['target_crop'],
             'max_hectares_limit' => $validated['max_hectares_limit'],
+            'min_hectares_limit' => $validated['min_hectares_limit'] ?? 0,
             'items_per_hectare' => $validated['items_per_hectare'],
             'status' => $validated['status'] ?? 'Draft',
             'unit_of_measurement' => $validated['unit_of_measurement'] ?? 'Bags',
@@ -156,8 +159,7 @@ class SubsidyController extends Controller
             ], 409);
         }
 
-        $cropLike = '%' . strtolower($program->target_crop) . '%';
-        [$plotArea, $plantArea] = $this->cropAreaSubqueries($cropLike);
+        [$plotArea, $plantArea] = $this->cropAreaSubqueries((string) $program->target_crop);
 
         $skippedNoRsbsa = (int) DB::table('farmers')
             ->leftJoinSub($plotArea, 'plots', fn ($join) => $join->on('plots.farmer_id', '=', 'farmers.id'))
@@ -186,10 +188,16 @@ class SubsidyController extends Controller
             ->get();
 
         $now = now();
+        $minHa = (float) ($program->min_hectares_limit ?? 0);
         $rows = $eligibleFarmers
-            ->map(function ($farmer) use ($program, $now) {
+            ->map(function ($farmer) use ($program, $now, $minHa) {
+                $farmArea = (float) $farmer->farm_area;
+                if ($minHa > 0 && $farmArea + 0.0000001 < $minHa) {
+                    return null;
+                }
+
                 $eligibleArea = min(
-                    (float) $farmer->farm_area,
+                    $farmArea,
                     (float) $program->max_hectares_limit
                 );
 
@@ -258,8 +266,7 @@ class SubsidyController extends Controller
     {
         $program = SubsidyProgram::query()->findOrFail($id);
 
-        $cropLike = '%' . strtolower($program->target_crop) . '%';
-        [$plotArea, $plantArea] = $this->cropAreaSubqueries($cropLike);
+        [$plotArea, $plantArea] = $this->cropAreaSubqueries((string) $program->target_crop);
 
         $masterlist = DB::table('tbl_subsidy_beneficiaries as beneficiaries')
             ->join('farmers', 'farmers.rsbsa_no', '=', 'beneficiaries.farmer_rsbsa_no')
@@ -290,6 +297,7 @@ class SubsidyController extends Controller
                     'program_name' => $program->program_name,
                     'target_crop' => $program->target_crop,
                     'max_hectares_limit' => $program->max_hectares_limit,
+                    'min_hectares_limit' => (float) ($program->min_hectares_limit ?? 0),
                     'items_per_hectare' => $program->items_per_hectare,
                     'status' => $program->status,
                     'unit_of_measurement' => $program->unit_of_measurement,
@@ -441,8 +449,15 @@ class SubsidyController extends Controller
         }
 
         $primaryPlot = $farmer->farmPlots()->first();
-        $cropLike = '%' . strtolower((string) $program->target_crop) . '%';
-        $totalFarmSize = $this->cropAreaForFarmer($farmer->id, $cropLike);
+        $totalFarmSize = $this->cropAreaForFarmer($farmer->id, (string) $program->target_crop);
+        $minHa = (float) ($program->min_hectares_limit ?? 0);
+        if ($minHa > 0 && $totalFarmSize + 0.0000001 < $minHa) {
+            return response()->json([
+                'status' => 'error',
+                'eligible' => false,
+                'message' => "This farmer's {$program->target_crop} area ({$totalFarmSize} ha) is below the program minimum of {$minHa} ha.",
+            ], 400);
+        }
         $cap = (float) ($program->max_hectares_limit ?? $totalFarmSize);
         $eligibleSize = $cap > 0 ? min($totalFarmSize, $cap) : $totalFarmSize;
 
@@ -583,42 +598,52 @@ class SubsidyController extends Controller
 
     /**
      * Crop-area subqueries: RSBSA farm plots + active planting logs.
-     *
-     * @return array{0: \Illuminate\Database\Query\Builder, 1: \Illuminate\Database\Query\Builder}
+     * `Both` sums rice + corn parcels / planting logs.
      */
-    private function cropAreaForFarmer(string $farmerId, string $cropLike): float
+    private function cropAreaForFarmer(string $farmerId, string $targetCrop): float
     {
-        $plotHa = (float) (DB::table('farm_plots')
+        $plotQuery = DB::table('farm_plots')
             ->where('farmer_id', $farmerId)
-            ->whereNull('deleted_at')
-            ->whereRaw('LOWER(commodity) like ?', [$cropLike])
-            ->sum('size_ha') ?? 0);
+            ->whereNull('deleted_at');
+        $this->applyCropFilter($plotQuery, 'commodity', $targetCrop);
+        $plotHa = (float) ($plotQuery->sum('size_ha') ?? 0);
 
-        $plantHa = (float) (DB::table('planting_logs')
+        $plantQuery = DB::table('planting_logs')
             ->where('farmer_id', $farmerId)
-            ->where('status', 'Active')
-            ->whereRaw('LOWER(crop_type) like ?', [$cropLike])
-            ->sum('area_planted') ?? 0);
+            ->where('status', 'Active');
+        $this->applyCropFilter($plantQuery, 'crop_type', $targetCrop);
+        $plantHa = (float) ($plantQuery->sum('area_planted') ?? 0);
 
         return $plantHa > 0 ? $plantHa : $plotHa;
     }
 
-    private function cropAreaSubqueries(string $cropLike): array
+    /**
+     * @return array{0: \Illuminate\Database\Query\Builder, 1: \Illuminate\Database\Query\Builder}
+     */
+    private function cropAreaSubqueries(string $targetCrop): array
     {
-        $plotArea = DB::table('farm_plots')
-            ->whereNull('deleted_at')
-            ->whereRaw('LOWER(commodity) like ?', [$cropLike])
-            ->groupBy('farmer_id')
-            ->select('farmer_id')
-            ->selectRaw('SUM(size_ha) as area');
+        $plotArea = DB::table('farm_plots')->whereNull('deleted_at');
+        $this->applyCropFilter($plotArea, 'commodity', $targetCrop);
+        $plotArea->groupBy('farmer_id')->select('farmer_id')->selectRaw('SUM(size_ha) as area');
 
-        $plantArea = DB::table('planting_logs')
-            ->where('status', 'Active')
-            ->whereRaw('LOWER(crop_type) like ?', [$cropLike])
-            ->groupBy('farmer_id')
-            ->select('farmer_id')
-            ->selectRaw('SUM(area_planted) as area');
+        $plantArea = DB::table('planting_logs')->where('status', 'Active');
+        $this->applyCropFilter($plantArea, 'crop_type', $targetCrop);
+        $plantArea->groupBy('farmer_id')->select('farmer_id')->selectRaw('SUM(area_planted) as area');
 
         return [$plotArea, $plantArea];
+    }
+
+    private function applyCropFilter($query, string $column, string $targetCrop)
+    {
+        $crop = strtolower(trim($targetCrop));
+
+        if ($crop === 'both') {
+            return $query->where(function ($q) use ($column) {
+                $q->whereRaw("LOWER({$column}) like ?", ['%rice%'])
+                    ->orWhereRaw("LOWER({$column}) like ?", ['%corn%']);
+            });
+        }
+
+        return $query->whereRaw("LOWER({$column}) like ?", ['%'.$crop.'%']);
     }
 }

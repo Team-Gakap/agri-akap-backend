@@ -284,6 +284,15 @@ class SyncController extends Controller
             return $this->itemResult($clientId, 'failed', $validator->errors()->first());
         }
 
+        $plotId = $item['farm_plot_id'] ?? null;
+        if ($plotId) {
+            $plot = FarmPlot::find($plotId);
+            $cap = $plot ? (float) $plot->size_ha : null;
+            if ($cap !== null && (float) $item['area_planted'] > $cap + 0.0001) {
+                return $this->itemResult($clientId, 'failed', 'Area planted cannot exceed the farm plot size ('.$cap.' ha).');
+            }
+        }
+
         if ($clientId && PlantingLog::where('client_id', $clientId)->exists()) {
             return $this->itemResult($clientId, 'duplicate', 'Planting log already synced.');
         }

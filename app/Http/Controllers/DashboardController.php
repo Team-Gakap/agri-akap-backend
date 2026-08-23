@@ -106,7 +106,8 @@ class DashboardController extends Controller
     private function overviewDescriptive(): array
     {
         $totalFarmers = Farmer::query()->count();
-        $totalHectares = $this->overviewActiveHectares();
+        $hectares = $this->overviewPlotHectares();
+        $totalHectares = $hectares['rice'] + $hectares['corn'] + $hectares['other'];
 
         $activeSubsidies = 0;
         if (Schema::hasTable('tbl_subsidy_beneficiaries')) {
@@ -133,28 +134,16 @@ class DashboardController extends Controller
                 ->count();
         }
 
-        $activeCalamitiesPests = 0;
-        if (Schema::hasTable('pest_outbreaks')) {
-            $activeCalamitiesPests += PestOutbreak::query()
-                ->whereRaw('LOWER(status) = ?', ['active'])
-                ->count();
-        }
-        if (Schema::hasTable('pest_monitoring')) {
-            $activeCalamitiesPests += PestMonitoring::query()
-                ->where(function ($q) {
-                    $q->where('is_outbreak', true);
-                    if (Schema::hasColumn('pest_monitoring', 'area_damage_pct')) {
-                        $q->orWhere('area_damage_pct', '>=', 30);
-                    }
-                })
-                ->count();
-        }
+        $activeCalamities = 0;
         if (Schema::hasTable('damage_assessments')) {
-            // Barangay-encoded calamity logs are saved as Verified; technician field
-            // reports start as Pending. Both are still active until Claimed/Approved.
-            $activeCalamitiesPests += DamageAssessment::query()
-                ->whereIn('status', ['Pending', 'Verified'])
+            $activeCalamities = DamageAssessment::query()
+                ->where('status', 'Pending')
                 ->count();
+        }
+
+        $activePests = 0;
+        if (Schema::hasTable('pest_monitoring')) {
+            $activePests = $this->unverifiedPestQuery()->count();
         }
 
         $pendingSubsidyReleases = 0;
@@ -170,37 +159,69 @@ class DashboardController extends Controller
         return [
             'total_farmers' => $totalFarmers,
             'total_hectares' => round($totalHectares, 2),
+            'rice_hectares' => round($hectares['rice'], 2),
+            'corn_hectares' => round($hectares['corn'], 2),
             'active_subsidies' => $activeSubsidies,
-            'active_calamities_pests' => $activeCalamitiesPests,
+            'active_calamities' => $activeCalamities,
+            'active_pests' => $activePests,
             'pending_subsidy_releases' => $pendingSubsidyReleases,
         ];
     }
 
     /**
-     * Prefer live planting ledgers; fall back to registered farm-plot area.
+     * Registered parcel area grouped by commodity (soft-deleted plots excluded).
+     *
+     * @return array{rice: float, corn: float, other: float}
      */
-    private function overviewActiveHectares(): float
+    private function overviewPlotHectares(): array
     {
-        if (Schema::hasTable('planting_logs')) {
-            $planted = (float) PlantingLog::query()
-                ->where(function ($q) {
-                    $q->whereNull('status')
-                        ->orWhereRaw(
-                            "LOWER(status) NOT IN ('not continued', 'harvested', 'completed', 'inactive')"
-                        );
-                })
-                ->sum('area_planted');
+        $out = ['rice' => 0.0, 'corn' => 0.0, 'other' => 0.0];
 
-            if ($planted > 0) {
-                return $planted;
-            }
+        if (! Schema::hasTable('farm_plots')) {
+            return $out;
         }
 
-        if (Schema::hasTable('farm_plots')) {
-            return (float) FarmPlot::query()->sum('size_ha');
+        DB::table('farm_plots')
+            ->whereNull('deleted_at')
+            ->selectRaw("COALESCE(NULLIF(commodity, ''), 'Other') as commodity")
+            ->selectRaw('SUM(size_ha) as total_area_ha')
+            ->groupByRaw('1')
+            ->get()
+            ->each(function ($row) use (&$out) {
+                $key = $this->commodityBucket((string) $row->commodity);
+                $out[$key] += (float) $row->total_area_ha;
+            });
+
+        return $out;
+    }
+
+    private function commodityBucket(string $commodity): string
+    {
+        $normalized = strtolower(trim($commodity));
+
+        return match (true) {
+            str_contains($normalized, 'rice') => 'rice',
+            str_contains($normalized, 'corn') => 'corn',
+            default => 'other',
+        };
+    }
+
+    /**
+     * Pest reports that still need field validation (missing lat/photo, or Unverified).
+     */
+    private function unverifiedPestQuery()
+    {
+        $query = PestMonitoring::query();
+
+        if (Schema::hasColumn('pest_monitoring', 'status')) {
+            $query->where('status', 'Unverified');
+        } else {
+            $query->where(function ($q) {
+                $q->whereNull('latitude')->orWhereNull('photo_path');
+            });
         }
 
-        return 0.0;
+        return $query;
     }
 
     private function overviewDiagnostic(): array
@@ -249,34 +270,10 @@ class DashboardController extends Controller
     }
 
     /**
-     * Crop count/area grouped by commodity for the doughnut chart.
-     * Uses live planting logs when present, otherwise registered farm plots.
+     * Crop count/area grouped by registered parcels so unplanted plots still count.
      */
     private function overviewCropDistribution(): array
     {
-        if (Schema::hasTable('planting_logs') && PlantingLog::query()->exists()) {
-            return DB::table('planting_logs')
-                ->where(function ($q) {
-                    $q->whereNull('status')
-                        ->orWhereRaw(
-                            "LOWER(status) NOT IN ('not continued', 'harvested', 'completed', 'inactive')"
-                        );
-                })
-                ->selectRaw("COALESCE(NULLIF(crop_type, ''), 'Other') as commodity")
-                ->selectRaw('COUNT(*) as total_plots')
-                ->selectRaw('SUM(area_planted) as total_area_ha')
-                ->groupByRaw('1')
-                ->orderByDesc('total_plots')
-                ->get()
-                ->map(fn ($row) => [
-                    'commodity' => $row->commodity,
-                    'total_plots' => (int) $row->total_plots,
-                    'total_area_ha' => round((float) $row->total_area_ha, 2),
-                ])
-                ->values()
-                ->all();
-        }
-
         if (! Schema::hasTable('farm_plots')) {
             return [];
         }

@@ -5,12 +5,14 @@ namespace App\Http\Controllers;
 use App\Models\Farmer;
 use App\Models\FarmPlot;
 use App\Models\PlantingLog;
+use App\Traits\AssertsPlotAreaCap;
 use App\Traits\ResolvesEncodingBarangay;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class PlantingLogController extends Controller
 {
+    use AssertsPlotAreaCap;
     use ResolvesEncodingBarangay;
     public function index(Request $request): JsonResponse
     {
@@ -99,6 +101,15 @@ class PlantingLogController extends Controller
             }
         }
 
+        $areaError = $this->assertAreaWithinPlot(
+            $validated['farm_plot_id'] ?? null,
+            (float) $validated['area_planted'],
+            'Area planted',
+        );
+        if ($areaError) {
+            return $areaError;
+        }
+
         if (! empty($validated['id'])) {
             $existing = PlantingLog::find($validated['id']);
             if ($existing) {
@@ -132,5 +143,21 @@ class PlantingLogController extends Controller
             'message' => 'Planting log saved.',
             'data' => $log->load('farmer', 'farmPlot'),
         ], 201);
+    }
+
+    public function destroy(Request $request, string $id): JsonResponse
+    {
+        $log = PlantingLog::with('farmer')->findOrFail($id);
+        $denied = $this->assertCanDeleteEncodedRecord($request, $log->farmer);
+        if ($denied) {
+            return $denied;
+        }
+
+        $log->delete();
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Planting log removed.',
+        ]);
     }
 }

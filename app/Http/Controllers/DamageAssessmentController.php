@@ -88,7 +88,7 @@ class DamageAssessmentController extends Controller
                 $query->where('technician_id', $user->id);
             }
         } elseif ($user->role === 'barangay_official' && empty($validated['status'])) {
-            $query->whereIn('status', ['Pending', 'Verified']);
+            $query->where('status', 'Pending');
         }
 
         $sortField = $validated['sort'] ?? 'date_of_calamity';
@@ -374,6 +374,22 @@ class DamageAssessmentController extends Controller
         ], 200);
     }
 
+    public function destroy(Request $request, string $id): JsonResponse
+    {
+        $assessment = DamageAssessment::with('farmer')->findOrFail($id);
+        $denied = $this->assertCanDeleteEncodedRecord($request, $assessment->farmer);
+        if ($denied) {
+            return $denied;
+        }
+
+        $assessment->delete();
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Calamity assessment removed.',
+        ]);
+    }
+
     private function resolveDestroyedArea(
         string $farmPlotId,
         ?float $areaDestroyed,
@@ -414,6 +430,12 @@ class DamageAssessmentController extends Controller
         }
 
         $cap = (float) $plot->size_ha;
+        if ($areaPlanted !== null && $areaPlanted > $cap + 0.0001) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Area planted cannot exceed the farm plot size ('.$cap.' ha).',
+            ], 422);
+        }
         if ($areaPlanted !== null && $areaPlanted > 0) {
             $cap = min($cap, $areaPlanted);
         }

@@ -17,6 +17,7 @@ class SubsidyProgram extends Model
         'program_name',
         'target_crop',
         'max_hectares_limit',
+        'min_hectares_limit',
         'items_per_hectare',
         'status',
         'unit_of_measurement',
@@ -27,6 +28,7 @@ class SubsidyProgram extends Model
 
     protected $casts = [
         'max_hectares_limit' => 'decimal:4',
+        'min_hectares_limit' => 'decimal:4',
         'items_per_hectare' => 'integer',
         'total_quantity' => 'integer',
         'remaining_quantity' => 'integer',

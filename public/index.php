@@ -5,6 +5,10 @@ use Illuminate\Http\Request;
 
 define('LARAVEL_START', microtime(true));
 
+// Give slow local requests (cold autoload, large imports) more headroom
+// than the default 30s web SAPI limit before Composer starts requiring files.
+ini_set('max_execution_time', '120');
+
 // Determine if the application is in maintenance mode...
 if (file_exists($maintenance = __DIR__.'/../storage/framework/maintenance.php')) {
     require $maintenance;

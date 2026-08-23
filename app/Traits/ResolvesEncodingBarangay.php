@@ -77,4 +77,28 @@ trait ResolvesEncodingBarangay
             $query->whereHas($farmerRelation, fn ($f) => $f->where('permanent_brgy', $barangayParam));
         }
     }
+
+    protected function assertCanDeleteEncodedRecord(Request $request, ?Farmer $farmer): ?JsonResponse
+    {
+        /** @var User $user */
+        $user = $request->user();
+
+        if ($user->role === 'barangay_official') {
+            if (! $user->assigned_barangay) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'No assigned barangay on this account.',
+                ], 403);
+            }
+
+            if ($farmer && $farmer->permanent_brgy !== $user->assigned_barangay) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'You can only remove records from your assigned barangay.',
+                ], 403);
+            }
+        }
+
+        return null;
+    }
 }

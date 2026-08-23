@@ -6,7 +6,6 @@ use App\Models\DamageAssessment;
 use App\Models\Farmer;
 use App\Models\HarvestLog;
 use App\Models\PestMonitoring;
-use App\Models\PlantingLog;
 use App\Models\StandingCropLog;
 use App\Models\SubsidyBeneficiary;
 use App\Models\WeatherCache;
@@ -15,6 +14,7 @@ use App\Services\WeatherHourlyService;
 use App\Services\WeatherService;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 class BrgyDashboardController extends Controller
@@ -71,10 +71,9 @@ class BrgyDashboardController extends Controller
             ->count();
         $pendingFarmers = $totalFarmers - $verifiedFarmers;
 
-        $activeHectares = (float) PlantingLog::query()
-            ->where('status', 'Active')
-            ->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay))
-            ->sum('area_planted');
+        $hectares = $this->plotHectares($barangay);
+        $activeCalamities = $this->pendingCalamities($barangay);
+        $activePests = $this->unverifiedPests($barangay);
 
         $subsidyBase = SubsidyBeneficiary::query()
             ->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay));
@@ -85,43 +84,71 @@ class BrgyDashboardController extends Controller
             'total_farmers' => $totalFarmers,
             'verified_farmers' => $verifiedFarmers,
             'pending_farmers' => $pendingFarmers,
-            'total_hectares' => round($activeHectares, 2),
-            'active_hectares' => round($activeHectares, 2),
+            'total_hectares' => round($hectares['rice'] + $hectares['corn'] + $hectares['other'], 2),
+            'rice_hectares' => round($hectares['rice'], 2),
+            'corn_hectares' => round($hectares['corn'], 2),
+            'active_hectares' => round($hectares['rice'] + $hectares['corn'] + $hectares['other'], 2),
             'claimed_subsidies' => $claimedSubsidies,
             'unclaimed_subsidies' => $unclaimedSubsidies,
             'pending_subsidies' => $unclaimedSubsidies,
-            'active_threats' => $this->activeThreats($barangay),
+            'active_calamities' => $activeCalamities,
+            'active_pests' => $activePests,
+            'active_threats' => $activeCalamities + $activePests,
         ];
     }
 
     /**
-     * Unresolved pest reports + open damage assessments in this barangay.
+     * Registered parcel area for this barangay, grouped by commodity.
+     *
+     * @return array{rice: float, corn: float, other: float}
      */
-    private function activeThreats(string $barangay): int
+    private function plotHectares(string $barangay): array
     {
-        $pestQuery = PestMonitoring::query()
-            ->where(function ($q) use ($barangay) {
-                $q->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay))
-                    ->orWhere('farm_location', $barangay)
-                    ->orWhereHas('farmPlot', fn ($plot) => $plot->where('location_brgy', $barangay));
-            });
+        $out = ['rice' => 0.0, 'corn' => 0.0, 'other' => 0.0];
 
-        if (Schema::hasColumn('pest_monitoring', 'status')) {
-            $pestQuery->where('status', 'Unverified');
-        } else {
-            $pestQuery->where(function ($q) {
-                $q->whereNull('latitude')->orWhereNull('photo_path');
-            });
+        if (! Schema::hasTable('farm_plots')) {
+            return $out;
         }
 
-        $damageQuery = DamageAssessment::query()
-            ->whereIn('status', ['Pending', 'Verified'])
+        $farmerIds = Farmer::query()->where('permanent_brgy', $barangay)->pluck('id');
+
+        DB::table('farm_plots')
+            ->whereNull('deleted_at')
+            ->where(function ($q) use ($barangay, $farmerIds) {
+                $q->where('location_brgy', $barangay)
+                    ->orWhereIn('farmer_id', $farmerIds);
+            })
+            ->selectRaw("COALESCE(NULLIF(commodity, ''), 'Other') as commodity")
+            ->selectRaw('SUM(size_ha) as total_area_ha')
+            ->groupByRaw('1')
+            ->get()
+            ->each(function ($row) use (&$out) {
+                $normalized = strtolower(trim((string) $row->commodity));
+                $key = match (true) {
+                    str_contains($normalized, 'rice') => 'rice',
+                    str_contains($normalized, 'corn') => 'corn',
+                    default => 'other',
+                };
+                $out[$key] += (float) $row->total_area_ha;
+            });
+
+        return $out;
+    }
+
+    private function pendingCalamities(string $barangay): int
+    {
+        return DamageAssessment::query()
+            ->where('status', 'Pending')
             ->where(function ($q) use ($barangay) {
                 $q->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay))
                     ->orWhereHas('farmPlot', fn ($plot) => $plot->where('location_brgy', $barangay));
-            });
+            })
+            ->count();
+    }
 
-        return $pestQuery->count() + $damageQuery->count();
+    private function unverifiedPests(string $barangay): int
+    {
+        return $this->unverifiedPestQuery($barangay)->count();
     }
 
     /**
@@ -317,6 +344,11 @@ class BrgyDashboardController extends Controller
      */
     private function hasUnverifiedPestReports(string $barangay): bool
     {
+        return $this->unverifiedPestQuery($barangay)->exists();
+    }
+
+    private function unverifiedPestQuery(string $barangay)
+    {
         $query = PestMonitoring::query()
             ->where(function ($q) use ($barangay) {
                 $q->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay))
@@ -332,7 +364,7 @@ class BrgyDashboardController extends Controller
             });
         }
 
-        return $query->exists();
+        return $query;
     }
 
     private function transformWeatherCache(WeatherCache $row): array

@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Farmer;
 use App\Models\FarmPlot;
 use App\Models\PestMonitoring;
+use App\Traits\AssertsPlotAreaCap;
 use App\Traits\DecodesBase64Image;
 use App\Traits\ResolvesEncodingBarangay;
 use Illuminate\Http\JsonResponse;
@@ -12,6 +13,7 @@ use Illuminate\Http\Request;
 
 class PestMonitoringController extends Controller
 {
+    use AssertsPlotAreaCap;
     use DecodesBase64Image;
     use ResolvesEncodingBarangay;
 
@@ -140,6 +142,15 @@ class PestMonitoringController extends Controller
             }
         }
 
+        $areaError = $this->assertAreaWithinPlot(
+            $validated['farm_plot_id'] ?? null,
+            (float) $validated['area_planted'],
+            'Area planted',
+        );
+        if ($areaError) {
+            return $areaError;
+        }
+
         if (! empty($validated['id'])) {
             $existing = PestMonitoring::find($validated['id']);
             if ($existing) {
@@ -237,6 +248,22 @@ class PestMonitoringController extends Controller
             'status' => 'success',
             'message' => 'Field validation saved.',
             'data' => $row->fresh()->load('farmer', 'farmPlot'),
+        ]);
+    }
+
+    public function destroy(Request $request, string $id): JsonResponse
+    {
+        $row = PestMonitoring::with('farmer')->findOrFail($id);
+        $denied = $this->assertCanDeleteEncodedRecord($request, $row->farmer);
+        if ($denied) {
+            return $denied;
+        }
+
+        $row->delete();
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Pest inspection removed.',
         ]);
     }
 }

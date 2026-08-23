@@ -183,16 +183,24 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:barangay_official,admin');
     Route::patch('/damage-assessments/{id}/decide', [DamageAssessmentController::class, 'decide'])
         ->middleware('role:admin');
+    Route::delete('/damage-assessments/{id}', [DamageAssessmentController::class, 'destroy'])
+        ->middleware('role:barangay_official,technician,admin');
 
     // Barangay / field encoding ledgers (planting + standing + harvest + pest)
     Route::get('/planting-logs', [PlantingLogController::class, 'index']);
     Route::post('/planting-logs', [PlantingLogController::class, 'store'])
         ->middleware('role:barangay_official,technician,admin');
+    Route::delete('/planting-logs/{id}', [PlantingLogController::class, 'destroy'])
+        ->middleware('role:barangay_official,technician,admin');
     Route::get('/standing-crop-logs', [StandingCropLogController::class, 'index']);
     Route::post('/standing-crop-logs', [StandingCropLogController::class, 'store'])
         ->middleware('role:barangay_official,technician,admin');
+    Route::delete('/standing-crop-logs/{id}', [StandingCropLogController::class, 'destroy'])
+        ->middleware('role:barangay_official,technician,admin');
     Route::get('/harvest-logs', [HarvestLogController::class, 'index']);
     Route::post('/harvest-logs', [HarvestLogController::class, 'store'])
+        ->middleware('role:barangay_official,technician,admin');
+    Route::delete('/harvest-logs/{id}', [HarvestLogController::class, 'destroy'])
         ->middleware('role:barangay_official,technician,admin');
     Route::get('/pest-monitoring', [PestMonitoringController::class, 'index']);
     Route::get('/pest-monitoring/{id}', [PestMonitoringController::class, 'show']);
@@ -200,6 +208,8 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:barangay_official,technician,admin');
     Route::patch('/pest-monitoring/{id}/field-validate', [PestMonitoringController::class, 'fieldValidate'])
         ->middleware('role:technician,admin');
+    Route::delete('/pest-monitoring/{id}', [PestMonitoringController::class, 'destroy'])
+        ->middleware('role:barangay_official,technician,admin');
 
     // MAO Executive Reporting Suite (live encoded data)
     Route::get('/executive-reports', [ExecutiveReportingController::class, 'index'])

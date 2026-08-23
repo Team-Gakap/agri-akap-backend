@@ -26,6 +26,7 @@ class ReportsController extends Controller
         $request->validate([
             'program_id' => ['nullable', 'string'],
             'barangay'   => ['nullable', 'string'],
+            'crop_type'  => ['nullable', 'string'],
             'date_from'  => ['nullable', 'date'],
             'date_to'    => ['nullable', 'date'],
         ]);
@@ -40,6 +41,7 @@ class ReportsController extends Controller
                 'tbl_subsidy_beneficiaries.calculated_allocation',
                 'tbl_subsidy_beneficiaries.claimed_at',
                 'tbl_subsidy_programs.program_name',
+                'tbl_subsidy_programs.target_crop',
                 'tbl_subsidy_programs.unit_of_measurement',
                 'farmers.surname',
                 'farmers.first_name',
@@ -49,6 +51,13 @@ class ReportsController extends Controller
 
         if ($request->filled('program_id')) {
             $query->where('tbl_subsidy_beneficiaries.program_id', $request->program_id);
+        }
+        if ($request->filled('crop_type')) {
+            $crop = $request->crop_type;
+            $query->where(function ($q) use ($crop) {
+                $q->where('tbl_subsidy_programs.target_crop', $crop)
+                    ->orWhere('tbl_subsidy_programs.target_crop', 'Both');
+            });
         }
         if ($request->filled('barangay')) {
             $query->where('farmers.permanent_brgy', $request->barangay);
@@ -69,7 +78,10 @@ class ReportsController extends Controller
                 'farmer_name'   => $farmerName,
                 'barangay'      => $row->permanent_brgy ?? '',
                 'program_name'  => $row->program_name ?? '',
+                'target_crop'   => $row->target_crop ?? '',
                 'item_received' => $itemReceived,
+                'quantity'      => (float) ($row->calculated_allocation ?? 0),
+                'unit'          => $row->unit_of_measurement ?? 'Bags',
                 'date_claimed'  => $row->claimed_at,
             ];
         });
@@ -208,6 +220,7 @@ class ReportsController extends Controller
     {
         $request->validate([
             'barangay'  => ['nullable', 'string'],
+            'crop_type' => ['nullable', 'string'],
             'status'    => ['nullable', 'string'],
             'date_from' => ['nullable', 'date'],
             'date_to'   => ['nullable', 'date'],
@@ -222,6 +235,9 @@ class ReportsController extends Controller
 
         if ($request->filled('barangay')) {
             $query->whereHas('farmer', fn ($q) => $q->where('permanent_brgy', $request->barangay));
+        }
+        if ($request->filled('crop_type')) {
+            $query->where('crop', $request->crop_type);
         }
 
         // Map UI status labels to DB values
@@ -275,6 +291,10 @@ class ReportsController extends Controller
                 $status = 'Validated';
             }
 
+            $planted = (float) ($row->area_planted ?? 0);
+            $pct = (float) ($row->area_damage_pct ?? $row->incidence ?? 0);
+            $areaAffected = $planted > 0 ? round($planted * ($pct / 100), 4) : 0.0;
+
             return [
                 'date_reported' => $reportDate,
                 'barangay'      => $farmer?->permanent_brgy ?? $row->farmPlot?->location_brgy ?? '',
@@ -283,6 +303,7 @@ class ReportsController extends Controller
                 'crop'          => $row->crop ?? '',
                 'pest_disease'  => $row->pest_name ?? '',
                 'severity'      => $row->severity ?? 'Low',
+                'area_affected' => $areaAffected,
                 'status'        => $status,
                 'photo_url'     => $row->photo_path
                     ? asset('storage/' . ltrim($row->photo_path, '/'))
@@ -306,6 +327,7 @@ class ReportsController extends Controller
     {
         $request->validate([
             'barangay'      => ['nullable', 'string'],
+            'crop_type'     => ['nullable', 'string'],
             'calamity_type' => ['nullable', 'string'],
             'status'        => ['nullable', 'string'],
             'date_from'     => ['nullable', 'date'],
@@ -326,6 +348,9 @@ class ReportsController extends Controller
                   ->orWhereHas('farmPlot', fn ($fp) => $fp->where('location_brgy', $brgy));
             });
         }
+        if ($request->filled('crop_type')) {
+            $query->whereHas('farmPlot', fn ($fp) => $fp->where('commodity', $request->crop_type));
+        }
         if ($request->filled('calamity_type')) {
             $query->where('calamity_type', $request->calamity_type);
         }
@@ -344,6 +369,11 @@ class ReportsController extends Controller
             $name   = trim(($farmer?->first_name ?? '') . ' ' . ($farmer?->surname ?? ''));
             $brgy   = $farmer?->permanent_brgy ?? $row->farmPlot?->location_brgy ?? '';
             $effectiveStatus = $this->effectiveDamageStatus($row);
+            $areaAffected = (float) ($row->area_destroyed_ha ?? 0);
+            if ($areaAffected <= 0) {
+                $base = (float) ($row->area_planted_ha ?? $row->farmPlot?->size_ha ?? 0);
+                $areaAffected = round($base * ((float) ($row->damage_percentage ?? 0) / 100), 4);
+            }
 
             return [
                 'date_reported'  => optional($row->date_of_calamity)->format('Y-m-d'),
@@ -352,7 +382,7 @@ class ReportsController extends Controller
                 'farm_location'  => $row->farmPlot?->location_brgy ?? $brgy,
                 'crop'           => $row->farmPlot?->commodity ?? '',
                 'calamity_type'  => $row->calamity_type ?? $row->calamity_name ?? '',
-                'area_affected'  => (float) ($row->area_destroyed_ha ?? 0),
+                'area_affected'  => $areaAffected,
                 'damage_value'   => (float) ($row->estimated_value_lost ?? 0),
                 'status'         => $effectiveStatus,
                 'photo_url'      => $row->photo_evidence_path

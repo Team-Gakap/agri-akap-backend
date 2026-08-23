@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Farmer;
 use App\Models\FarmPlot;
 use App\Models\HarvestLog;
+use App\Traits\AssertsPlotAreaCap;
 use App\Traits\ResolvesEncodingBarangay;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -12,6 +13,7 @@ use Illuminate\Validation\Rule;
 
 class HarvestLogController extends Controller
 {
+    use AssertsPlotAreaCap;
     use ResolvesEncodingBarangay;
     public function index(Request $request): JsonResponse
     {
@@ -84,6 +86,15 @@ class HarvestLogController extends Controller
             }
         }
 
+        $areaError = $this->assertAreaWithinPlot(
+            $validated['farm_plot_id'] ?? null,
+            (float) $validated['area_harvested'],
+            'Area harvested',
+        );
+        if ($areaError) {
+            return $areaError;
+        }
+
         if (! empty($validated['id'])) {
             $existing = HarvestLog::find($validated['id']);
             if ($existing) {
@@ -116,5 +127,21 @@ class HarvestLogController extends Controller
             'message' => 'Harvest record saved.',
             'data' => $log->load('farmer', 'farmPlot'),
         ], 201);
+    }
+
+    public function destroy(Request $request, string $id): JsonResponse
+    {
+        $log = HarvestLog::with('farmer')->findOrFail($id);
+        $denied = $this->assertCanDeleteEncodedRecord($request, $log->farmer);
+        if ($denied) {
+            return $denied;
+        }
+
+        $log->delete();
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Harvest record removed.',
+        ]);
     }
 }

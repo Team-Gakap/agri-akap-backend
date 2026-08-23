@@ -56,7 +56,7 @@ class SmsService
         $url = rtrim($config['base_url'] ?? 'https://sms.iprogtech.com', '/')
             . '/api/v1/sms_messages/send_bulk';
 
-        $response = Http::asForm()->post($url, [
+        $response = Http::asForm()->timeout(10)->post($url, [
             'api_token' => $config['token'] ?? '',
             'phone_number' => $csv,
             'message' => $message,
@@ -80,7 +80,7 @@ class SmsService
             return $this->result(true, 'semaphore-mock', $count, ['mocked' => true, 'recipients' => $count]);
         }
 
-        $response = Http::asForm()->post('https://api.semaphore.co/api/v4/messages', [
+        $response = Http::asForm()->timeout(10)->post('https://api.semaphore.co/api/v4/messages', [
             'apikey' => $apiKey,
             'number' => $csv,
             'message' => $message,

@@ -5,16 +5,22 @@ namespace App\Http\Controllers;
 use App\Models\Farmer;
 use App\Models\FarmPlot;
 use App\Models\StandingCropLog;
+use App\Traits\AssertsPlotAreaCap;
+use App\Traits\ResolvesEncodingBarangay;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class StandingCropLogController extends Controller
 {
+    use AssertsPlotAreaCap;
+    use ResolvesEncodingBarangay;
+
     public function index(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'barangay' => ['nullable', 'string'],
             'crop_type' => ['nullable', 'string'],
+            'growth_stage' => ['nullable', 'string'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:500'],
         ]);
 
@@ -35,6 +41,9 @@ class StandingCropLogController extends Controller
 
         if (! empty($validated['crop_type'])) {
             $query->where('crop_type', $validated['crop_type']);
+        }
+        if (! empty($validated['growth_stage'])) {
+            $query->where('growth_stage', $validated['growth_stage']);
         }
 
         return response()->json([
@@ -78,6 +87,15 @@ class StandingCropLogController extends Controller
             }
         }
 
+        $areaError = $this->assertAreaWithinPlot(
+            $validated['farm_plot_id'] ?? null,
+            (float) $validated['area_ha'],
+            'Standing crop area',
+        );
+        if ($areaError) {
+            return $areaError;
+        }
+
         if (! empty($validated['id'])) {
             $existing = StandingCropLog::find($validated['id']);
             if ($existing) {
@@ -109,5 +127,21 @@ class StandingCropLogController extends Controller
             'message' => 'Standing crop saved.',
             'data' => $log->load('farmer', 'farmPlot'),
         ], 201);
+    }
+
+    public function destroy(Request $request, string $id): JsonResponse
+    {
+        $log = StandingCropLog::with('farmer')->findOrFail($id);
+        $denied = $this->assertCanDeleteEncodedRecord($request, $log->farmer);
+        if ($denied) {
+            return $denied;
+        }
+
+        $log->delete();
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Standing crop record removed.',
+        ]);
     }
 }
