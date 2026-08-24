@@ -70,12 +70,14 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Subsidy Auto-Masterlist programs (tbl_subsidy_programs)
     Route::get('/subsidies', [SubsidyController::class, 'index'])
-        ->middleware('role:admin,technician');
+        ->middleware('role:admin,technician,barangay_official');
     Route::post('/subsidies', [SubsidyController::class, 'store'])
         ->middleware('role:admin');
     Route::post('/subsidies/{id}/restock', [SubsidyController::class, 'restock'])
         ->middleware('role:admin');
     Route::patch('/subsidies/{id}/config', [SubsidyController::class, 'updateConfig'])
+        ->middleware('role:admin');
+    Route::patch('/subsidies/{id}/status', [SubsidyController::class, 'updateStatus'])
         ->middleware('role:admin');
     Route::post('/subsidies/{id}/generate-masterlist', [SubsidyController::class, 'generateMasterlist'])
         ->middleware('role:admin');
@@ -202,6 +204,7 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:barangay_official,technician,admin');
     Route::delete('/harvest-logs/{id}', [HarvestLogController::class, 'destroy'])
         ->middleware('role:barangay_official,technician,admin');
+    Route::get('/pest-guidelines', [PestMonitoringController::class, 'guidelines']);
     Route::get('/pest-monitoring', [PestMonitoringController::class, 'index']);
     Route::get('/pest-monitoring/{id}', [PestMonitoringController::class, 'show']);
     Route::post('/pest-monitoring', [PestMonitoringController::class, 'store'])
@@ -216,8 +219,8 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:admin');
 
     // MAO Dedicated Report Endpoints (new report module)
-    Route::get('/reports/subsidies',         [ReportsController::class, 'subsidies'])        ->middleware('role:admin');
-    Route::get('/reports/crop-production',   [ReportsController::class, 'cropProduction'])   ->middleware('role:admin');
-    Route::get('/reports/pest-surveillance', [ReportsController::class, 'pestSurveillance']) ->middleware('role:admin');
-    Route::get('/reports/damage-calamity',   [ReportsController::class, 'damageCalamity'])   ->middleware('role:admin');
+    Route::get('/reports/subsidies',         [ReportsController::class, 'subsidies'])        ->middleware('role:admin,barangay_official');
+    Route::get('/reports/crop-production',   [ReportsController::class, 'cropProduction'])   ->middleware('role:admin,barangay_official');
+    Route::get('/reports/pest-surveillance', [ReportsController::class, 'pestSurveillance']) ->middleware('role:admin,barangay_official');
+    Route::get('/reports/damage-calamity',   [ReportsController::class, 'damageCalamity'])   ->middleware('role:admin,barangay_official');
 });

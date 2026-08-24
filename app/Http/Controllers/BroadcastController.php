@@ -31,20 +31,44 @@ class BroadcastController extends Controller
         $validated = $request->validate([
             'message_body' => 'required|string|max:160', // Standard SMS limit
             'target_barangay' => 'nullable|string',
+            'target_barangays' => 'nullable|array',
+            'target_barangays.*' => 'string|max:128',
             'target_commodity' => 'nullable|string',
         ]);
+
+        $barangays = collect($validated['target_barangays'] ?? [])
+            ->map(fn ($b) => trim((string) $b))
+            ->filter(fn ($b) => $b !== '' && strcasecmp($b, 'All') !== 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        $legacyBarangay = trim((string) ($validated['target_barangay'] ?? ''));
+        if ($legacyBarangay !== '' && strcasecmp($legacyBarangay, 'All') !== 0 && empty($barangays)) {
+            $barangays = [$legacyBarangay];
+        }
+
+        $barangayLabel = empty($barangays) ? 'All' : implode(', ', $barangays);
 
         // 1. Build the query to find target farmers
         $query = Farmer::whereNotNull('mobile_number');
 
-        if (!empty($validated['target_barangay']) && $validated['target_barangay'] !== 'All') {
-            $query->where('permanent_brgy', $validated['target_barangay']);
+        if (!empty($barangays)) {
+            $query->whereIn('permanent_brgy', $barangays);
         }
 
         // Use whereHas to filter by their farm plots' commodity
-        if (!empty($validated['target_commodity']) && $validated['target_commodity'] !== 'All') {
-            $query->whereHas('farmPlots', function ($q) use ($validated) {
-                $q->where('commodity', $validated['target_commodity']);
+        $commodity = trim((string) ($validated['target_commodity'] ?? ''));
+        if ($commodity !== '' && strcasecmp($commodity, 'All') !== 0) {
+            $query->whereHas('farmPlots', function ($q) use ($commodity) {
+                if (strcasecmp($commodity, 'Both') === 0) {
+                    $q->where(function ($inner) {
+                        $inner->whereRaw('LOWER(commodity) like ?', ['%rice%'])
+                            ->orWhereRaw('LOWER(commodity) like ?', ['%corn%']);
+                    });
+                } else {
+                    $q->where('commodity', $commodity);
+                }
             });
         }
 
@@ -68,8 +92,8 @@ class BroadcastController extends Controller
 
         // 4. Log the Campaign in our database
         $broadcast = SmsBroadcast::create([
-            'target_barangay' => $validated['target_barangay'] ?? 'All',
-            'target_commodity' => $validated['target_commodity'] ?? 'All',
+            'target_barangay' => $barangayLabel,
+            'target_commodity' => $commodity !== '' ? $commodity : 'All',
             'message_body' => $validated['message_body'],
             'trigger_type' => SmsBroadcast::TRIGGER_MANUAL,
             'recipient_count' => $recipientCount,

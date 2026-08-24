@@ -40,6 +40,7 @@ class ReportsController extends Controller
                 'tbl_subsidy_beneficiaries.farmer_rsbsa_no',
                 'tbl_subsidy_beneficiaries.calculated_allocation',
                 'tbl_subsidy_beneficiaries.claimed_at',
+                'tbl_subsidy_beneficiaries.photo_proof_path',
                 'tbl_subsidy_programs.program_name',
                 'tbl_subsidy_programs.target_crop',
                 'tbl_subsidy_programs.unit_of_measurement',
@@ -53,14 +54,11 @@ class ReportsController extends Controller
             $query->where('tbl_subsidy_beneficiaries.program_id', $request->program_id);
         }
         if ($request->filled('crop_type')) {
-            $crop = $request->crop_type;
-            $query->where(function ($q) use ($crop) {
-                $q->where('tbl_subsidy_programs.target_crop', $crop)
-                    ->orWhere('tbl_subsidy_programs.target_crop', 'Both');
-            });
+            $query->where('tbl_subsidy_programs.target_crop', $request->crop_type);
         }
-        if ($request->filled('barangay')) {
-            $query->where('farmers.permanent_brgy', $request->barangay);
+        $barangay = $this->scopedBarangay($request);
+        if ($barangay !== null) {
+            $query->where('farmers.permanent_brgy', $barangay);
         }
         if ($request->filled('date_from')) {
             $query->whereDate('tbl_subsidy_beneficiaries.claimed_at', '>=', $request->date_from);
@@ -83,6 +81,10 @@ class ReportsController extends Controller
                 'quantity'      => (float) ($row->calculated_allocation ?? 0),
                 'unit'          => $row->unit_of_measurement ?? 'Bags',
                 'date_claimed'  => $row->claimed_at,
+                'photo_path'    => $row->photo_proof_path,
+                'photo_url'     => $row->photo_proof_path
+                    ? asset('storage/' . ltrim($row->photo_proof_path, '/'))
+                    : null,
             ];
         });
 
@@ -109,10 +111,15 @@ class ReportsController extends Controller
         ]);
 
         $mode = $request->input('mode', 'planting');
+        $filters = $request->all();
+        $barangay = $this->scopedBarangay($request);
+        if ($barangay !== null) {
+            $filters['barangay'] = $barangay;
+        }
 
         $rows = $mode === 'harvest'
-            ? $this->harvestRows($request->all())
-            : $this->plantingRows($request->all());
+            ? $this->harvestRows($filters)
+            : $this->plantingRows($filters);
 
         return response()->json([
             'status' => 'success',
@@ -154,6 +161,8 @@ class ReportsController extends Controller
                 'variety'      => $log->variety ?? '',
                 'area_planted' => (float) ($log->area_planted ?? 0),
                 'date_planted' => optional($log->date_planted)->format('Y-m-d'),
+                'status'       => $log->status ?? '',
+                'water_source' => $log->water_source ?? '',
             ];
         })->values()->all();
     }
@@ -233,26 +242,33 @@ class ReportsController extends Controller
             ])
             ->orderByRaw('COALESCE(date_of_inspection, DATE(pest_monitoring.created_at)) DESC');
 
-        if ($request->filled('barangay')) {
-            $query->whereHas('farmer', fn ($q) => $q->where('permanent_brgy', $request->barangay));
-        }
         if ($request->filled('crop_type')) {
             $query->where('crop', $request->crop_type);
         }
+        $barangay = $this->scopedBarangay($request);
+        if ($barangay !== null) {
+            $query->whereHas('farmer', fn ($q) => $q->where('permanent_brgy', $barangay));
+        }
 
-        // Map UI status labels to DB values
-        if ($request->filled('status')) {
-            $st = $request->status;
+        // Validated = field-validated (lat + photo). Default hides unverified encodes.
+        $st = $request->input('status', 'Validated');
+        if ($st && $st !== 'All') {
             $query->where(function ($q) use ($st) {
                 if ($st === 'Responded') {
-                    $q->where('is_outbreak', true)
-                      ->orWhere('item_distributed', '!=', null);
-                } elseif ($st === 'Validated') {
-                    $q->where('report_ref', '!=', null);
+                    $q->whereNotNull('item_distributed')->where('item_distributed', '!=', '');
+                } elseif ($st === 'Pending') {
+                    $q->where(function ($inner) {
+                        $inner->whereNull('latitude')->orWhereNull('photo_path');
+                    })->where(function ($inner) {
+                        $inner->whereNull('item_distributed')->orWhere('item_distributed', '');
+                    });
                 } else {
-                    // Pending — no outbreak flag, no report ref
-                    $q->where('is_outbreak', false)
-                      ->whereNull('report_ref');
+                    // Validated
+                    $q->whereNotNull('latitude')
+                        ->whereNotNull('photo_path')
+                        ->where(function ($inner) {
+                            $inner->whereNull('item_distributed')->orWhere('item_distributed', '');
+                        });
                 }
             });
         }
@@ -341,11 +357,11 @@ class ReportsController extends Controller
             ])
             ->orderBy('date_of_calamity', 'desc');
 
-        if ($request->filled('barangay')) {
-            $brgy = $request->barangay;
-            $query->where(function ($q) use ($brgy) {
-                $q->whereHas('farmer', fn ($f) => $f->where('permanent_brgy', $brgy))
-                  ->orWhereHas('farmPlot', fn ($fp) => $fp->where('location_brgy', $brgy));
+        $barangay = $this->scopedBarangay($request);
+        if ($barangay !== null) {
+            $query->where(function ($q) use ($barangay) {
+                $q->whereHas('farmer', fn ($f) => $f->where('permanent_brgy', $barangay))
+                  ->orWhereHas('farmPlot', fn ($fp) => $fp->where('location_brgy', $barangay));
             });
         }
         if ($request->filled('crop_type')) {
@@ -410,5 +426,21 @@ class ReportsController extends Controller
         }
 
         return $status;
+    }
+
+    /**
+     * Barangay officials are always locked to assigned_barangay.
+     * Admins use the optional request barangay filter.
+     */
+    private function scopedBarangay(Request $request): ?string
+    {
+        $user = $request->user();
+        if ($user?->role === 'barangay_official') {
+            $assigned = trim((string) ($user->assigned_barangay ?? ''));
+
+            return $assigned !== '' ? $assigned : '__unassigned__';
+        }
+
+        return $request->filled('barangay') ? (string) $request->barangay : null;
     }
 }

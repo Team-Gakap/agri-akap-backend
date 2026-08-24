@@ -993,10 +993,23 @@ class DashboardController extends Controller
             ->get()
             ->each(function (PlantingLog $row) use ($items) {
                 $farmer = trim((string) ($row->farmer?->surname ?? '').', '.($row->farmer?->first_name ?? ''), ' ,');
+                $planted = optional($row->date_planted)->format('Y-m-d');
                 $items->push([
                     'type' => 'Planting',
                     'title' => $farmer !== '' ? $farmer : ($row->crop_type ?: 'Planting log'),
-                    'detail' => trim(($row->crop_type ?: 'Crop').($row->variety ? ' · '.$row->variety : '')),
+                    'detail' => implode(' · ', array_filter([
+                        $row->crop_type ?: 'Crop',
+                        $row->variety,
+                        $planted,
+                        $row->status,
+                        $row->water_source,
+                    ])),
+                    'date_planted' => $planted,
+                    'status' => $row->status,
+                    'water_source' => $row->water_source,
+                    'crop' => $row->crop_type,
+                    'variety' => $row->variety,
+                    'area_planted' => $row->area_planted,
                     'created_at' => optional($row->created_at)?->toIso8601String(),
                 ]);
             });

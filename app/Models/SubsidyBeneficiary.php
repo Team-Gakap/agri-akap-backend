@@ -19,6 +19,8 @@ class SubsidyBeneficiary extends Model
         'calculated_allocation',
         'status',
         'claimed_at',
+        'claimed_by',
+        'photo_proof_path',
     ];
 
     protected $casts = [

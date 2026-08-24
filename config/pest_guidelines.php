@@ -24,6 +24,45 @@ return [
         'Corn Borer',
         'Rice Bug',
         'Rodents',
+        'Stem Borer',
+        'Sheath Blight',
+        'Bacterial Leaf Blight',
+        'Corn Earworm',
+        'Downy Mildew',
+        'Corn Leaf Blight',
+        'Common Rust',
+    ],
+
+    'by_crop' => [
+        'Rice' => [
+            'pests' => [
+                'Brown Planthopper',
+                'Rice Black Bug',
+                'Golden Apple Snail',
+                'Rice Bug',
+                'Stem Borer',
+                'Rodents',
+            ],
+            'diseases' => [
+                'Rice Blast',
+                'Tungro Virus',
+                'Sheath Blight',
+                'Bacterial Leaf Blight',
+            ],
+        ],
+        'Corn' => [
+            'pests' => [
+                'Fall Armyworm',
+                'Corn Borer',
+                'Corn Earworm',
+                'Rodents',
+            ],
+            'diseases' => [
+                'Downy Mildew',
+                'Corn Leaf Blight',
+                'Common Rust',
+            ],
+        ],
     ],
 
     // Pre-approved countermeasure per threat.
@@ -37,6 +76,13 @@ return [
         'Corn Borer' => 'Detassel and destroy infested plant residues; release Trichogramma egg parasitoids; apply granular insecticide into leaf whorls.',
         'Rice Bug' => 'Cut and remove surrounding weeds; conduct synchronous harvesting; net-sweep during heading stage and spray only if threshold exceeded.',
         'Rodents' => 'Coordinate a community-wide trapping (community trap-barrier system); maintain clean bunds; use approved rodenticide baiting stations.',
+        'Stem Borer' => 'Practice synchronous planting; cut and destroy infested tillers; apply recommended insecticide at the vegetative stage if the threshold is exceeded.',
+        'Sheath Blight' => 'Avoid dense planting and excess nitrogen; keep bunds clean; apply a recommended fungicide if lesions spread up the canopy.',
+        'Bacterial Leaf Blight' => 'Use certified seed of resistant varieties; avoid over-irrigation after storms; rogue severely infected hills.',
+        'Corn Earworm' => 'Scout silking ears; release Trichogramma; apply recommended insecticide only if live larvae exceed the action threshold.',
+        'Downy Mildew' => 'Plant resistant hybrids; rogue infected seedlings; avoid late planting in endemic areas.',
+        'Corn Leaf Blight' => 'Rotate away from corn; bury infested residue; apply a recommended fungicide if weather favors spread.',
+        'Common Rust' => 'Use resistant hybrids; monitor after prolonged leaf wetness; apply fungicide if pustules appear before tasseling.',
     ],
 
     // Used when the reported pest is not in the map above.

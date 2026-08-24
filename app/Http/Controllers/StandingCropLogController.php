@@ -21,6 +21,8 @@ class StandingCropLogController extends Controller
             'barangay' => ['nullable', 'string'],
             'crop_type' => ['nullable', 'string'],
             'growth_stage' => ['nullable', 'string'],
+            'date_from' => ['nullable', 'date'],
+            'date_to' => ['nullable', 'date'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:500'],
         ]);
 
@@ -44,6 +46,12 @@ class StandingCropLogController extends Controller
         }
         if (! empty($validated['growth_stage'])) {
             $query->where('growth_stage', $validated['growth_stage']);
+        }
+        if (! empty($validated['date_from'])) {
+            $query->whereDate('created_at', '>=', $validated['date_from']);
+        }
+        if (! empty($validated['date_to'])) {
+            $query->whereDate('created_at', '<=', $validated['date_to']);
         }
 
         return response()->json([

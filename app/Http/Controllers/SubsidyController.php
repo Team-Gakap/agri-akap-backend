@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Farmer;
 use App\Models\SubsidyProgram;
+use App\Traits\DecodesBase64Image;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -12,6 +13,7 @@ use Illuminate\Validation\Rule;
 
 class SubsidyController extends Controller
 {
+    use DecodesBase64Image;
     /**
      * List subsidy programs with beneficiary counts.
      * Technicians only receive Active campaigns for field release.
@@ -146,6 +148,26 @@ class SubsidyController extends Controller
     }
 
     /**
+     * Set campaign status (Draft / Active / Completed). Completed freezes claims
+     * and masterlist regeneration; records stay as history.
+     */
+    public function updateStatus(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'status' => ['required', Rule::in(['Draft', 'Active', 'Completed'])],
+        ]);
+
+        $program = SubsidyProgram::query()->findOrFail($id);
+        $program->update(['status' => $validated['status']]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => "Program marked {$validated['status']}.",
+            'data' => $program->fresh(),
+        ]);
+    }
+
+    /**
      * Generate eligible beneficiaries from current, active planting records.
      */
     public function generateMasterlist(string $id): JsonResponse
@@ -205,6 +227,7 @@ class SubsidyController extends Controller
                 $allocation = (int) floor(
                     ($eligibleArea * (int) $program->items_per_hectare) + 0.0000001
                 );
+                $allocation = $this->cashCappedAllocation($program, $allocation);
 
                 if ($allocation < 1) {
                     return null;
@@ -316,10 +339,18 @@ class SubsidyController extends Controller
      * Mark one beneficiary as Claimed and deduct their allocation from the
      * program's warehouse stock (DA 6-step distribution: release = stock out).
      */
-    public function claimBeneficiary(string $id, string $beneficiaryId): JsonResponse
+    public function claimBeneficiary(Request $request, string $id, string $beneficiaryId): JsonResponse
     {
-        $result = DB::transaction(function () use ($id, $beneficiaryId) {
+        $validated = $request->validate([
+            'photo_proof_base64' => 'nullable|string',
+        ]);
+
+        $result = DB::transaction(function () use ($id, $beneficiaryId, $validated) {
             $program = SubsidyProgram::where('id', $id)->lockForUpdate()->firstOrFail();
+
+            if ($program->status !== 'Active') {
+                return ['error' => 'This subsidy program is not active. Claims are frozen.', 'code' => 400];
+            }
 
             $beneficiary = DB::table('tbl_subsidy_beneficiaries')
                 ->where('id', $beneficiaryId)
@@ -334,15 +365,19 @@ class SubsidyController extends Controller
                 return ['error' => 'This beneficiary has already claimed their allocation.', 'code' => 409];
             }
 
-            if ($program->remaining_quantity < $beneficiary->calculated_allocation) {
+            $allocation = $this->cashCappedAllocation($program, (int) $beneficiary->calculated_allocation);
+
+            if ($program->remaining_quantity < $allocation) {
                 return [
-                    'error' => "Insufficient stock. Only {$program->remaining_quantity} {$program->unit_of_measurement} remaining, but this beneficiary is allocated {$beneficiary->calculated_allocation}. Log a delivery first.",
+                    'error' => "Insufficient stock. Only {$program->remaining_quantity} {$program->unit_of_measurement} remaining, but this beneficiary is allocated {$allocation}. Log a delivery first.",
                     'code' => 409,
                 ];
             }
 
-            $program->remaining_quantity -= $beneficiary->calculated_allocation;
+            $program->remaining_quantity -= $allocation;
             $program->save();
+
+            $photoPath = $this->storeBase64Image($validated['photo_proof_base64'] ?? null, 'subsidy-claims');
 
             DB::table('tbl_subsidy_beneficiaries')
                 ->where('id', $beneficiaryId)
@@ -350,6 +385,7 @@ class SubsidyController extends Controller
                     'status' => 'Claimed',
                     'claimed_at' => now(),
                     'claimed_by' => auth()->id(),
+                    'photo_proof_path' => $photoPath,
                     'updated_at' => now(),
                 ]);
 
@@ -440,11 +476,13 @@ class SubsidyController extends Controller
             ], 409);
         }
 
-        if ($program->remaining_quantity < $beneficiary->calculated_allocation) {
+        $allocation = $this->cashCappedAllocation($program, (int) $beneficiary->calculated_allocation);
+
+        if ($program->remaining_quantity < $allocation) {
             return response()->json([
                 'status' => 'error',
                 'eligible' => false,
-                'message' => "Insufficient stock. Only {$program->remaining_quantity} {$program->unit_of_measurement} remaining, but this farmer is allocated {$beneficiary->calculated_allocation}.",
+                'message' => "Insufficient stock. Only {$program->remaining_quantity} {$program->unit_of_measurement} remaining, but this farmer is allocated {$allocation}.",
             ], 409);
         }
 
@@ -475,7 +513,7 @@ class SubsidyController extends Controller
                 'unit' => $program->unit_of_measurement,
                 'total_farm_size' => $totalFarmSize,
                 'eligible_size' => $eligibleSize,
-                'quantity' => (int) $beneficiary->calculated_allocation,
+                'quantity' => $allocation,
                 'inventory_remaining' => (int) $program->remaining_quantity,
                 'plot_lat' => $primaryPlot?->latitude,
                 'plot_long' => $primaryPlot?->longitude,
@@ -493,6 +531,7 @@ class SubsidyController extends Controller
             'farmer_id' => 'nullable|uuid|exists:farmers,id',
             'rsbsa_no' => 'nullable|string|max:64',
             'beneficiary_id' => 'nullable|uuid',
+            'photo_proof_base64' => 'nullable|string',
         ]);
 
         if (empty($validated['farmer_id']) && empty($validated['rsbsa_no']) && empty($validated['beneficiary_id'])) {
@@ -532,15 +571,19 @@ class SubsidyController extends Controller
                 return ['error' => 'This farmer has already claimed their allocation for this program.', 'code' => 409];
             }
 
-            if ($program->remaining_quantity < $beneficiary->calculated_allocation) {
+            $allocation = $this->cashCappedAllocation($program, (int) $beneficiary->calculated_allocation);
+
+            if ($program->remaining_quantity < $allocation) {
                 return [
-                    'error' => "Insufficient stock. Only {$program->remaining_quantity} {$program->unit_of_measurement} remaining, but this farmer is allocated {$beneficiary->calculated_allocation}.",
+                    'error' => "Insufficient stock. Only {$program->remaining_quantity} {$program->unit_of_measurement} remaining, but this farmer is allocated {$allocation}.",
                     'code' => 409,
                 ];
             }
 
-            $program->remaining_quantity -= $beneficiary->calculated_allocation;
+            $program->remaining_quantity -= $allocation;
             $program->save();
+
+            $photoPath = $this->storeBase64Image($validated['photo_proof_base64'] ?? null, 'subsidy-claims');
 
             DB::table('tbl_subsidy_beneficiaries')
                 ->where('id', $beneficiary->id)
@@ -548,6 +591,7 @@ class SubsidyController extends Controller
                     'status' => 'Claimed',
                     'claimed_at' => now(),
                     'claimed_by' => auth()->id(),
+                    'photo_proof_path' => $photoPath,
                     'updated_at' => now(),
                 ]);
 
@@ -631,6 +675,23 @@ class SubsidyController extends Controller
         $plantArea->groupBy('farmer_id')->select('farmer_id')->selectRaw('SUM(area_planted) as area');
 
         return [$plotArea, $plantArea];
+    }
+
+    private function isCashProgram(SubsidyProgram $program): bool
+    {
+        return strcasecmp(trim((string) $program->unit_of_measurement), 'Cash (PHP)') === 0;
+    }
+
+    /**
+     * Cash programs cannot allocate more than ₱1,000 per farmer.
+     */
+    private function cashCappedAllocation(SubsidyProgram $program, int $allocation): int
+    {
+        if ($allocation < 1) {
+            return $allocation;
+        }
+
+        return $this->isCashProgram($program) ? min($allocation, 1000) : $allocation;
     }
 
     private function applyCropFilter($query, string $column, string $targetCrop)

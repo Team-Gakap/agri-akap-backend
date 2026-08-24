@@ -17,6 +17,14 @@ class PestMonitoringController extends Controller
     use DecodesBase64Image;
     use ResolvesEncodingBarangay;
 
+    public function guidelines(): JsonResponse
+    {
+        return response()->json([
+            'status' => 'success',
+            'data' => config('pest_guidelines.by_crop', []),
+        ]);
+    }
+
     public function index(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -105,6 +113,7 @@ class PestMonitoringController extends Controller
             'latitude' => ['nullable', 'numeric', 'between:-90,90'],
             'longitude' => ['nullable', 'numeric', 'between:-180,180'],
             'barangay_name' => ['nullable', 'string', 'max:255'],
+            'is_outbreak' => ['nullable', 'boolean'],
         ]);
 
         $farmer = Farmer::findOrFail($validated['farmer_id']);
@@ -187,7 +196,7 @@ class PestMonitoringController extends Controller
             'pest_name' => $validated['damage_by'],
             'incidence' => (int) round($pct),
             'severity' => $severity,
-            'is_outbreak' => $pct >= 30,
+            'is_outbreak' => (bool) ($validated['is_outbreak'] ?? false),
             'photo_path' => $photoPath,
             'latitude' => $validated['latitude'] ?? null,
             'longitude' => $validated['longitude'] ?? null,
