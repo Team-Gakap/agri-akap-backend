@@ -173,6 +173,8 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // SMS Broadcast
     Route::get('/broadcasts', [BroadcastController::class, 'index']);
+    Route::post('/broadcasts/preview', [BroadcastController::class, 'previewAudience'])
+        ->middleware('role:admin');
     Route::post('/broadcasts/send', [BroadcastController::class, 'sendBulkSms'])
         ->middleware('role:admin');
 

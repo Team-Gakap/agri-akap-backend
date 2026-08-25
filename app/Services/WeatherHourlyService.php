@@ -36,7 +36,7 @@ class WeatherHourlyService
             ->get(['name', 'latitude', 'longitude']);
 
         if ($barangays->isEmpty()) {
-            throw new RuntimeException('No barangays found. Run: php artisan db:seed --class=BarangaySeeder');
+            throw new RuntimeException('No barangays found. Run: php artisan db:seed --class=BarangayCoordinateSeeder');
         }
 
         $synced = 0;

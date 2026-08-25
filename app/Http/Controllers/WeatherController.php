@@ -241,11 +241,23 @@ class WeatherController extends Controller
             $date = Carbon::now(WeatherService::TIMEZONE)->toDateString();
         }
 
+        $pins = Barangay::query()
+            ->where('is_active', true)
+            ->get(['name', 'latitude', 'longitude'])
+            ->keyBy('name');
+
         $rows = WeatherCache::query()
             ->whereDate('forecast_date', $date)
             ->orderBy('barangay_name')
             ->get()
-            ->map(fn (WeatherCache $row) => $this->transform($row))
+            ->map(function (WeatherCache $row) use ($pins) {
+                $payload = $this->transform($row);
+                $pin = $pins->get($row->barangay_name);
+                $payload['latitude'] = $pin !== null ? (float) $pin->latitude : null;
+                $payload['longitude'] = $pin !== null ? (float) $pin->longitude : null;
+
+                return $payload;
+            })
             ->values();
 
         return response()->json([

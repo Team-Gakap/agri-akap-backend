@@ -12,10 +12,10 @@ use RuntimeException;
 
 class WeatherService
 {
-    /** Municipal centroid — fallback / display default. */
-    public const LATITUDE = 16.7118;
+    /** Soyung (Poblacion) field pin — fallback / display default. */
+    public const LATITUDE = 16.701478906510456;
 
-    public const LONGITUDE = 121.6603;
+    public const LONGITUDE = 121.66391107686333;
 
     public const TIMEZONE = 'Asia/Manila';
 
@@ -36,7 +36,7 @@ class WeatherService
             ->get(['name', 'latitude', 'longitude']);
 
         if ($barangays->isEmpty()) {
-            throw new RuntimeException('No barangays found. Run: php artisan db:seed --class=BarangaySeeder');
+            throw new RuntimeException('No barangays found. Run: php artisan db:seed --class=BarangayCoordinateSeeder');
         }
 
         $synced = 0;
