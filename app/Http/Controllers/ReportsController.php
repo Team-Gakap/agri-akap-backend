@@ -250,8 +250,9 @@ class ReportsController extends Controller
             $query->whereHas('farmer', fn ($q) => $q->where('permanent_brgy', $barangay));
         }
 
-        // Validated = field-validated (lat + photo). Default hides unverified encodes.
-        $st = $request->input('status', 'Validated');
+        // Validated = field-validated (lat + photo). Default All so newly encoded
+        // barangay records (no GPS/photo yet) still appear for admin and brgy.
+        $st = $request->input('status', 'All');
         if ($st && $st !== 'All') {
             $query->where(function ($q) use ($st) {
                 if ($st === 'Responded') {

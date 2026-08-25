@@ -3,6 +3,7 @@
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\FarmerController;
 use App\Http\Controllers\FarmPlotController;
+use App\Http\Controllers\UserController;
 use App\Http\Controllers\ProgramController;
 use App\Http\Controllers\DistributionController;
 use App\Http\Controllers\DashboardController;
@@ -43,16 +44,29 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/farmers/barangays', [FarmerController::class, 'barangays']);
     Route::get('/farmers/commodities', [FarmerController::class, 'commodities']);
     Route::get('/farmers/{id}', [FarmerController::class, 'show']);
+    Route::patch('/farmers/{id}', [FarmerController::class, 'update'])
+        ->middleware('role:admin');
+    Route::delete('/farmers/{id}', [FarmerController::class, 'destroy'])
+        ->middleware('role:admin');
     Route::post('/farmers/{id}/photo', [FarmerController::class, 'uploadPhoto'])
         ->middleware('role:admin');
     Route::post('/farmers/{id}/return-for-correction', [FarmerController::class, 'returnForCorrection'])
         ->middleware('role:admin');
+    Route::post('/farmers/{id}/verify', [FarmerController::class, 'verify'])
+        ->middleware('role:admin');
+    Route::post('/farmers/{id}/notify', [FarmerController::class, 'notify'])
+        ->middleware('role:admin');
 
     // Farm Plots
+    Route::get('/users', [UserController::class, 'index'])
+        ->middleware('role:admin');
+
     Route::get('/farm-plots', [FarmPlotController::class, 'index']);
     Route::post('/farm-plots', [FarmPlotController::class, 'store'])
         ->middleware('role:technician,admin');
     Route::get('/farm-plots/{id}', [FarmPlotController::class, 'show']);
+    Route::patch('/farm-plots/{id}', [FarmPlotController::class, 'update'])
+        ->middleware('role:admin,technician');
     Route::delete('/farm-plots/{id}', [FarmPlotController::class, 'destroy'])
         ->middleware('role:admin');
 

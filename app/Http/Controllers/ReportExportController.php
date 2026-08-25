@@ -23,6 +23,8 @@ class ReportExportController extends Controller
             'commodity' => $request->query('commodity'),
             'date_from' => $request->query('date_from'),
             'date_to' => $request->query('date_to'),
+            'search' => $request->query('search'),
+            'verification_status' => $request->query('verification_status'),
         ];
 
         [$headers, $rows] = match ($type) {
@@ -59,6 +61,27 @@ class ReportExportController extends Controller
 
         $rows = Farmer::withCount('farmPlots')
             ->when($f['barangay'], fn ($q) => $q->where('permanent_brgy', $f['barangay']))
+            ->when($f['search'] ?? null, function ($q, $term) {
+                $q->search($term);
+            })
+            ->when($f['verification_status'] ?? null, function ($q, $status) {
+                if (in_array($status, ['pending', 'approved', 'rts'], true)) {
+                    $q->where('verification_status', $status);
+                }
+            })
+            ->when($f['commodity'] ?? null, function ($q, $commodity) {
+                $key = strtolower((string) $commodity);
+                $q->whereHas('farmPlots', function ($plots) use ($key) {
+                    if (in_array($key, ['high-value', 'high-value crops', 'hvc'], true)) {
+                        $plots->where(function ($inner) {
+                            $inner->whereRaw('LOWER(commodity) like ?', ['%high-value%'])
+                                ->orWhereRaw('LOWER(commodity) like ?', ['%hvc%']);
+                        });
+                        return;
+                    }
+                    $plots->whereRaw('LOWER(commodity) = ?', [$key]);
+                });
+            })
             ->orderBy('surname')
             ->get()
             ->map(fn ($x) => [

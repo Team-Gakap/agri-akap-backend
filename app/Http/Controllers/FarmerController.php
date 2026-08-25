@@ -5,8 +5,10 @@ namespace App\Http\Controllers;
 use App\Imports\FarmersImport;
 use App\Models\Farmer;
 use App\Http\Requests\StoreFarmerRequest;
+use App\Http\Requests\UpdateFarmerRequest;
 use App\Services\FarmAreaBudgetService;
 use App\Services\SmsService;
+use App\Support\OfficialBarangays;
 use App\Traits\DecodesBase64Image;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -41,7 +43,15 @@ class FarmerController extends Controller
         $commodity = trim((string) $request->query('commodity', ''));
 
         $query = Farmer::withCount('farmPlots')
-            ->withSum('farmPlots as mapped_area_ha', 'size_ha');
+            ->withSum('farmPlots as mapped_area_ha', 'size_ha')
+            ->withCount([
+                'farmPlots as georef_plots_count' => function ($q) {
+                    $q->mapped();
+                },
+                'farmPlots as pending_geotag_count' => function ($q) {
+                    $q->pendingFieldGeotag();
+                },
+            ]);
 
         if (in_array($role, ['barangay_official', 'barangay'], true)) {
             $assigned = $user->assigned_barangay;
@@ -68,8 +78,43 @@ class FarmerController extends Controller
         // Barangay crop forms: only farmers with a matching farm-plot commodity
         if ($commodity !== '') {
             $query->whereHas('farmPlots', function ($q) use ($commodity) {
-                $q->whereRaw('LOWER(commodity) = ?', [Str::lower($commodity)]);
+                $key = Str::lower($commodity);
+                if (in_array($key, ['high-value', 'high-value crops', 'hvc'], true)) {
+                    $q->where(function ($inner) {
+                        $inner->whereRaw('LOWER(commodity) like ?', ['%high-value%'])
+                            ->orWhereRaw('LOWER(commodity) like ?', ['%hvc%']);
+                    });
+                    return;
+                }
+                $q->whereRaw('LOWER(commodity) = ?', [$key]);
             });
+        }
+
+        $verificationStatus = trim((string) $request->query('verification_status', ''));
+        if (in_array($verificationStatus, ['pending', 'approved', 'rts'], true)) {
+            $query->where('verification_status', $verificationStatus);
+        }
+
+        if ($request->boolean('duplicate')) {
+            $query->where('is_probable_duplicate', true);
+        }
+
+        if ($request->boolean('area_mismatch')) {
+            $query->whereRaw(
+                '(SELECT COALESCE(SUM(size_ha), 0) FROM farm_plots WHERE farm_plots.farmer_id = farmers.id AND farm_plots.deleted_at IS NULL) > COALESCE(farmers.total_farm_area_ha, 0) + 0.0001'
+            );
+        }
+
+        if ($request->has('georeferenced') && $request->query('georeferenced') !== '') {
+            if ($request->boolean('georeferenced')) {
+                $query->whereHas('farmPlots', fn ($q) => $q->mapped());
+            } else {
+                $query->whereDoesntHave('farmPlots', fn ($q) => $q->mapped());
+            }
+        }
+
+        if ($request->boolean('pending_geotag')) {
+            $query->whereHas('farmPlots', fn ($q) => $q->pendingFieldGeotag());
         }
 
         if ($searchQuery !== '') {
@@ -102,13 +147,10 @@ class FarmerController extends Controller
         $farmers = $query->orderBy('surname', 'asc')->paginate($perPage);
 
         $farmers->getCollection()->transform(function (Farmer $farmer) {
-            $mapped = (float) ($farmer->mapped_area_ha ?? 0);
-            $farmer->setAttribute('mapped_area_ha', $mapped);
-            $farmer->setAttribute('area_mismatch', $this->farmAreaBudget->isMismatch($farmer, $mapped));
-            $farmer->setAttribute(
-                'remaining_ha',
-                max(0.0, (float) ($farmer->total_farm_area_ha ?? 0) - $mapped)
-            );
+            $this->decorateFarmer($farmer);
+            // is_rffa_eligible loads farmPlots; drop them so binary POINT coords
+            // and full polygons are not dumped into the masterlist JSON.
+            $farmer->makeHidden(['farmPlots', 'farm_plots']);
 
             return $farmer;
         });
@@ -117,7 +159,7 @@ class FarmerController extends Controller
             'status' => 'success',
             'message' => 'Farmers registry retrieved.',
             'data' => $farmers,
-        ]);
+        ], 200, [], JSON_INVALID_UTF8_SUBSTITUTE);
     }
 
     /**
@@ -168,12 +210,13 @@ class FarmerController extends Controller
         $farmer->setAttribute('mapped_area_ha', $budget['mapped_area_ha']);
         $farmer->setAttribute('remaining_ha', $budget['remaining_ha']);
         $farmer->setAttribute('area_mismatch', $budget['area_mismatch']);
+        $this->decorateFarmer($farmer, $budget['mapped_area_ha']);
 
         return response()->json([
             'status' => 'success',
             'message' => 'Farmer profile retrieved.',
             'data' => $farmer,
-        ], 200);
+        ], 200, [], JSON_INVALID_UTF8_SUBSTITUTE);
     }
 
     /**
@@ -211,19 +254,25 @@ class FarmerController extends Controller
     }
 
     /**
-     * Return distinct barangay names for filter dropdowns.
+     * Return official Echague barangay names for filter and enrollment dropdowns.
+     * Pass ?with_farmers=1 to limit to barangays that already have registered farmers.
      */
-    public function barangays(): JsonResponse
+    public function barangays(Request $request): JsonResponse
     {
-        $barangays = Farmer::distinct()
-            ->orderBy('permanent_brgy')
-            ->pluck('permanent_brgy')
-            ->filter()
-            ->values();
+        $names = collect(OfficialBarangays::names());
+
+        if ($request->boolean('with_farmers')) {
+            $used = Farmer::query()
+                ->distinct()
+                ->orderBy('permanent_brgy')
+                ->pluck('permanent_brgy')
+                ->filter();
+            $names = $names->intersect($used)->values();
+        }
 
         return response()->json([
             'status' => 'success',
-            'data' => $barangays,
+            'data' => $names->values(),
         ]);
     }
 
@@ -319,7 +368,7 @@ class FarmerController extends Controller
             $farmer = Farmer::create($validatedData);
 
             foreach ($plots as $plotData) {
-                $farmer->farmPlots()->create($plotData);
+                $farmer->farmPlots()->create($this->enrollmentPlotAttributes($plotData));
             }
 
             DB::commit();
@@ -331,7 +380,7 @@ class FarmerController extends Controller
                 'status' => 'success',
                 'message' => 'Farmer and corresponding parcel logs enrolled successfully.',
                 'data' => $farmer->load('farmPlots'),
-            ], 201);
+            ], 201, [], JSON_INVALID_UTF8_SUBSTITUTE);
         } catch (\Exception $e) {
             DB::rollBack();
 
@@ -440,5 +489,185 @@ class FarmerController extends Controller
         } catch (\Throwable $e) {
             Log::warning('RTS SMS notification failed: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Update an enrolled farmer (admin). Nested plots are upserted when provided.
+     */
+    public function update(UpdateFarmerRequest $request, string $id): JsonResponse
+    {
+        $farmer = Farmer::findOrFail($id);
+        $validated = $request->validated();
+
+        DB::beginTransaction();
+        try {
+            if ($request->filled('photo_base64')) {
+                $path = $this->storeBase64Image($request->input('photo_base64'), 'farmer-photos');
+                if ($path) {
+                    $validated['photo_path'] = $path;
+                }
+            }
+            unset($validated['photo_base64']);
+
+            $plots = $validated['plots'] ?? null;
+            unset($validated['plots']);
+
+            if (is_array($plots)) {
+                $validated['total_farm_area_ha'] = $this->farmAreaBudget->quotaFromRegistrationPlots($plots);
+                foreach ($plots as $plotData) {
+                    $plotId = $plotData['id'] ?? null;
+                    $plotData = $this->enrollmentPlotAttributes($plotData);
+                    if ($plotId) {
+                        $plot = $farmer->farmPlots()->where('id', $plotId)->first();
+                        if ($plot) {
+                            $plot->update($plotData);
+                            continue;
+                        }
+                    }
+                    $farmer->farmPlots()->create($plotData);
+                }
+            }
+
+            $farmer->update($validated);
+            DB::commit();
+        } catch (\Exception $e) {
+            DB::rollBack();
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Could not update farmer record.',
+                'error' => app()->isLocal() ? $e->getMessage() : 'Please contact support.',
+            ], 500);
+        }
+
+        $farmer->refresh()->load('farmPlots');
+        $budget = $this->farmAreaBudget->summary($farmer);
+        $farmer->setAttribute('mapped_area_ha', $budget['mapped_area_ha']);
+        $farmer->setAttribute('remaining_ha', $budget['remaining_ha']);
+        $farmer->setAttribute('area_mismatch', $budget['area_mismatch']);
+        $this->decorateFarmer($farmer, $budget['mapped_area_ha']);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Farmer record updated.',
+            'data' => $farmer,
+        ], 200, [], JSON_INVALID_UTF8_SUBSTITUTE);
+    }
+
+    /**
+     * Soft-delete / archive a farmer (admin).
+     */
+    public function destroy(string $id): JsonResponse
+    {
+        $farmer = Farmer::findOrFail($id);
+        $farmer->delete();
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Farmer record archived.',
+            'data' => ['id' => $id],
+        ]);
+    }
+
+    /**
+     * Mark a farmer as document-verified (admin).
+     */
+    public function verify(string $id): JsonResponse
+    {
+        $farmer = Farmer::findOrFail($id);
+        $farmer->update([
+            'verification_status' => 'approved',
+            'rts_reason' => null,
+            'verified_at' => now(),
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Farmer marked as verified.',
+            'data' => $farmer->fresh(),
+        ]);
+    }
+
+    /**
+     * Send a one-off SMS to a single farmer (admin).
+     */
+    public function notify(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'message' => 'required|string|max:160',
+        ]);
+
+        $farmer = Farmer::findOrFail($id);
+        if (empty($farmer->mobile_number)) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'This farmer has no mobile number on file.',
+            ], 422);
+        }
+
+        $result = $this->sms->send($farmer->mobile_number, $validated['message']);
+
+        return response()->json([
+            'status' => $result['success'] ? 'success' : 'error',
+            'message' => $result['success']
+                ? 'SMS queued to the farmer.'
+                : 'SMS could not be sent. Check the gateway configuration.',
+            'data' => ['farmer_id' => $farmer->id],
+        ], $result['success'] ? 200 : 502);
+    }
+
+    private function decorateFarmer(Farmer $farmer, ?float $mappedHa = null): Farmer
+    {
+        $mapped = $mappedHa ?? (float) ($farmer->mapped_area_ha ?? 0);
+        $farmer->setAttribute('mapped_area_ha', $mapped);
+        $farmer->setAttribute('area_mismatch', $this->farmAreaBudget->isMismatch($farmer, $mapped));
+        $farmer->setAttribute(
+            'remaining_ha',
+            max(0.0, (float) ($farmer->total_farm_area_ha ?? 0) - $mapped)
+        );
+
+        $birth = $farmer->birthdate;
+        $farmer->setAttribute('is_senior', $birth ? $birth->age >= 60 : false);
+
+        if ($farmer->relationLoaded('farmPlots')) {
+            $geo = $farmer->farmPlots->contains(function ($plot) {
+                return $plot->geotag_status === 'mapped' || $plot->hasGeoTagEvidence();
+            });
+            $pending = $farmer->farmPlots->contains(function ($plot) {
+                return $plot->geotag_status === 'pending_field' && ! $plot->hasGeoTagEvidence();
+            });
+        } else {
+            $geo = ((int) ($farmer->georef_plots_count ?? 0)) > 0;
+            $pending = ((int) ($farmer->pending_geotag_count ?? 0)) > 0;
+        }
+        $farmer->setAttribute('is_georeferenced', $geo);
+        $farmer->setAttribute('pending_geotag', $pending);
+
+        return $farmer;
+    }
+
+    /**
+     * RSBSA Form 01-2024 enrollment payload only. GPS / GEOREF / geotag dispatch
+     * live on FarmPlotController and must not be written (or wiped) here.
+     */
+    private function enrollmentPlotAttributes(array $plotData): array
+    {
+        unset(
+            $plotData['id'],
+            $plotData['locating'],
+            $plotData['latitude'],
+            $plotData['longitude'],
+            $plotData['georef_id'],
+            $plotData['coordinates'],
+            $plotData['boundary_points'],
+            $plotData['geotag_status'],
+            $plotData['geotag_assigned_user_id'],
+            $plotData['geotag_assigned_name'],
+            $plotData['geotag_priority'],
+            $plotData['geotag_notes'],
+            $plotData['geotag_deadline']
+        );
+
+        return $plotData;
     }
 }

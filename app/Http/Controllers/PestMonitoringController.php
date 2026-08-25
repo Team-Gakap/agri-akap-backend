@@ -32,7 +32,7 @@ class PestMonitoringController extends Controller
             'crop_type' => ['nullable', 'string'],
             'date_from' => ['nullable', 'date'],
             'date_to' => ['nullable', 'date'],
-            'pending_field' => ['nullable', 'boolean'],
+            'pending_field' => ['nullable', 'in:true,false,1,0'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:500'],
         ]);
 
@@ -74,9 +74,11 @@ class PestMonitoringController extends Controller
             });
         }
 
+        $paginator = $query->paginate((int) ($validated['per_page'] ?? 200));
+
         return response()->json([
             'status' => 'success',
-            'data' => $query->paginate((int) ($validated['per_page'] ?? 200)),
+            'data' => $paginator,
         ]);
     }
 

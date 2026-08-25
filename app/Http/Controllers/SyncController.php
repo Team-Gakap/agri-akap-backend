@@ -481,6 +481,7 @@ class SyncController extends Controller
             'crop_planted' => 'nullable|string|max:100',
             'incident_type' => ['nullable', Rule::in(['none', 'pest', 'calamity'])],
             'non_productive_area_sqm' => 'nullable|numeric|min:0',
+            'farm_plot_id' => 'nullable|uuid',
         ]);
 
         if ($validator->fails()) {
@@ -513,7 +514,11 @@ class SyncController extends Controller
             }
 
             // 2. Spatial Overlap Rule — new boundary must not intersect any existing plot.
-            $collision = $this->polygonIntegrity->findOverlappingPlot($points);
+            $excludePlotId = $item['farm_plot_id'] ?? null;
+            $collision = $this->polygonIntegrity->findOverlappingPlot(
+                $points,
+                is_string($excludePlotId) ? $excludePlotId : null,
+            );
             if ($collision !== null) {
                 return $this->itemResult(
                     $clientId,
@@ -662,11 +667,21 @@ class SyncController extends Controller
         $farmer = Farmer::find($farmerId);
         $commodity = $item['crop_planted'] ?? 'Rice';
 
-        $existing = FarmPlot::query()
-            ->where('farmer_id', $farmerId)
-            ->whereRaw('LOWER(commodity) = ?', [strtolower((string) $commodity)])
-            ->orderBy('created_at')
-            ->first();
+        $existing = null;
+        $requestedPlotId = $item['farm_plot_id'] ?? null;
+        if (is_string($requestedPlotId) && $requestedPlotId !== '') {
+            $existing = FarmPlot::query()
+                ->where('id', $requestedPlotId)
+                ->where('farmer_id', $farmerId)
+                ->first();
+        }
+        if (! $existing) {
+            $existing = FarmPlot::query()
+                ->where('farmer_id', $farmerId)
+                ->whereRaw('LOWER(commodity) = ?', [strtolower((string) $commodity)])
+                ->orderBy('created_at')
+                ->first();
+        }
         if (! $existing) {
             $existing = FarmPlot::query()
                 ->where('farmer_id', $farmerId)
@@ -707,6 +722,7 @@ class SyncController extends Controller
                 'planting_start_month' => $item['planting_start_month'] ?? $existing->planting_start_month,
                 'planting_end_month' => $item['planting_end_month'] ?? $existing->planting_end_month,
                 'remarks' => $item['observations'] ?? $existing->remarks,
+                'geotag_status' => 'mapped',
             ]);
 
             DB::update(
@@ -743,6 +759,7 @@ class SyncController extends Controller
             'planting_start_month' => $item['planting_start_month'] ?? null,
             'planting_end_month' => $item['planting_end_month'] ?? null,
             'remarks' => $item['observations'] ?? null,
+            'geotag_status' => 'mapped',
             'created_at' => now(),
             'updated_at' => now(),
         ]);

@@ -34,6 +34,8 @@ class BroadcastController extends Controller
             'target_barangays' => 'nullable|array',
             'target_barangays.*' => 'string|max:128',
             'target_commodity' => 'nullable|string',
+            'farmer_ids' => 'nullable|array',
+            'farmer_ids.*' => 'uuid|exists:farmers,id',
         ]);
 
         $barangays = collect($validated['target_barangays'] ?? [])
@@ -52,6 +54,16 @@ class BroadcastController extends Controller
 
         // 1. Build the query to find target farmers
         $query = Farmer::whereNotNull('mobile_number');
+
+        $farmerIds = collect($validated['farmer_ids'] ?? [])
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        if (!empty($farmerIds)) {
+            $query->whereIn('id', $farmerIds);
+        }
 
         if (!empty($barangays)) {
             $query->whereIn('permanent_brgy', $barangays);
