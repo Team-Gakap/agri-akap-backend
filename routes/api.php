@@ -28,6 +28,9 @@ use Illuminate\Support\Facades\Route;
 // ── Public ────────────────────────────────────────────────────────────────────
 Route::post('/login', [AuthController::class, 'login']);
 
+// Cheap unauthenticated reachability probe for the mobile app's offline detector.
+Route::get('/ping', fn () => response()->json(['status' => 'ok']));
+
 // ── Authenticated ─────────────────────────────────────────────────────────────
 Route::middleware('auth:sanctum')->group(function () {
 

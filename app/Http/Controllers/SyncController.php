@@ -7,11 +7,14 @@ use App\Models\FarmPlot;
 use App\Models\Farmer;
 use App\Models\GeoTag;
 use App\Models\GeoTagRefusal;
+use App\Models\HarvestLog;
 use App\Models\PestMonitoring;
 use App\Models\PlantingLog;
+use App\Models\StandingCropLog;
 use App\Services\FarmAreaBudgetService;
 use App\Services\PolygonIntegrityService;
 use App\Services\SmsService;
+use App\Traits\AssertsPlotAreaCap;
 use App\Traits\DecodesBase64Image;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -24,9 +27,11 @@ use Illuminate\Validation\Rule;
 class SyncController extends Controller
 {
     use DecodesBase64Image;
+    use AssertsPlotAreaCap;
 
     public function __construct(
         private DistributionController $distributions,
+        private SubsidyController $subsidies,
         private SmsService $sms,
         private PolygonIntegrityService $polygonIntegrity,
         private FarmAreaBudgetService $farmAreaBudget,
@@ -53,7 +58,9 @@ class SyncController extends Controller
      *   "pest_reports": [...],
      *   "farm_profiles": [...],
      *   "geo_tags": [...],
-     *   "geo_tag_refusals": [...]
+     *   "geo_tag_refusals": [...],
+     *   "harvest_logs": [...],
+     *   "standing_crop_logs": [...]
      * }
      */
     public function bulkUpload(Request $request): JsonResponse
@@ -70,6 +77,8 @@ class SyncController extends Controller
             'field_distributions' => [],
             'geo_tags' => [],
             'geo_tag_refusals' => [],
+            'harvest_logs' => [],
+            'standing_crop_logs' => [],
         ];
 
         foreach ((array) $request->input('distributions', []) as $item) {
@@ -85,7 +94,9 @@ class SyncController extends Controller
             || $request->has('farm_profiles')
             || $request->has('field_distributions')
             || $request->has('geo_tags')
-            || $request->has('geo_tag_refusals');
+            || $request->has('geo_tag_refusals')
+            || $request->has('harvest_logs')
+            || $request->has('standing_crop_logs');
 
         if ($hasOfflineBatch) {
             try {
@@ -127,6 +138,18 @@ class SyncController extends Controller
                     }
                 }
 
+                if ($request->has('harvest_logs')) {
+                    foreach ((array) $request->input('harvest_logs', []) as $item) {
+                        $results['harvest_logs'][] = $this->syncHarvestLog($item, $technicianId, $deviceId);
+                    }
+                }
+
+                if ($request->has('standing_crop_logs')) {
+                    foreach ((array) $request->input('standing_crop_logs', []) as $item) {
+                        $results['standing_crop_logs'][] = $this->syncStandingCropLog($item, $technicianId, $deviceId);
+                    }
+                }
+
                 // Fail the batch if any offline item failed validation/insert.
                 $offlineFailed = collect([
                     ...$results['planting_logs'],
@@ -135,6 +158,8 @@ class SyncController extends Controller
                     ...$results['field_distributions'],
                     ...$results['geo_tags'],
                     ...$results['geo_tag_refusals'],
+                    ...$results['harvest_logs'],
+                    ...$results['standing_crop_logs'],
                 ])->contains(fn ($r) => ($r['outcome'] ?? '') === 'failed');
 
                 if ($offlineFailed) {
@@ -170,6 +195,12 @@ class SyncController extends Controller
     {
         $clientId = $item['client_id'] ?? ($item['id'] ?? null);
 
+        // Subsidy releases carry their own program table (tbl_subsidy_beneficiaries)
+        // and re-verification rules distinct from the legacy `programs` claim flow.
+        if (($item['source'] ?? 'program') === 'subsidy') {
+            return $this->syncSubsidyClaim($item, $clientId, $technicianId);
+        }
+
         $validator = Validator::make($item, [
             'farmer_id' => 'required|uuid|exists:farmers,id',
             'program_id' => 'required|uuid|exists:programs,id',
@@ -195,9 +226,41 @@ class SyncController extends Controller
         return $this->itemResult($clientId, $result['outcome'], $result['body']['message'] ?? '');
     }
 
+    /** Re-verifies eligibility/stock via SubsidyController::executeClaim() before accepting an offline claim. */
+    private function syncSubsidyClaim(array $item, ?string $clientId, string $technicianId): array
+    {
+        $validator = Validator::make($item, [
+            'program_id' => 'required|uuid|exists:subsidy_programs,id',
+            'farmer_id' => 'nullable|uuid|exists:farmers,id',
+            'rsbsa_no' => 'nullable|string|max:64',
+            'beneficiary_id' => 'nullable|uuid',
+        ]);
+
+        if ($validator->fails()) {
+            return $this->itemResult($clientId, 'failed', $validator->errors()->first());
+        }
+
+        try {
+            $result = $this->subsidies->executeClaim($item['program_id'], $item, $technicianId);
+
+            return $this->itemResult($clientId, $result['outcome'], $result['message']);
+        } catch (\Throwable $e) {
+            Log::error('Offline subsidy claim sync failed: '.$e->getMessage());
+
+            return $this->itemResult($clientId, 'failed', 'Server error while releasing subsidy.');
+        }
+    }
+
     private function syncAssessment(array $item, string $technicianId, ?string $deviceId): array
     {
         $clientId = $item['id'] ?? ($item['client_id'] ?? null);
+        $assessmentId = $item['assessment_id'] ?? null;
+
+        // Field-validating an assessment that already exists on the server
+        // (dispatched from the barangay queue): update it instead of inserting.
+        if ($assessmentId) {
+            return $this->syncAssessmentUpdate($assessmentId, $clientId, $item, $technicianId);
+        }
 
         $validator = Validator::make($item, [
             'farm_plot_id' => 'required|uuid|exists:farm_plots,id',
@@ -261,6 +324,69 @@ class SyncController extends Controller
         }
     }
 
+    /** Mirrors DamageAssessmentController::fieldValidate() for the offline queue. */
+    private function syncAssessmentUpdate(string $assessmentId, ?string $clientId, array $item, string $technicianId): array
+    {
+        $assessment = DamageAssessment::find($assessmentId);
+        if (! $assessment) {
+            return $this->itemResult($clientId, 'failed', 'Dispatched assessment no longer exists on the server.');
+        }
+
+        if ($assessment->status !== 'Pending') {
+            return $this->itemResult($clientId ?? $assessmentId, 'duplicate', 'Assessment already field-validated.');
+        }
+
+        if (empty($item['latitude']) || empty($item['longitude']) || empty($item['photo_base64'])) {
+            return $this->itemResult($clientId ?? $assessmentId, 'failed', 'GPS coordinates and a photo are required to field-validate.');
+        }
+
+        $pct = isset($item['damage_percentage']) ? (float) $item['damage_percentage'] : (float) $assessment->damage_percentage;
+        $areaPlanted = (float) ($assessment->area_planted_ha ?? 0);
+        $destroyedHa = isset($item['area_destroyed_ha']) && (float) $item['area_destroyed_ha'] > 0
+            ? (float) $item['area_destroyed_ha']
+            : $this->resolveSyncedDestroyedArea(
+                $assessment->farm_plot_id ? FarmPlot::find($assessment->farm_plot_id) : null,
+                ['area_destroyed_ha' => null, 'damage_percentage' => $pct, 'area_planted_ha' => $areaPlanted],
+            );
+
+        $plot = $assessment->farm_plot_id ? FarmPlot::find($assessment->farm_plot_id) : null;
+        $cap = $plot ? (float) $plot->size_ha : null;
+        if ($cap !== null && $areaPlanted > 0) {
+            $cap = min($cap, $areaPlanted);
+        }
+        if ($cap !== null && $destroyedHa > $cap + 0.0001) {
+            return $this->itemResult($clientId ?? $assessmentId, 'failed', 'Area damaged cannot exceed the farm plot size ('.$cap.' ha).');
+        }
+
+        try {
+            $path = $this->storeBase64Image($item['photo_base64'], 'assessments');
+            if ($path === null) {
+                return $this->itemResult($clientId ?? $assessmentId, 'failed', 'Photo evidence could not be decoded.');
+            }
+
+            $assessment->update([
+                'latitude' => $item['latitude'],
+                'longitude' => $item['longitude'],
+                'photo_evidence_path' => $path,
+                'technician_id' => $technicianId,
+                'area_destroyed_ha' => $destroyedHa,
+                'damage_percentage' => $pct,
+                'variety' => $item['variety'] ?? $assessment->variety,
+                'crop_stage' => $item['crop_stage'] ?? $assessment->crop_stage,
+                'estimated_value_lost' => $item['estimated_value_lost'] ?? $assessment->estimated_value_lost,
+                'status' => 'Verified',
+                'verified_by' => $technicianId,
+                'verified_at' => now(),
+            ]);
+
+            return $this->itemResult($clientId ?? $assessmentId, 'synced', 'Assessment field-validated.');
+        } catch (\Exception $e) {
+            Log::error('Assessment field-validate sync failed: '.$e->getMessage());
+
+            return $this->itemResult($clientId ?? $assessmentId, 'failed', 'Server error while updating assessment.');
+        }
+    }
+
     private function syncPlantingLog(array $item, string $technicianId, ?string $deviceId): array
     {
         $clientId = $item['client_id'] ?? ($item['id'] ?? null);
@@ -314,6 +440,104 @@ class SyncController extends Controller
         ]);
 
         return $this->itemResult($clientId ?? $log->id, 'synced', 'Planting log saved.');
+    }
+
+    private function syncHarvestLog(array $item, string $technicianId, ?string $deviceId): array
+    {
+        $clientId = $item['client_id'] ?? ($item['id'] ?? null);
+        $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null);
+
+        $validator = Validator::make([
+            ...$item,
+            'farmer_id' => $farmerId,
+        ], [
+            'farmer_id' => 'required|uuid|exists:farmers,id',
+            'crop_type' => 'required|string|max:64',
+            'variety' => 'required|string|max:128',
+            'area_harvested' => 'required|numeric|min:0',
+            'total_yield' => 'required|numeric|min:0',
+            'date_harvested' => 'required|date',
+        ]);
+
+        if ($validator->fails()) {
+            return $this->itemResult($clientId, 'failed', $validator->errors()->first());
+        }
+
+        $plotId = $item['farm_plot_id'] ?? null;
+        $areaError = $this->plotAreaExceedsCap($plotId, (float) $item['area_harvested']);
+        if ($areaError) {
+            return $this->itemResult($clientId, 'failed', $areaError);
+        }
+
+        if ($clientId && HarvestLog::where('client_id', $clientId)->exists()) {
+            return $this->itemResult($clientId, 'duplicate', 'Harvest log already synced.');
+        }
+
+        $farmer = Farmer::find($farmerId);
+
+        $log = HarvestLog::create([
+            'client_id' => $clientId,
+            'farmer_id' => $farmerId,
+            'farm_plot_id' => $plotId,
+            'technician_id' => $technicianId,
+            'crop_type' => $item['crop_type'],
+            'variety' => $item['variety'],
+            'area_harvested' => $item['area_harvested'],
+            'total_yield' => $item['total_yield'],
+            'yield_unit' => 'Metric Tons',
+            'date_harvested' => $item['date_harvested'],
+            'farm_location' => $item['farm_location'] ?? $farmer?->permanent_brgy,
+        ]);
+
+        return $this->itemResult($clientId ?? $log->id, 'synced', 'Harvest log saved.');
+    }
+
+    private function syncStandingCropLog(array $item, string $technicianId, ?string $deviceId): array
+    {
+        $clientId = $item['client_id'] ?? ($item['id'] ?? null);
+        $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null);
+
+        $validator = Validator::make([
+            ...$item,
+            'farmer_id' => $farmerId,
+        ], [
+            'farmer_id' => 'required|uuid|exists:farmers,id',
+            'crop_type' => 'required|string|max:64',
+            'variety' => 'required|string|max:128',
+            'area_ha' => 'required|numeric|min:0',
+            'est_harvest_date' => 'required|date',
+        ]);
+
+        if ($validator->fails()) {
+            return $this->itemResult($clientId, 'failed', $validator->errors()->first());
+        }
+
+        $plotId = $item['farm_plot_id'] ?? null;
+        $areaError = $this->plotAreaExceedsCap($plotId, (float) $item['area_ha']);
+        if ($areaError) {
+            return $this->itemResult($clientId, 'failed', $areaError);
+        }
+
+        if ($clientId && StandingCropLog::where('client_id', $clientId)->exists()) {
+            return $this->itemResult($clientId, 'duplicate', 'Standing crop log already synced.');
+        }
+
+        $farmer = Farmer::find($farmerId);
+
+        $log = StandingCropLog::create([
+            'client_id' => $clientId,
+            'farmer_id' => $farmerId,
+            'farm_plot_id' => $plotId,
+            'technician_id' => $technicianId,
+            'crop_type' => $item['crop_type'],
+            'variety' => $item['variety'],
+            'area_ha' => $item['area_ha'],
+            'growth_stage' => $item['growth_stage'] ?? 'Vegetative',
+            'est_harvest_date' => $item['est_harvest_date'],
+            'farm_location' => $item['farm_location'] ?? $farmer?->permanent_brgy,
+        ]);
+
+        return $this->itemResult($clientId ?? $log->id, 'synced', 'Standing crop log saved.');
     }
 
     private function syncPestReport(array $item, string $technicianId, ?string $deviceId): array

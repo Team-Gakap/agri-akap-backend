@@ -3,23 +3,35 @@
 namespace App\Http\Controllers;
 
 use App\Models\User;
+use App\Services\TurnstileService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
 {
     /**
      * Authenticate user, generate Sanctum token, and return RBAC profile.
      */
-    public function login(Request $request)
+    public function login(Request $request, TurnstileService $turnstile)
     {
         // 1. Validate incoming request
+        $captchaRequired = $turnstile->requiredFor($request);
+
         $request->validate([
             'email' => 'required|email',
             'password' => 'required',
             'device_name' => 'required|string|max:255', // e.g., "Technician's Galaxy Tab A"
+            'turnstile_token' => $captchaRequired ? 'required|string' : 'nullable|string',
+        ], [
+            'turnstile_token.required' => 'Please complete the captcha.',
         ]);
+
+        if ($captchaRequired && ! $turnstile->verify($request->input('turnstile_token'), $request->ip())) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Captcha verification failed. Please try again.',
+            ], 422);
+        }
 
         // 2. Fetch user
         $user = User::where('email', $request->email)->first();

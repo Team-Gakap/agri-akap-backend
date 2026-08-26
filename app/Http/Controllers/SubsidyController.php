@@ -534,41 +534,71 @@ class SubsidyController extends Controller
             'photo_proof_base64' => 'nullable|string',
         ]);
 
-        if (empty($validated['farmer_id']) && empty($validated['rsbsa_no']) && empty($validated['beneficiary_id'])) {
+        $result = $this->executeClaim($id, $validated, $request->user()?->id);
+
+        if ($result['outcome'] !== 'synced') {
             return response()->json([
                 'status' => 'error',
-                'message' => 'Provide a farmer ID, RSBSA number, or beneficiary ID.',
-            ], 422);
+                'message' => $result['message'],
+            ], $result['code'] ?? 422);
         }
 
-        $farmer = $this->resolveFarmer($validated['farmer_id'] ?? null, $validated['rsbsa_no'] ?? null);
+        return response()->json([
+            'status' => 'success',
+            'message' => $result['message'],
+            'data' => $result['data'],
+        ]);
+    }
 
-        $result = DB::transaction(function () use ($id, $validated, $farmer) {
-            $program = SubsidyProgram::where('id', $id)->lockForUpdate()->firstOrFail();
+    /**
+     * Core claim logic shared by the live `claim-farmer` endpoint and the
+     * offline `/sync/bulk` queue. Re-validates eligibility/stock at execution
+     * time so a stale offline claim is rejected — not silently accepted — if
+     * the farmer was already claimed or stock ran out in the meantime.
+     *
+     * @param  array{farmer_id?: ?string, rsbsa_no?: ?string, beneficiary_id?: ?string, photo_proof_base64?: ?string, claimed_at?: ?string}  $item
+     * @return array{outcome: 'synced'|'duplicate'|'failed', message: string, code?: int, data?: array}
+     */
+    public function executeClaim(string $programId, array $item, ?string $technicianId = null): array
+    {
+        if (empty($item['farmer_id']) && empty($item['rsbsa_no']) && empty($item['beneficiary_id'])) {
+            return ['outcome' => 'failed', 'code' => 422, 'message' => 'Provide a farmer ID, RSBSA number, or beneficiary ID.'];
+        }
+
+        $farmer = $this->resolveFarmer($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null);
+
+        $result = DB::transaction(function () use ($programId, $item, $farmer, $technicianId) {
+            $program = SubsidyProgram::where('id', $programId)->lockForUpdate()->first();
+
+            if (! $program) {
+                return ['error' => 'Subsidy program not found.', 'code' => 404, 'outcome' => 'failed'];
+            }
 
             if ($program->status !== 'Active') {
-                return ['error' => 'This subsidy program is not active.', 'code' => 400];
+                return ['error' => 'This subsidy program is not active.', 'code' => 400, 'outcome' => 'failed'];
             }
 
             $beneficiaryQuery = DB::table('tbl_subsidy_beneficiaries')
-                ->where('program_id', $id);
+                ->where('program_id', $programId);
 
-            if (! empty($validated['beneficiary_id'])) {
-                $beneficiaryQuery->where('id', $validated['beneficiary_id']);
+            if (! empty($item['beneficiary_id'])) {
+                $beneficiaryQuery->where('id', $item['beneficiary_id']);
             } elseif ($farmer?->rsbsa_no) {
                 $beneficiaryQuery->where('farmer_rsbsa_no', $farmer->rsbsa_no);
             } else {
-                return ['error' => 'Farmer is not on this program masterlist.', 'code' => 404];
+                return ['error' => 'Farmer is not on this program masterlist.', 'code' => 404, 'outcome' => 'failed'];
             }
 
             $beneficiary = $beneficiaryQuery->lockForUpdate()->first();
 
             if (! $beneficiary) {
-                return ['error' => 'This farmer is not on the masterlist for this program.', 'code' => 404];
+                return ['error' => 'This farmer is not on the masterlist for this program.', 'code' => 404, 'outcome' => 'failed'];
             }
 
             if ($beneficiary->status === 'Claimed') {
-                return ['error' => 'This farmer has already claimed their allocation for this program.', 'code' => 409];
+                // Idempotent: an offline device may replay a claim it already
+                // succeeded at online. Treat as resolved, not an error.
+                return ['error' => 'This farmer has already claimed their allocation for this program.', 'code' => 409, 'outcome' => 'duplicate'];
             }
 
             $allocation = $this->cashCappedAllocation($program, (int) $beneficiary->calculated_allocation);
@@ -577,20 +607,21 @@ class SubsidyController extends Controller
                 return [
                     'error' => "Insufficient stock. Only {$program->remaining_quantity} {$program->unit_of_measurement} remaining, but this farmer is allocated {$allocation}.",
                     'code' => 409,
+                    'outcome' => 'failed',
                 ];
             }
 
             $program->remaining_quantity -= $allocation;
             $program->save();
 
-            $photoPath = $this->storeBase64Image($validated['photo_proof_base64'] ?? null, 'subsidy-claims');
+            $photoPath = $this->storeBase64Image($item['photo_proof_base64'] ?? null, 'subsidy-claims');
 
             DB::table('tbl_subsidy_beneficiaries')
                 ->where('id', $beneficiary->id)
                 ->update([
                     'status' => 'Claimed',
-                    'claimed_at' => now(),
-                    'claimed_by' => auth()->id(),
+                    'claimed_at' => $item['claimed_at'] ?? now(),
+                    'claimed_by' => $technicianId ?? auth()->id(),
                     'photo_proof_path' => $photoPath,
                     'updated_at' => now(),
                 ]);
@@ -603,18 +634,15 @@ class SubsidyController extends Controller
         });
 
         if (isset($result['error'])) {
-            return response()->json([
-                'status' => 'error',
-                'message' => $result['error'],
-            ], $result['code']);
+            return ['outcome' => $result['outcome'], 'code' => $result['code'], 'message' => $result['error']];
         }
 
         $farmerName = $result['farmer']
             ? trim($result['farmer']->surname.', '.$result['farmer']->first_name)
             : ($result['beneficiary']->farmer_rsbsa_no ?? 'Farmer');
 
-        return response()->json([
-            'status' => 'success',
+        return [
+            'outcome' => 'synced',
             'message' => 'Subsidy released and stock updated.',
             'data' => [
                 'farmer_name' => $farmerName,
@@ -623,7 +651,7 @@ class SubsidyController extends Controller
                 'inventory_remaining' => (int) $result['program']->remaining_quantity,
                 'program' => $result['program'],
             ],
-        ]);
+        ];
     }
 
     private function resolveFarmer(?string $farmerId, ?string $rsbsaNo): ?Farmer

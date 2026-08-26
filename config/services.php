@@ -57,4 +57,19 @@ return [
         ],
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Cloudflare Turnstile
+    |--------------------------------------------------------------------------
+    | Site key lives on the frontend (VITE_TURNSTILE_SITE_KEY). Only the
+    | secret is used here to verify tokens against Cloudflare.
+    */
+    'turnstile' => [
+        'secret' => env('TURNSTILE_SECRET_KEY'),
+        'verify_url' => env(
+            'TURNSTILE_VERIFY_URL',
+            'https://challenges.cloudflare.com/turnstile/v0/siteverify'
+        ),
+    ],
+
 ];
