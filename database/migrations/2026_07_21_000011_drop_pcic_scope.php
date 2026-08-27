@@ -22,7 +22,9 @@ return new class extends Migration
 
         // Update status enum to LGU-only states.
         // Keep it compatible even if DB previously had Claimed.
-        DB::statement("ALTER TABLE damage_assessments MODIFY COLUMN status ENUM('Pending', 'Verified', 'Approved', 'Rejected') NOT NULL DEFAULT 'Pending'");
+        if (in_array(DB::getDriverName(), ['mysql', 'mariadb'], true)) {
+            DB::statement("ALTER TABLE damage_assessments MODIFY COLUMN status ENUM('Pending', 'Verified', 'Approved', 'Rejected') NOT NULL DEFAULT 'Pending'");
+        }
 
         Schema::table('damage_assessments', function (Blueprint $table) {
             if (Schema::hasColumn('damage_assessments', 'pcic_notice_filed_by')) {

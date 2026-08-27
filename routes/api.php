@@ -23,6 +23,8 @@ use App\Http\Controllers\HarvestLogController;
 use App\Http\Controllers\PestMonitoringController;
 use App\Http\Controllers\ExecutiveReportingController;
 use App\Http\Controllers\ReportsController;
+use App\Http\Controllers\StaffController;
+use App\Http\Controllers\SystemAuditLogController;
 use Illuminate\Support\Facades\Route;
 
 // ── Public ────────────────────────────────────────────────────────────────────
@@ -37,6 +39,25 @@ Route::middleware('auth:sanctum')->group(function () {
     // Auth
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/me', [AuthController::class, 'me']);
+    Route::post('/auth/change-password', [AuthController::class, 'changePassword']);
+
+    Route::get('/staff/summary', [StaffController::class, 'summary'])
+        ->middleware('role:admin');
+    Route::get('/staff', [StaffController::class, 'index'])
+        ->middleware('role:admin');
+    Route::post('/staff', [StaffController::class, 'store'])
+        ->middleware('role:admin');
+    Route::patch('/staff/{user}', [StaffController::class, 'update'])
+        ->middleware('role:admin');
+    Route::post('/staff/{user}/reset-password', [StaffController::class, 'resetPassword'])
+        ->middleware('role:admin');
+    Route::post('/staff/{user}/unlock', [StaffController::class, 'unlock'])
+        ->middleware('role:admin');
+    Route::post('/staff/{user}/revoke-sessions', [StaffController::class, 'revokeSessions'])
+        ->middleware('role:admin');
+
+    Route::get('/system/audit-logs', [SystemAuditLogController::class, 'index'])
+        ->middleware('role:super_admin');
 
     // Farmer Registry
     Route::get('/farmers', [FarmerController::class, 'index']);

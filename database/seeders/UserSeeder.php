@@ -13,6 +13,16 @@ class UserSeeder extends Seeder
      */
     public function run(): void
     {
+        User::updateOrCreate(
+            ['email' => 'superadmin@mao.com'],
+            [
+                'name' => 'System SuperAdmin',
+                'password' => Hash::make('password123'),
+                'role' => 'super_admin',
+                'is_active' => true,
+            ]
+        );
+
         // 1. Create the Default System Administrator
         User::updateOrCreate(
             ['email' => 'admin@mao.com'],

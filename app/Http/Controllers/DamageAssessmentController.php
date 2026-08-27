@@ -128,7 +128,7 @@ class DamageAssessmentController extends Controller
     public function store(Request $request): JsonResponse
     {
         $user = $request->user();
-        $isLedgerEncoder = in_array($user->role, ['barangay_official', 'admin'], true);
+        $isLedgerEncoder = $user->role === 'barangay_official' || $user->isMunicipalAdmin();
 
         $validated = $request->validate([
             'id' => 'nullable|uuid',

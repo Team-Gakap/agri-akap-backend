@@ -22,6 +22,10 @@ return new class extends Migration
             }
         });
 
+        if (! in_array(DB::getDriverName(), ['mysql', 'mariadb'], true)) {
+            return;
+        }
+
         if (! Schema::hasColumn('farm_plots', 'coordinates')) {
             // MariaDB / MySQL: X = longitude, Y = latitude
             DB::statement('ALTER TABLE farm_plots ADD COLUMN coordinates POINT NULL AFTER longitude');

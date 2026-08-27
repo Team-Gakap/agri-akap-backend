@@ -39,7 +39,7 @@ trait ResolvesEncodingBarangay
             return ['barangay' => $barangay];
         }
 
-        if ($user->role === 'admin') {
+        if ($user->isMunicipalAdmin()) {
             $barangay = $request->input('barangay_name');
             if (! $barangay) {
                 return response()->json([
@@ -71,7 +71,7 @@ trait ResolvesEncodingBarangay
 
         if ($user->role === 'barangay_official' && $user->assigned_barangay) {
             $query->whereHas($farmerRelation, fn ($f) => $f->where('permanent_brgy', $user->assigned_barangay));
-        } elseif ($user->role === 'admin' && ! empty($barangayParam)) {
+        } elseif ($user->isMunicipalAdmin() && ! empty($barangayParam)) {
             $query->whereHas($farmerRelation, fn ($f) => $f->where('permanent_brgy', $barangayParam));
         } elseif (! empty($barangayParam)) {
             $query->whereHas($farmerRelation, fn ($f) => $f->where('permanent_brgy', $barangayParam));

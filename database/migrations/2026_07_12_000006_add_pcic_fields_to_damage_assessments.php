@@ -23,7 +23,9 @@ return new class extends Migration
                 ->constrained('users')->nullOnDelete();
         });
 
-        DB::statement("ALTER TABLE damage_assessments MODIFY COLUMN status ENUM('Pending', 'Verified', 'Approved', 'Rejected', 'Claimed') NOT NULL DEFAULT 'Pending'");
+        if (in_array(DB::getDriverName(), ['mysql', 'mariadb'], true)) {
+            DB::statement("ALTER TABLE damage_assessments MODIFY COLUMN status ENUM('Pending', 'Verified', 'Approved', 'Rejected', 'Claimed') NOT NULL DEFAULT 'Pending'");
+        }
     }
 
     public function down(): void
@@ -39,6 +41,8 @@ return new class extends Migration
             ]);
         });
 
-        DB::statement("ALTER TABLE damage_assessments MODIFY COLUMN status ENUM('Pending', 'Verified', 'Approved', 'Rejected') NOT NULL DEFAULT 'Pending'");
+        if (in_array(DB::getDriverName(), ['mysql', 'mariadb'], true)) {
+            DB::statement("ALTER TABLE damage_assessments MODIFY COLUMN status ENUM('Pending', 'Verified', 'Approved', 'Rejected') NOT NULL DEFAULT 'Pending'");
+        }
     }
 };

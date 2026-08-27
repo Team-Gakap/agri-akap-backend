@@ -237,7 +237,7 @@ class FarmPlotController extends Controller
                     'message' => 'This parcel is not assigned to you for geo-tagging.',
                 ], 403);
             }
-        } elseif ($role !== 'admin') {
+        } elseif (! $user?->isMunicipalAdmin()) {
             return response()->json([
                 'status' => 'error',
                 'message' => 'You do not have permission to update farm plots.',

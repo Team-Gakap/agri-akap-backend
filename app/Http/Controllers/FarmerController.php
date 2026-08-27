@@ -62,7 +62,7 @@ class FarmerController extends Controller
                 ], 403);
             }
             $query->where('permanent_brgy', $assigned);
-        } elseif ($role === 'admin') {
+        } elseif ($user?->isMunicipalAdmin()) {
             // Full registry — optional barangay filter still allowed
             $query->when($barangay, fn ($q, $b) => $q->where('permanent_brgy', $b));
         } elseif ($role === 'technician') {

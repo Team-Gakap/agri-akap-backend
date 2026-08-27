@@ -37,7 +37,9 @@ return new class extends Migration
         });
 
         // Expand the status workflow states.
-        DB::statement("ALTER TABLE damage_assessments MODIFY COLUMN status ENUM('Pending', 'Verified', 'Approved', 'Rejected') NOT NULL DEFAULT 'Pending'");
+        if (in_array(DB::getDriverName(), ['mysql', 'mariadb'], true)) {
+            DB::statement("ALTER TABLE damage_assessments MODIFY COLUMN status ENUM('Pending', 'Verified', 'Approved', 'Rejected') NOT NULL DEFAULT 'Pending'");
+        }
     }
 
     public function down(): void
@@ -49,6 +51,8 @@ return new class extends Migration
             $table->dropColumn(['verified_at', 'approved_at', 'remarks', 'device_id']);
         });
 
-        DB::statement("ALTER TABLE damage_assessments MODIFY COLUMN status ENUM('Pending', 'Verified', 'Claimed') NOT NULL DEFAULT 'Pending'");
+        if (in_array(DB::getDriverName(), ['mysql', 'mariadb'], true)) {
+            DB::statement("ALTER TABLE damage_assessments MODIFY COLUMN status ENUM('Pending', 'Verified', 'Claimed') NOT NULL DEFAULT 'Pending'");
+        }
     }
 };

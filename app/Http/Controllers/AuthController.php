@@ -3,24 +3,25 @@
 namespace App\Http\Controllers;
 
 use App\Models\User;
+use App\Services\SystemAuditLogger;
 use App\Services\TurnstileService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 
 class AuthController extends Controller
 {
-    /**
-     * Authenticate user, generate Sanctum token, and return RBAC profile.
-     */
+    public function __construct(private SystemAuditLogger $audit)
+    {
+    }
+
     public function login(Request $request, TurnstileService $turnstile)
     {
-        // 1. Validate incoming request
         $captchaRequired = $turnstile->requiredFor($request);
 
         $request->validate([
             'email' => 'required|email',
             'password' => 'required',
-            'device_name' => 'required|string|max:255', // e.g., "Technician's Galaxy Tab A"
+            'device_name' => 'required|string|max:255',
             'turnstile_token' => $captchaRequired ? 'required|string' : 'nullable|string',
         ], [
             'turnstile_token.required' => 'Please complete the captcha.',
@@ -33,73 +34,138 @@ class AuthController extends Controller
             ], 422);
         }
 
-        // 2. Fetch user
         $user = User::where('email', $request->email)->first();
+        $passwordOk = $user && Hash::check($request->password, $user->password);
 
-        // 3. Verify credentials and active status
-        if (! $user || ! Hash::check($request->password, $user->password)) {
-            // We use a generic message to prevent user enumeration attacks
+        if (! $passwordOk) {
+            if ($user) {
+                $this->registerFailedAttempt($user, $request);
+            } else {
+                $this->audit->record('auth.login.failed', null, null, [
+                    'email' => $request->email,
+                ], $request);
+            }
+
             return response()->json([
                 'status' => 'error',
-                'message' => 'Invalid credentials.'
+                'message' => 'Invalid credentials.',
+            ], 401);
+        }
+
+        if ($user->isLocked()) {
+            $this->audit->record('auth.login.failed', null, $user, [
+                'reason' => 'locked',
+            ], $request);
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Invalid credentials.',
             ], 401);
         }
 
         if (! $user->is_active) {
+            $this->audit->record('auth.login.failed', null, $user, [
+                'reason' => 'deactivated',
+            ], $request);
+
             return response()->json([
                 'status' => 'error',
-                'message' => 'Account is deactivated. Please contact the MAO Administrator.'
+                'message' => 'Account is deactivated. Please contact the MAO Administrator.',
             ], 403);
         }
 
-        // 4. Generate Sanctum Token
-        // The token is hashed in the database; the plain text is only shown once here.
+        $user->forceFill([
+            'failed_login_attempts' => 0,
+            'locked_until' => null,
+        ])->save();
+
         $token = $user->createToken($request->device_name)->plainTextToken;
 
-        // 5. Return standardized API contract
+        $this->audit->record('auth.login.success', $user, $user, [
+            'device_name' => $request->device_name,
+        ], $request);
+
         return response()->json([
             'status' => 'success',
             'message' => 'Login successful.',
             'data' => [
                 'access_token' => $token,
-                'user' => [
-                    'id' => $user->id,
-                    'name' => $user->name,
-                    'email' => $user->email,
-                    'role' => $user->role, // Frontend uses this for RBAC routing
-                    'assigned_barangay' => $user->assigned_barangay,
-                ]
-            ]
+                'user' => $user->toAuthPayload(),
+            ],
         ], 200);
     }
 
-    /**
-     * Revoke the current access token.
-     */
     public function logout(Request $request)
     {
-        // Revokes the specific token that was used to authenticate the current request
         $request->user()->currentAccessToken()->delete();
 
         return response()->json([
             'status' => 'success',
             'message' => 'Logged out successfully.',
-            'data' => null
+            'data' => null,
         ], 200);
     }
 
-    /**
-     * Fetch the currently authenticated user's profile.
-     * Useful for restoring frontend session on app reload.
-     */
     public function me(Request $request)
     {
         return response()->json([
             'status' => 'success',
             'message' => 'Profile retrieved.',
             'data' => [
-                'user' => $request->user()->only(['id', 'name', 'email', 'role', 'assigned_barangay'])
-            ]
+                'user' => $request->user()->toAuthPayload(),
+            ],
         ], 200);
+    }
+
+    public function changePassword(Request $request)
+    {
+        $request->validate([
+            'current_password' => 'required|string',
+            'password' => 'required|string|min:8|confirmed|different:current_password',
+        ]);
+
+        /** @var User $user */
+        $user = $request->user();
+
+        if (! Hash::check($request->input('current_password'), $user->password)) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Current password is incorrect.',
+            ], 422);
+        }
+
+        $user->forceFill([
+            'password' => $request->input('password'),
+            'must_change_password' => false,
+            'password_changed_at' => now(),
+        ])->save();
+
+        $this->audit->record('password.changed', $user, $user, [], $request);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Password updated.',
+            'data' => [
+                'user' => $user->fresh()->toAuthPayload(),
+            ],
+        ]);
+    }
+
+    private function registerFailedAttempt(User $user, Request $request): void
+    {
+        $attempts = (int) $user->failed_login_attempts + 1;
+        $lockUntil = $attempts >= User::MAX_LOGIN_ATTEMPTS
+            ? now()->addMinutes(User::LOCKOUT_MINUTES)
+            : $user->locked_until;
+
+        $user->forceFill([
+            'failed_login_attempts' => $attempts,
+            'locked_until' => $lockUntil,
+        ])->save();
+
+        $this->audit->record('auth.login.failed', null, $user, [
+            'attempts' => $attempts,
+            'locked' => $user->isLocked(),
+        ], $request);
     }
 }

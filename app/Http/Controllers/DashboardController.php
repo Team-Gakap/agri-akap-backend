@@ -53,7 +53,7 @@ class DashboardController extends Controller
         $user = $request->user();
         $barangay = $user?->assigned_barangay;
 
-        if ($user?->role === 'admin' && $request->filled('barangay')) {
+        if ($user?->isMunicipalAdmin() && $request->filled('barangay')) {
             $barangay = $request->query('barangay');
         }
 
