@@ -16,8 +16,9 @@ use Laravel\Sanctum\HasApiTokens;
 #[Fillable([
     'name', 'email', 'password', 'role', 'assigned_barangay', 'is_active',
     'failed_login_attempts', 'locked_until', 'must_change_password', 'password_changed_at',
+    'mobile_number',
 ])]
-#[Hidden(['password', 'remember_token'])]
+#[Hidden(['password', 'remember_token', 'mfa_secret', 'mfa_recovery_codes'])]
 class User extends Authenticatable
 {
     public const ROLE_SUPER_ADMIN = 'super_admin';
@@ -41,6 +42,9 @@ class User extends Authenticatable
             'failed_login_attempts' => 'integer',
             'locked_until' => 'datetime',
             'password_changed_at' => 'datetime',
+            'mfa_secret' => 'encrypted',
+            'mfa_confirmed_at' => 'datetime',
+            'mfa_recovery_codes' => 'array',
         ];
     }
 

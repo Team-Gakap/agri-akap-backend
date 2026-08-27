@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\User;
+use App\Services\MfaService;
 use App\Services\SystemAuditLogger;
 use App\Services\TurnstileService;
 use Illuminate\Http\Request;
@@ -10,8 +11,10 @@ use Illuminate\Support\Facades\Hash;
 
 class AuthController extends Controller
 {
-    public function __construct(private SystemAuditLogger $audit)
-    {
+    public function __construct(
+        private SystemAuditLogger $audit,
+        private MfaService $mfa,
+    ) {
     }
 
     public function login(Request $request, TurnstileService $turnstile)
@@ -78,6 +81,16 @@ class AuthController extends Controller
             'failed_login_attempts' => 0,
             'locked_until' => null,
         ])->save();
+
+        if ($user->isSuperAdmin()) {
+            $challenge = $this->mfa->createChallenge($user, $request->device_name);
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Additional verification required.',
+                'data' => $this->mfa->challengePayload($user, $challenge),
+            ]);
+        }
 
         $token = $user->createToken($request->device_name)->plainTextToken;
 

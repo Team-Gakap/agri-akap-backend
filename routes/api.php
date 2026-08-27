@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\MfaController;
 use App\Http\Controllers\FarmerController;
 use App\Http\Controllers\FarmPlotController;
 use App\Http\Controllers\UserController;
@@ -29,6 +30,13 @@ use Illuminate\Support\Facades\Route;
 
 // ── Public ────────────────────────────────────────────────────────────────────
 Route::post('/login', [AuthController::class, 'login']);
+Route::post('/auth/login', [AuthController::class, 'login']);
+
+Route::get('/auth/mfa/setup-qr', [MfaController::class, 'setupQr']);
+Route::post('/auth/mfa/setup', [MfaController::class, 'setup']);
+Route::post('/auth/mfa/verify', [MfaController::class, 'verify']);
+Route::post('/auth/mfa/sms/send', [MfaController::class, 'sendSms']);
+Route::post('/auth/mfa/sms/verify', [MfaController::class, 'verifySms']);
 
 // Cheap unauthenticated reachability probe for the mobile app's offline detector.
 Route::get('/ping', fn () => response()->json(['status' => 'ok']));
@@ -40,6 +48,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/me', [AuthController::class, 'me']);
     Route::post('/auth/change-password', [AuthController::class, 'changePassword']);
+    Route::get('/auth/mfa/status', [MfaController::class, 'status'])
+        ->middleware('role:super_admin');
+    Route::post('/auth/mfa/recovery-codes', [MfaController::class, 'recoveryCodes'])
+        ->middleware('role:super_admin');
+    Route::patch('/auth/mfa/mobile', [MfaController::class, 'updateMobile'])
+        ->middleware('role:super_admin');
 
     Route::get('/staff/summary', [StaffController::class, 'summary'])
         ->middleware('role:admin');

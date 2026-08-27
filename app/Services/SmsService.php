@@ -13,6 +13,25 @@ use Illuminate\Support\Facades\Log;
 class SmsService
 {
     /**
+     * Whether a real gateway (or a local/testing mock) can deliver OTP SMS.
+     */
+    public function isConfigured(): bool
+    {
+        $provider = config('services.sms.provider', 'iprog');
+
+        if ($provider === 'semaphore') {
+            return filled(config('services.sms.semaphore.key'))
+                || app()->environment('local', 'testing');
+        }
+
+        if (filled(config('services.sms.iprog.token'))) {
+            return true;
+        }
+
+        return app()->environment('testing');
+    }
+
+    /**
      * Send one message to a single recipient.
      */
     public function send(string $number, string $message): array
@@ -53,6 +72,14 @@ class SmsService
     protected function sendViaIprog(string $csv, string $message, int $count): array
     {
         $config = config('services.sms.iprog');
+        $token = $config['token'] ?? '';
+
+        if (app()->environment('testing') || ($token === '' && app()->environment('local'))) {
+            Log::info('IPROG SMS mocked', ['recipients' => $count, 'message' => $message]);
+
+            return $this->result(true, 'iprog-mock', $count, ['mocked' => true, 'recipients' => $count]);
+        }
+
         $url = rtrim($config['base_url'] ?? 'https://sms.iprogtech.com', '/')
             . '/api/v1/sms_messages/send_bulk';
 

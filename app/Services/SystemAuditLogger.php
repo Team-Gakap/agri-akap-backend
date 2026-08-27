@@ -17,6 +17,14 @@ class SystemAuditLogger
         'temporary_password',
         'access_token',
         'token',
+        'mfa_secret',
+        'pending_secret',
+        'totp',
+        'code',
+        'recovery_code',
+        'recovery_codes',
+        'sms_code',
+        'sms_code_hash',
     ];
 
     public function record(

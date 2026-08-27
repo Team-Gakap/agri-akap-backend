@@ -11,7 +11,12 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->singleton(\PragmaRX\Google2FA\Google2FA::class, function () {
+            $google2fa = new \PragmaRX\Google2FA\Google2FA();
+            $google2fa->setWindow(1);
+
+            return $google2fa;
+        });
     }
 
     /**
