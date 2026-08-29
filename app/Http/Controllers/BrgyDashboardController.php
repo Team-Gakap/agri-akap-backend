@@ -36,13 +36,15 @@ class BrgyDashboardController extends Controller
             ], 403);
         }
 
-        $hourlyForecast = $this->hourlyForecast($barangay);
+        $weatherKey = $this->resolveWeatherBarangay($barangay);
+        $hourlyForecast = $this->hourlyForecast($weatherKey);
 
         return response()->json([
             'data' => [
+                'barangay' => $barangay,
                 'descriptive' => $this->descriptive($barangay),
                 'diagnostic' => [
-                    'current_weather' => $this->currentWeather($barangay),
+                    'current_weather' => $this->currentWeather($weatherKey, $hourlyForecast),
                     'crop_stages' => $this->cropStages($barangay),
                     'monthly_yield_damage' => $this->monthlyYieldDamage($barangay),
                 ],
@@ -220,11 +222,14 @@ class BrgyDashboardController extends Controller
             HarvestLog::query()
                 ->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay))
                 ->whereDate('date_harvested', '>=', $start->toDateString())
-                ->get(['date_harvested', 'total_yield'])
+                ->get(['date_harvested', 'total_yield', 'yield_unit'])
                 ->each(function (HarvestLog $row) use (&$buckets) {
                     $key = optional($row->date_harvested)?->format('Y-m');
                     if ($key && isset($buckets[$key])) {
-                        $buckets[$key]['harvest'] += (float) $row->total_yield;
+                        $buckets[$key]['harvest'] += $this->yieldToMetricTons(
+                            (float) $row->total_yield,
+                            (string) ($row->yield_unit ?? '')
+                        );
                     }
                 });
         }
@@ -259,14 +264,73 @@ class BrgyDashboardController extends Controller
             'month' => $row['month'],
             'key' => $row['key'],
             'harvest' => round($row['harvest'], 2),
+            'harvest_unit' => 'MT',
             'damage' => round($row['damage'], 2),
+            'damage_unit' => 'ha',
         ], $buckets));
     }
 
+    private function yieldToMetricTons(float $amount, string $unit): float
+    {
+        $normalized = strtolower(trim($unit));
+        if ($normalized === '' || str_contains($normalized, 'mt') || str_contains($normalized, 'ton')) {
+            return $amount;
+        }
+        if (str_contains($normalized, 'kg')) {
+            return $amount / 1000;
+        }
+
+        return $amount;
+    }
+
     /**
-     * Latest cached daily weather row for this barangay (today, else most recent).
+     * Match assigned_barangay to a weather-cache name (case-insensitive, then LIKE).
+     * Does not fall back to a different barangay — empty cache stays empty.
      */
-    private function currentWeather(string $barangay): ?array
+    private function resolveWeatherBarangay(string $barangay): string
+    {
+        $needle = trim($barangay);
+        if ($needle === '') {
+            return $needle;
+        }
+
+        $lower = mb_strtolower($needle);
+
+        $exact = WeatherCache::query()
+            ->whereRaw('LOWER(barangay_name) = ?', [$lower])
+            ->value('barangay_name');
+        if ($exact) {
+            return (string) $exact;
+        }
+
+        $hourlyExact = WeatherHourly::query()
+            ->whereRaw('LOWER(barangay_name) = ?', [$lower])
+            ->value('barangay_name');
+        if ($hourlyExact) {
+            return (string) $hourlyExact;
+        }
+
+        $like = WeatherCache::query()
+            ->where('barangay_name', 'like', '%'.$needle.'%')
+            ->value('barangay_name');
+        if ($like) {
+            return (string) $like;
+        }
+
+        $hourlyLike = WeatherHourly::query()
+            ->where('barangay_name', 'like', '%'.$needle.'%')
+            ->value('barangay_name');
+
+        return $hourlyLike ? (string) $hourlyLike : $needle;
+    }
+
+    /**
+     * Latest cached daily weather for this barangay (today, else most recent).
+     * If the daily cache is empty, synthesize a snapshot from the first hourly slot.
+     *
+     * @param  array<int, array<string, mixed>>  $hourlyForecast
+     */
+    private function currentWeather(string $barangay, array $hourlyForecast = []): ?array
     {
         $today = Carbon::now(WeatherService::TIMEZONE)->toDateString();
 
@@ -282,7 +346,30 @@ class BrgyDashboardController extends Controller
                 ->first();
         }
 
-        return $row ? $this->transformWeatherCache($row) : null;
+        if ($row) {
+            return $this->transformWeatherCache($row);
+        }
+
+        $hour = $hourlyForecast[0] ?? null;
+        if (! $hour) {
+            return null;
+        }
+
+        return [
+            'id' => $hour['id'] ?? null,
+            'barangay_name' => $hour['barangay_name'] ?? $barangay,
+            'forecast_date' => Carbon::parse($hour['forecast_datetime'] ?? 'now', WeatherService::TIMEZONE)->toDateString(),
+            'temperature_min' => $hour['temperature'] ?? null,
+            'temperature_max' => $hour['temperature'] ?? null,
+            'precipitation_probability' => $hour['precipitation_probability'] ?? null,
+            'soil_moisture' => null,
+            'evapotranspiration' => null,
+            'soil_moisture_28cm' => null,
+            'wind_speed_10m' => $hour['wind_speed'] ?? null,
+            'weather_code' => $hour['weather_code'] ?? null,
+            'status' => $hour['status'] ?? 'Unknown',
+            'from_hourly' => true,
+        ];
     }
 
     /**
@@ -306,45 +393,115 @@ class BrgyDashboardController extends Controller
     }
 
     /**
-     * Action Center alerts derived from the local forecast and unverified pest reports.
+     * Action Center alerts: unverified pests, pending calamity, and 6-hour weather flags.
      *
      * @param  array<int, array<string, mixed>>  $hourlyForecast
-     * @return array<int, array{type: string, message: string, action: string}>
+     * @return array<int, array<string, mixed>>
      */
     private function prescriptiveAlerts(string $barangay, array $hourlyForecast): array
     {
         $alerts = [];
 
-        $heavyRain = collect($hourlyForecast)->contains(
-            fn (array $hour) => (int) ($hour['precipitation_probability'] ?? 0) > 70
-        );
-
-        if ($heavyRain) {
+        $pest = $this->unverifiedPestQuery($barangay)->orderByDesc('created_at')->first();
+        if ($pest) {
+            $pestName = trim((string) ($pest->pest_name ?: 'pest incidence'));
             $alerts[] = [
-                'type' => 'weather',
-                'message' => 'Heavy rain expected. Delay fertilizer application.',
-                'action' => 'Draft SMS',
+                'type' => 'pest',
+                'severity' => 'critical',
+                'label' => 'Pest Report',
+                'message' => "New unverified pest incidence encoded ({$pestName}).",
+                'action' => 'Verify & Forward to MAO',
+                'route' => '/brgy/pest-monitoring',
             ];
         }
 
-        if ($this->hasUnverifiedPestReports($barangay)) {
+        $pendingDamage = DamageAssessment::query()
+            ->where('status', 'Pending')
+            ->where(function ($q) use ($barangay) {
+                $q->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay))
+                    ->orWhereHas('farmPlot', fn ($plot) => $plot->where('location_brgy', $barangay));
+            })
+            ->get(['calamity_name', 'area_destroyed_ha', 'area_planted_ha', 'damage_percentage']);
+
+        if ($pendingDamage->isNotEmpty()) {
+            $ha = $pendingDamage->sum(function (DamageAssessment $row) {
+                $destroyed = (float) ($row->area_destroyed_ha ?? 0);
+                if ($destroyed > 0) {
+                    return $destroyed;
+                }
+
+                return ((float) ($row->area_planted_ha ?? 0)) * ((float) ($row->damage_percentage ?? 0) / 100);
+            });
+            $event = $pendingDamage->pluck('calamity_name')->filter()->first() ?: 'Calamity';
+            $haLabel = number_format($ha, 1);
+
             $alerts[] = [
-                'type' => 'pest',
-                'message' => 'New unverified pest report.',
-                'action' => 'Review Report',
+                'type' => 'calamity',
+                'severity' => 'warning',
+                'label' => 'Calamity Loss',
+                'message' => "{$event} damage report pending ocular inspection ({$haLabel} ha).",
+                'action' => 'Track Inspection Status',
+                'route' => '/brgy/calamity-assessment',
+            ];
+        }
+
+        $rainHour = collect($hourlyForecast)->first(
+            fn (array $hour) => (int) ($hour['precipitation_probability'] ?? 0) >= 80
+        );
+        $sprayHour = collect($hourlyForecast)->first(function (array $hour) {
+            $rain = (int) ($hour['precipitation_probability'] ?? 0);
+            $wind = (float) ($hour['wind_speed'] ?? 0);
+
+            return ($rain >= 70 && $rain < 80) || $wind > 15;
+        });
+
+        if ($rainHour) {
+            $when = $this->formatHourLabel($rainHour['forecast_datetime'] ?? null);
+            $pct = (int) ($rainHour['precipitation_probability'] ?? 0);
+            $message = "{$pct}% rain probability at {$when}. Flood watch — delay field work and foliar spray.";
+            $alerts[] = [
+                'type' => 'weather',
+                'severity' => 'warning',
+                'label' => 'Weather Advisory',
+                'message' => $message,
+                'action' => 'Send Brgy SMS Advisory',
+                'route' => null,
+                'sms_message' => "MAO / Brgy {$barangay} Advisory: {$pct}% rain expected around {$when}. Delay spraying and secure inputs. Stay safe.",
+            ];
+        } elseif ($sprayHour) {
+            $when = $this->formatHourLabel($sprayHour['forecast_datetime'] ?? null);
+            $pct = (int) ($sprayHour['precipitation_probability'] ?? 0);
+            $wind = (float) ($sprayHour['wind_speed'] ?? 0);
+            $reason = $wind > 15
+                ? sprintf('Wind %.0f km/h — avoid spray drift.', $wind)
+                : "{$pct}% rain — delay scheduled foliar spray.";
+            $alerts[] = [
+                'type' => 'weather',
+                'severity' => 'info',
+                'label' => 'Weather Advisory',
+                'message' => "{$when}: {$reason}",
+                'action' => 'Send Brgy SMS Advisory',
+                'route' => null,
+                'sms_message' => "Brgy {$barangay} Advisory ({$when}): {$reason}",
             ];
         }
 
         return $alerts;
     }
 
-    /**
-     * Pest rows for this barangay that still need review.
-     * Uses status = Unverified when the column exists; otherwise pending field validation.
-     */
-    private function hasUnverifiedPestReports(string $barangay): bool
+    private function formatHourLabel(mixed $iso): string
     {
-        return $this->unverifiedPestQuery($barangay)->exists();
+        if (! is_string($iso) || $iso === '') {
+            return 'this window';
+        }
+
+        try {
+            return Carbon::parse($iso)
+                ->timezone(WeatherHourlyService::TIMEZONE)
+                ->format('g:i A');
+        } catch (\Throwable) {
+            return 'this window';
+        }
     }
 
     private function unverifiedPestQuery(string $barangay)

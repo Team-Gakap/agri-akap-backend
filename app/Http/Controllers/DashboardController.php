@@ -13,6 +13,7 @@ use App\Models\PestOutbreak;
 use App\Models\PlantingLog;
 use App\Models\Program;
 use App\Models\ReportWorkflow;
+use App\Models\StandingCropLog;
 use App\Models\WeatherCache;
 use App\Services\ReportAggregationService;
 use Carbon\Carbon;
@@ -20,6 +21,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 
 class DashboardController extends Controller
 {
@@ -106,8 +108,11 @@ class DashboardController extends Controller
     private function overviewDescriptive(): array
     {
         $totalFarmers = Farmer::query()->count();
+        $gender = $this->overviewFarmerGender();
         $hectares = $this->overviewPlotHectares();
         $totalHectares = $hectares['rice'] + $hectares['corn'] + $hectares['other'];
+        $subsidy = $this->overviewSubsidyProgress();
+        $threats = $this->overviewThreatIndex();
 
         $activeSubsidies = 0;
         if (Schema::hasTable('tbl_subsidy_beneficiaries')) {
@@ -134,18 +139,6 @@ class DashboardController extends Controller
                 ->count();
         }
 
-        $activeCalamities = 0;
-        if (Schema::hasTable('damage_assessments')) {
-            $activeCalamities = DamageAssessment::query()
-                ->where('status', 'Pending')
-                ->count();
-        }
-
-        $activePests = 0;
-        if (Schema::hasTable('pest_monitoring')) {
-            $activePests = $this->unverifiedPestQuery()->count();
-        }
-
         $pendingSubsidyReleases = 0;
         if (Schema::hasTable('tbl_subsidy_beneficiaries')) {
             $pendingSubsidyReleases += DB::table('tbl_subsidy_beneficiaries')
@@ -158,14 +151,189 @@ class DashboardController extends Controller
 
         return [
             'total_farmers' => $totalFarmers,
+            'farmers_male' => $gender['male'],
+            'farmers_female' => $gender['female'],
+            'rsbsa_verified' => $gender['rsbsa_verified'],
             'total_hectares' => round($totalHectares, 2),
             'rice_hectares' => round($hectares['rice'], 2),
             'corn_hectares' => round($hectares['corn'], 2),
+            'subsidy_claimed' => $subsidy['claimed'],
+            'subsidy_allocated' => $subsidy['allocated'],
+            'subsidy_percent' => $subsidy['percent'],
+            'subsidy_unit' => $subsidy['unit'],
             'active_subsidies' => $activeSubsidies,
-            'active_calamities' => $activeCalamities,
-            'active_pests' => $activePests,
+            'active_calamities' => $threats['active_calamities'],
+            'active_pests' => $threats['active_pests'],
+            'threat_total' => $threats['total'],
+            'threat_critical' => $threats['critical'],
+            'threat_moderate' => $threats['moderate'],
             'pending_subsidy_releases' => $pendingSubsidyReleases,
         ];
+    }
+
+    /**
+     * @return array{male: int, female: int, rsbsa_verified: int}
+     */
+    private function overviewFarmerGender(): array
+    {
+        $male = 0;
+        $female = 0;
+        $rsbsa = 0;
+
+        if (Schema::hasColumn('farmers', 'sex')) {
+            $male = Farmer::query()->where('sex', 'Male')->count();
+            $female = Farmer::query()->where('sex', 'Female')->count();
+        }
+
+        if (Schema::hasColumn('farmers', 'rsbsa_no')) {
+            $rsbsa = Farmer::query()
+                ->whereNotNull('rsbsa_no')
+                ->where('rsbsa_no', '!=', '')
+                ->count();
+        }
+
+        return [
+            'male' => $male,
+            'female' => $female,
+            'rsbsa_verified' => $rsbsa,
+        ];
+    }
+
+    /**
+     * Active-campaign liquidation: claimed vs allocated input units (sacks/bags).
+     *
+     * @return array{claimed: int, allocated: int, percent: int, unit: string}
+     */
+    private function overviewSubsidyProgress(): array
+    {
+        $out = [
+            'claimed' => 0,
+            'allocated' => 0,
+            'percent' => 0,
+            'unit' => 'Sacks',
+        ];
+
+        if (! Schema::hasTable('tbl_subsidy_beneficiaries')) {
+            return $out;
+        }
+
+        $query = DB::table('tbl_subsidy_beneficiaries');
+        if (Schema::hasTable('tbl_subsidy_programs')) {
+            $query->join(
+                'tbl_subsidy_programs',
+                'tbl_subsidy_programs.id',
+                '=',
+                'tbl_subsidy_beneficiaries.program_id'
+            )->where('tbl_subsidy_programs.status', 'Active');
+        }
+
+        $row = $query
+            ->selectRaw('COALESCE(SUM(tbl_subsidy_beneficiaries.calculated_allocation), 0) as allocated')
+            ->selectRaw("COALESCE(SUM(CASE WHEN tbl_subsidy_beneficiaries.status = 'Claimed' THEN tbl_subsidy_beneficiaries.calculated_allocation ELSE 0 END), 0) as claimed")
+            ->first();
+
+        $allocated = (int) ($row->allocated ?? 0);
+        $claimed = (int) ($row->claimed ?? 0);
+
+        if ($allocated === 0 && Schema::hasTable('tbl_subsidy_programs')) {
+            $fallback = DB::table('tbl_subsidy_beneficiaries')
+                ->selectRaw('COALESCE(SUM(calculated_allocation), 0) as allocated')
+                ->selectRaw("COALESCE(SUM(CASE WHEN status = 'Claimed' THEN calculated_allocation ELSE 0 END), 0) as claimed")
+                ->first();
+            $allocated = (int) ($fallback->allocated ?? 0);
+            $claimed = (int) ($fallback->claimed ?? 0);
+        }
+
+        $unit = 'Sacks';
+        if (Schema::hasTable('tbl_subsidy_programs') && Schema::hasColumn('tbl_subsidy_programs', 'unit_of_measurement')) {
+            $unitRow = DB::table('tbl_subsidy_programs')
+                ->when(
+                    Schema::hasColumn('tbl_subsidy_programs', 'status'),
+                    fn ($q) => $q->where('status', 'Active')
+                )
+                ->select('unit_of_measurement')
+                ->first();
+            if ($unitRow && $unitRow->unit_of_measurement) {
+                $unit = (string) $unitRow->unit_of_measurement;
+            }
+        }
+
+        $out['claimed'] = $claimed;
+        $out['allocated'] = $allocated;
+        $out['percent'] = $allocated > 0 ? (int) round(($claimed / $allocated) * 100) : 0;
+        $out['unit'] = $unit;
+
+        return $out;
+    }
+
+    /**
+     * Combined field-threat index: pest outbreaks + pending calamities, split by severity.
+     *
+     * @return array{active_pests: int, active_calamities: int, total: int, critical: int, moderate: int}
+     */
+    private function overviewThreatIndex(): array
+    {
+        $critical = 0;
+        $moderate = 0;
+        $activePests = 0;
+        $activeCalamities = 0;
+
+        if (Schema::hasTable('pest_outbreaks')) {
+            $outbreaks = PestOutbreak::query()
+                ->whereRaw('LOWER(status) = ?', ['active'])
+                ->get(['severity']);
+            $activePests += $outbreaks->count();
+            foreach ($outbreaks as $row) {
+                if ($this->isCriticalSeverity($row->severity)) {
+                    $critical++;
+                } else {
+                    $moderate++;
+                }
+            }
+        }
+
+        if (Schema::hasTable('pest_monitoring')) {
+            $monitoring = $this->unverifiedPestQuery()->get(['severity']);
+            $activePests += $monitoring->count();
+            foreach ($monitoring as $row) {
+                if ($this->isCriticalSeverity($row->severity)) {
+                    $critical++;
+                } else {
+                    $moderate++;
+                }
+            }
+        }
+
+        if (Schema::hasTable('damage_assessments')) {
+            $pending = DamageAssessment::query()
+                ->where('status', 'Pending')
+                ->get(['damage_percentage']);
+            $activeCalamities = $pending->count();
+            foreach ($pending as $row) {
+                if ((float) $row->damage_percentage >= 50) {
+                    $critical++;
+                } else {
+                    $moderate++;
+                }
+            }
+        }
+
+        return [
+            'active_pests' => $activePests,
+            'active_calamities' => $activeCalamities,
+            'total' => $critical + $moderate,
+            'critical' => $critical,
+            'moderate' => $moderate,
+        ];
+    }
+
+    private function isCriticalSeverity(?string $severity): bool
+    {
+        $value = strtolower(trim((string) $severity));
+
+        return str_contains($value, 'high')
+            || str_contains($value, 'critical')
+            || str_contains($value, 'severe');
     }
 
     /**
@@ -265,8 +433,67 @@ class DashboardController extends Controller
         return [
             'pest_breakdown' => $pestBreakdown,
             'crop_distribution' => $this->overviewCropDistribution(),
+            'crop_stages' => $this->overviewCropStages(),
             'distributions_by_barangay' => $this->overviewDistributionsByBarangay(),
         ];
+    }
+
+    /**
+     * Municipal crop-stage mix from standing-crop logs (fallback: pest monitoring).
+     *
+     * @return array<int, array{stage: string, key: string, total: int, percent: float}>
+     */
+    private function overviewCropStages(): array
+    {
+        $counts = [
+            'seedling' => 0,
+            'vegetative' => 0,
+            'reproductive' => 0,
+            'maturity' => 0,
+        ];
+
+        $tally = function (string $raw) use (&$counts): void {
+            $key = match (true) {
+                str_contains($raw, 'seed') => 'seedling',
+                str_contains($raw, 'veget') => 'vegetative',
+                str_contains($raw, 'reprod') => 'reproductive',
+                str_contains($raw, 'matur') => 'maturity',
+                default => null,
+            };
+            if ($key) {
+                $counts[$key]++;
+            }
+        };
+
+        if (Schema::hasTable('standing_crop_logs')) {
+            StandingCropLog::query()
+                ->pluck('growth_stage')
+                ->each(fn ($stage) => $tally(strtolower((string) $stage)));
+        }
+
+        if (array_sum($counts) === 0 && Schema::hasTable('pest_monitoring') && Schema::hasColumn('pest_monitoring', 'crop_stage')) {
+            PestMonitoring::query()
+                ->pluck('crop_stage')
+                ->each(fn ($stage) => $tally(strtolower((string) $stage)));
+        }
+
+        $total = array_sum($counts);
+        $labels = [
+            'seedling' => 'Seedling',
+            'vegetative' => 'Vegetative',
+            'reproductive' => 'Reproductive',
+            'maturity' => 'Maturity',
+        ];
+
+        return collect($counts)
+            ->map(fn ($n, $key) => [
+                'stage' => $labels[$key],
+                'key' => $key,
+                'total' => (int) $n,
+                'percent' => $total > 0 ? round(($n / $total) * 100, 1) : 0.0,
+            ])
+            ->values()
+            ->all();
     }
 
     /**
@@ -296,66 +523,97 @@ class DashboardController extends Controller
     }
 
     /**
-     * Recent (90-day) subsidy counts by farmer barangay.
-     * Combines tbl_subsidy_beneficiaries (current) and distributions (legacy).
+     * Subsidy liquidation % by barangay (claimed / allocated units).
+     * Prefer Active campaigns; fall back to all enrolled beneficiaries.
+     *
+     * @return array<int, array{barangay: string, claimed: int, allocated: int, percent: float, total: int}>
      */
     private function overviewDistributionsByBarangay(): array
     {
-        if (! Schema::hasTable('farmers')) {
+        if (! Schema::hasTable('farmers') || ! Schema::hasTable('tbl_subsidy_beneficiaries')) {
             return [];
         }
 
-        $since = Carbon::now()->subDays(90);
-        $rows = collect();
+        $query = DB::table('tbl_subsidy_beneficiaries')
+            ->join('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
+            ->whereNull('farmers.deleted_at');
 
-        if (Schema::hasTable('tbl_subsidy_beneficiaries')) {
-            $rows = $rows->concat(
-                DB::table('tbl_subsidy_beneficiaries')
-                    ->join('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
-                    ->whereNull('farmers.deleted_at')
-                    ->where('tbl_subsidy_beneficiaries.status', 'Claimed')
-                    ->where(function ($q) use ($since) {
-                        $q->where('tbl_subsidy_beneficiaries.claimed_at', '>=', $since)
-                            ->orWhere(function ($inner) use ($since) {
-                                $inner->whereNull('tbl_subsidy_beneficiaries.claimed_at')
-                                    ->where('tbl_subsidy_beneficiaries.updated_at', '>=', $since);
-                            });
-                    })
-                    ->selectRaw("COALESCE(NULLIF(farmers.permanent_brgy, ''), 'Unspecified') as barangay")
-                    ->selectRaw('COUNT(*) as total')
-                    ->groupByRaw('1')
-                    ->get()
-            );
+        if (Schema::hasTable('tbl_subsidy_programs')) {
+            $query->join(
+                'tbl_subsidy_programs',
+                'tbl_subsidy_programs.id',
+                '=',
+                'tbl_subsidy_beneficiaries.program_id'
+            )->where('tbl_subsidy_programs.status', 'Active');
         }
 
-        if (Schema::hasTable('distributions')) {
-            $rows = $rows->concat(
-                DB::table('distributions')
-                    ->join('farmers', 'distributions.farmer_id', '=', 'farmers.id')
-                    ->whereNull('farmers.deleted_at')
-                    ->where('distributions.created_at', '>=', $since)
-                    ->selectRaw("COALESCE(NULLIF(farmers.permanent_brgy, ''), 'Unspecified') as barangay")
-                    ->selectRaw('COUNT(*) as total')
-                    ->groupByRaw('1')
-                    ->get()
-            );
+        $rows = $query
+            ->selectRaw("COALESCE(NULLIF(farmers.permanent_brgy, ''), 'Unspecified') as barangay")
+            ->selectRaw('COALESCE(SUM(tbl_subsidy_beneficiaries.calculated_allocation), 0) as allocated')
+            ->selectRaw("COALESCE(SUM(CASE WHEN tbl_subsidy_beneficiaries.status = 'Claimed' THEN tbl_subsidy_beneficiaries.calculated_allocation ELSE 0 END), 0) as claimed")
+            ->groupByRaw('1')
+            ->get();
+
+        if ($rows->isEmpty() && Schema::hasTable('tbl_subsidy_programs')) {
+            $rows = DB::table('tbl_subsidy_beneficiaries')
+                ->join('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
+                ->whereNull('farmers.deleted_at')
+                ->selectRaw("COALESCE(NULLIF(farmers.permanent_brgy, ''), 'Unspecified') as barangay")
+                ->selectRaw('COALESCE(SUM(tbl_subsidy_beneficiaries.calculated_allocation), 0) as allocated')
+                ->selectRaw("COALESCE(SUM(CASE WHEN tbl_subsidy_beneficiaries.status = 'Claimed' THEN tbl_subsidy_beneficiaries.calculated_allocation ELSE 0 END), 0) as claimed")
+                ->groupByRaw('1')
+                ->get();
         }
 
         return $rows
-            ->groupBy('barangay')
-            ->map(fn ($group, $barangay) => [
-                'barangay' => $barangay,
-                'total' => $group->sum(fn ($row) => (int) $row->total),
-            ])
-            ->sortByDesc('total')
-            ->take(8)
+            ->map(function ($row) {
+                $allocated = (int) $row->allocated;
+                $claimed = (int) $row->claimed;
+
+                return [
+                    'barangay' => $row->barangay,
+                    'claimed' => $claimed,
+                    'allocated' => $allocated,
+                    'percent' => $allocated > 0 ? round(($claimed / $allocated) * 100, 1) : 0.0,
+                    'total' => $claimed,
+                ];
+            })
+            ->filter(fn ($row) => $row['allocated'] > 0)
+            ->sortByDesc('allocated')
+            ->take(5)
             ->values()
             ->all();
     }
 
     private function overviewPredictive(): array
     {
-        $harvestForecast = [];
+        $harvestForecast = $this->overviewHarvestForecast();
+        $weather = $this->overviewWeatherRisk();
+
+        return [
+            'season' => $this->currentCropSeason(),
+            'harvest_forecast' => $harvestForecast,
+            'weather_risk' => $weather['rows'],
+            'climate_summary' => $weather['summary'],
+        ];
+    }
+
+    /**
+     * Projected metric tons = active hectares × assumed municipal yield (kg/ha) / 1000.
+     * Prefers standing planting logs; falls back to registered farm-plot area.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function overviewHarvestForecast(): array
+    {
+        $buckets = [
+            'Rice' => ['area' => 0.0, 'fields' => 0, 'target_ha' => 0.0],
+            'Corn' => ['area' => 0.0, 'fields' => 0, 'target_ha' => 0.0],
+        ];
+
+        $plotHa = $this->overviewPlotHectares();
+        $buckets['Rice']['target_ha'] = $plotHa['rice'];
+        $buckets['Corn']['target_ha'] = $plotHa['corn'];
 
         if (Schema::hasTable('planting_logs')) {
             $rows = PlantingLog::query()
@@ -369,81 +627,158 @@ class DashboardController extends Controller
                 ->selectRaw('SUM(area_planted) as total_area_ha')
                 ->selectRaw('COUNT(*) as field_count')
                 ->groupBy('crop_type')
-                ->orderByDesc('total_area_ha')
                 ->get();
 
             foreach ($rows as $row) {
-                $yieldPerHa = $this->assumedYieldKgPerHa($row->crop_type);
-                $area = (float) $row->total_area_ha;
-                $harvestForecast[] = [
-                    'crop_type' => $row->crop_type ?: 'Unknown',
-                    'total_area_ha' => round($area, 2),
-                    'field_count' => (int) $row->field_count,
-                    'yield_kg_per_ha' => $yieldPerHa,
-                    'estimated_harvest_kg' => round($area * $yieldPerHa, 2),
-                ];
+                $key = match ($this->commodityBucket((string) $row->crop_type)) {
+                    'rice' => 'Rice',
+                    'corn' => 'Corn',
+                    default => null,
+                };
+                if (! $key) {
+                    continue;
+                }
+                $buckets[$key]['area'] += (float) $row->total_area_ha;
+                $buckets[$key]['fields'] += (int) $row->field_count;
             }
         }
 
-        $weatherRisk = [];
-        if (Schema::hasTable('tbl_weather_cache')) {
-            $etColumn = Schema::hasColumn('tbl_weather_cache', 'evapotranspiration')
-                ? 'evapotranspiration'
-                : (Schema::hasColumn('tbl_weather_cache', 'et0_fao_evapotranspiration')
-                    ? 'et0_fao_evapotranspiration'
-                    : null);
+        foreach (['Rice', 'Corn'] as $crop) {
+            if ($buckets[$crop]['area'] <= 0 && $buckets[$crop]['target_ha'] > 0) {
+                $buckets[$crop]['area'] = $buckets[$crop]['target_ha'];
+            }
+        }
 
-            $query = WeatherCache::query()
-                ->whereDate('forecast_date', '>=', Carbon::today())
-                ->whereDate('forecast_date', '<=', Carbon::today()->addDays(3))
-                ->where(function ($q) use ($etColumn) {
-                    $q->where('precipitation_probability', '>', 80);
-                    if ($etColumn) {
-                        $q->orWhere($etColumn, '>', 5);
-                    }
-                });
+        $forecast = [];
+        foreach ($buckets as $crop => $row) {
+            $area = (float) $row['area'];
+            $targetHa = (float) $row['target_ha'];
+            if ($area <= 0 && $targetHa <= 0) {
+                continue;
+            }
+            $yieldPerHa = $this->assumedYieldKgPerHa($crop);
+            $kg = $area * $yieldPerHa;
+            $targetKg = ($targetHa > 0 ? $targetHa : $area) * $yieldPerHa;
 
-            $select = [
-                'barangay_name',
-                DB::raw('MAX(precipitation_probability) as max_precip'),
+            $forecast[] = [
+                'crop_type' => $crop,
+                'total_area_ha' => round($area, 2),
+                'field_count' => (int) $row['fields'],
+                'yield_kg_per_ha' => $yieldPerHa,
+                'estimated_harvest_kg' => round($kg, 2),
+                'estimated_harvest_mt' => round($kg / 1000, 2),
+                'season_target_mt' => round($targetKg / 1000, 2),
             ];
-            if ($etColumn) {
-                $select[] = DB::raw("MAX({$etColumn}) as max_et0");
+        }
+
+        return $forecast;
+    }
+
+    private function currentCropSeason(): string
+    {
+        $month = (int) Carbon::now()->month;
+
+        return ($month >= 5 && $month <= 10) ? 'Wet' : 'Dry';
+    }
+
+    /**
+     * 72-hour Open-Meteo cache flags: flood/lodging (precip ≥ 80%) and spray-drift (wind > 15 km/h).
+     *
+     * @return array{rows: array<int, array<string, mixed>>, summary: array<string, int>}
+     */
+    private function overviewWeatherRisk(): array
+    {
+        $weatherRisk = [];
+        $highRain = 0;
+        $highWind = 0;
+
+        if (! Schema::hasTable('tbl_weather_cache')) {
+            return [
+                'rows' => [],
+                'summary' => [
+                    'high_rain_barangays' => 0,
+                    'high_wind_barangays' => 0,
+                    'horizon_hours' => 72,
+                ],
+            ];
+        }
+
+        $etColumn = Schema::hasColumn('tbl_weather_cache', 'evapotranspiration')
+            ? 'evapotranspiration'
+            : (Schema::hasColumn('tbl_weather_cache', 'et0_fao_evapotranspiration')
+                ? 'et0_fao_evapotranspiration'
+                : null);
+        $hasWind = Schema::hasColumn('tbl_weather_cache', 'wind_speed_10m');
+
+        $query = WeatherCache::query()
+            ->whereDate('forecast_date', '>=', Carbon::today())
+            ->whereDate('forecast_date', '<=', Carbon::today()->addDays(3))
+            ->where(function ($q) use ($etColumn, $hasWind) {
+                $q->where('precipitation_probability', '>=', 80);
+                if ($etColumn) {
+                    $q->orWhere($etColumn, '>', 5);
+                }
+                if ($hasWind) {
+                    $q->orWhere('wind_speed_10m', '>', 15);
+                }
+            });
+
+        $select = [
+            'barangay_name',
+            DB::raw('MAX(precipitation_probability) as max_precip'),
+        ];
+        if ($etColumn) {
+            $select[] = DB::raw("MAX({$etColumn}) as max_et0");
+        }
+        if ($hasWind) {
+            $select[] = DB::raw('MAX(wind_speed_10m) as max_wind');
+        }
+
+        $weatherRows = $query
+            ->select($select)
+            ->groupBy('barangay_name')
+            ->orderByDesc('max_precip')
+            ->get();
+
+        foreach ($weatherRows as $w) {
+            $precip = (int) ($w->max_precip ?? 0);
+            $et0 = (float) ($w->max_et0 ?? 0);
+            $wind = (float) ($w->max_wind ?? 0);
+            $risks = [];
+            if ($precip >= 80) {
+                $risks[] = 'Flood Risk';
+                $highRain++;
+            }
+            if ($hasWind && $wind > 15) {
+                $risks[] = 'Spray Drift';
+                $highWind++;
+            }
+            if ($etColumn && $et0 > 5) {
+                $risks[] = 'Drought Risk';
+            }
+            if (! $risks) {
+                continue;
             }
 
-            $weatherRows = $query
-                ->select($select)
-                ->groupBy('barangay_name')
-                ->orderByDesc('max_precip')
-                ->get();
+            $primary = $precip >= 80 ? 'Flood Risk' : ($wind > 15 ? 'Spray Drift' : 'Drought Risk');
 
-            foreach ($weatherRows as $w) {
-                $precip = (int) ($w->max_precip ?? 0);
-                $et0 = (float) ($w->max_et0 ?? 0);
-                $risks = [];
-                if ($precip > 80) {
-                    $risks[] = 'Flood Risk';
-                }
-                if ($etColumn && $et0 > 5) {
-                    $risks[] = 'Drought Risk';
-                }
-                if (! $risks) {
-                    continue;
-                }
-
-                $weatherRisk[] = [
-                    'barangay' => $w->barangay_name,
-                    'precipitation_probability' => $precip,
-                    'et0' => $etColumn ? round($et0, 3) : null,
-                    'risks' => $risks,
-                    'primary_risk' => $precip > 80 ? 'Flood Risk' : 'Drought Risk',
-                ];
-            }
+            $weatherRisk[] = [
+                'barangay' => $w->barangay_name,
+                'precipitation_probability' => $precip,
+                'wind_speed_kmh' => $hasWind ? round($wind, 1) : null,
+                'et0' => $etColumn ? round($et0, 3) : null,
+                'risks' => $risks,
+                'primary_risk' => $primary,
+            ];
         }
 
         return [
-            'harvest_forecast' => $harvestForecast,
-            'weather_risk' => $weatherRisk,
+            'rows' => $weatherRisk,
+            'summary' => [
+                'high_rain_barangays' => $highRain,
+                'high_wind_barangays' => $highWind,
+                'horizon_hours' => 72,
+            ],
         ];
     }
 
@@ -457,47 +792,124 @@ class DashboardController extends Controller
         foreach ($predictive['weather_risk'] as $risk) {
             $barangay = $risk['barangay'];
             $risks = $risk['risks'] ?? [];
+            $precip = (int) ($risk['precipitation_probability'] ?? 0);
+            $wind = (float) ($risk['wind_speed_kmh'] ?? 0);
 
             if (in_array('Flood Risk', $risks, true)) {
-                $alerts[] = [
+                $recommendation = 'Recommend early drainage and delay fertilizer top-dress until floodwater recedes.';
+                $alerts[] = $this->makeAlert([
                     'type' => 'weather_alert',
+                    'severity' => $precip >= 90 ? 'critical' : 'warning',
                     'barangay' => $barangay,
-                    'message' => "High Flood Risk in {$barangay}. Recommend buffer seed allocation and SMS warning.",
-                ];
+                    'threat_label' => 'High Lodging Risk',
+                    'crop' => 'Rice',
+                    'recommendation' => $recommendation,
+                    'message' => "High lodging/flood risk in {$barangay} (rain {$precip}%). {$recommendation}",
+                ]);
+            }
+
+            if (in_array('Spray Drift', $risks, true)) {
+                $recommendation = sprintf(
+                    'Avoid spray drift — delay chemical spraying (wind %.0f km/h).',
+                    $wind
+                );
+                $alerts[] = $this->makeAlert([
+                    'type' => 'weather_alert',
+                    'severity' => 'warning',
+                    'barangay' => $barangay,
+                    'threat_label' => 'Spray Drift',
+                    'crop' => null,
+                    'recommendation' => $recommendation,
+                    'message' => "High wind in {$barangay} ({$wind} km/h). {$recommendation}",
+                ]);
             }
 
             if (in_array('Drought Risk', $risks, true)) {
-                $alerts[] = [
+                $recommendation = 'Recommend irrigation / mulching advisory and staggered watering.';
+                $alerts[] = $this->makeAlert([
                     'type' => 'weather_alert',
+                    'severity' => 'warning',
                     'barangay' => $barangay,
-                    'message' => "High Drought Risk in {$barangay} (elevated ET0). Recommend irrigation advisory and SMS warning.",
-                ];
+                    'threat_label' => 'Drought Stress',
+                    'crop' => null,
+                    'recommendation' => $recommendation,
+                    'message' => "High drought risk in {$barangay} (elevated ET0). {$recommendation}",
+                ]);
             }
         }
 
         foreach ($predictive['harvest_forecast'] as $crop) {
             if (($crop['total_area_ha'] ?? 0) >= 50) {
-                $alerts[] = [
+                $mt = $crop['estimated_harvest_mt'] ?? round(($crop['estimated_harvest_kg'] ?? 0) / 1000, 2);
+                $alerts[] = $this->makeAlert([
                     'type' => 'harvest_readiness',
+                    'severity' => 'warning',
                     'barangay' => null,
+                    'threat_label' => 'Harvest Logistics',
+                    'crop' => $crop['crop_type'] ?? null,
+                    'recommendation' => sprintf(
+                        'Stage post-harvest logistics for ~%s MT projected %s yield.',
+                        number_format((float) $mt, 1),
+                        $crop['crop_type']
+                    ),
                     'message' => sprintf(
-                        'Large active %s area (%.1f ha). Recommend staging post-harvest logistics for ~%s kg projected yield.',
+                        'Large active %s area (%.1f ha). Recommend staging post-harvest logistics for ~%s MT projected yield.',
                         $crop['crop_type'],
                         $crop['total_area_ha'],
-                        number_format($crop['estimated_harvest_kg'])
+                        number_format((float) $mt, 1)
                     ),
-                ];
+                ]);
             }
         }
 
+        $rank = ['critical' => 0, 'warning' => 1];
+        usort($alerts, function ($a, $b) use ($rank) {
+            return ($rank[$a['severity'] ?? 'warning'] ?? 2) <=> ($rank[$b['severity'] ?? 'warning'] ?? 2);
+        });
+
         return [
-            'alerts' => $alerts,
+            'alerts' => array_values($alerts),
         ];
     }
 
     /**
-     * Critical, actionable alerts for currently Active pest outbreaks.
-     * Kept intentionally short (top 5, most recent) to avoid noise.
+     * @param  array<string, mixed>  $alert
+     * @return array<string, mixed>
+     */
+    private function makeAlert(array $alert): array
+    {
+        $barangay = $alert['barangay'] ?? null;
+        $recommendation = $alert['recommendation'] ?? '';
+        $message = $alert['message'] ?? $recommendation;
+
+        return [
+            'type' => $alert['type'] ?? 'advisory',
+            'severity' => $alert['severity'] ?? 'warning',
+            'barangay' => $barangay,
+            'threat_label' => $alert['threat_label'] ?? 'Advisory',
+            'crop' => $alert['crop'] ?? null,
+            'pest_name' => $alert['pest_name'] ?? null,
+            'recommendation' => $recommendation,
+            'message' => $message,
+            'sms_message' => $alert['sms_message'] ?? $this->composeSmsMessage($alert),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $alert
+     */
+    private function composeSmsMessage(array $alert): string
+    {
+        $brgy = $alert['barangay'] ?: 'Echague';
+        $label = $alert['threat_label'] ?? 'Advisory';
+        $crop = $alert['crop'] ? " ({$alert['crop']})" : '';
+        $rec = $alert['recommendation'] ?? $alert['message'] ?? '';
+
+        return Str::limit("MAO Echague Advisory: {$label}{$crop} in {$brgy}. {$rec}", 459, '');
+    }
+
+    /**
+     * Actionable alerts for currently Active pest outbreaks (compact triage feed).
      */
     private function overviewPestAlerts(): array
     {
@@ -508,33 +920,44 @@ class DashboardController extends Controller
                 ->whereRaw('LOWER(status) = ?', ['active'])
                 ->with('farmPlot:id,location_brgy,commodity')
                 ->orderByDesc('date_spotted')
-                ->limit(5)
+                ->limit(8)
                 ->get()
                 ->map(function ($p) {
                     $brgy = optional($p->farmPlot)->location_brgy;
                     $commodity = optional($p->farmPlot)->commodity;
+                    $severity = $this->isCriticalSeverity($p->severity) ? 'critical' : 'warning';
+                    $recommendation = (Schema::hasColumn('pest_outbreaks', 'recommended_intervention')
+                        ? $p->recommended_intervention
+                        : null)
+                        ?: $this->shortIntervention((string) $p->pest_name, (string) $p->severity);
 
-                    return [
+                    return $this->makeAlert([
                         'type' => 'pest_outbreak',
+                        'severity' => $severity,
                         'barangay' => $brgy,
+                        'threat_label' => $p->pest_name ?: 'Pest Outbreak',
+                        'crop' => $commodity,
+                        'pest_name' => $p->pest_name,
+                        'recommendation' => $recommendation,
                         'message' => sprintf(
-                            'Active %s outbreak (%s severity) in %s%s. Recommend field validation and targeted spray advisory.',
-                            $p->pest_name ?: 'pest',
+                            '%s (%s severity) in %s%s. %s',
+                            $p->pest_name ?: 'Pest outbreak',
                             $p->severity ?: 'unspecified',
                             $brgy ?: 'an unlisted barangay',
-                            $commodity ? " ({$commodity})" : ''
+                            $commodity ? " ({$commodity})" : '',
+                            $recommendation
                         ),
-                    ];
+                    ]);
                 })
                 ->values()
                 ->all();
         }
 
-        if (count($alerts) >= 5 || ! Schema::hasTable('pest_monitoring')) {
+        if (count($alerts) >= 8 || ! Schema::hasTable('pest_monitoring')) {
             return $alerts;
         }
 
-        $remaining = 5 - count($alerts);
+        $remaining = 8 - count($alerts);
         $monitoringQuery = PestMonitoring::query()
             ->with([
                 'farmer:id,permanent_brgy',
@@ -559,22 +982,60 @@ class DashboardController extends Controller
                 $brgy = optional($p->farmPlot)->location_brgy
                     ?? optional($p->farmer)->permanent_brgy
                     ?? $p->farm_location;
+                $crop = $p->crop ?? optional($p->farmPlot)->commodity;
+                $severity = $this->isCriticalSeverity($p->severity) ? 'critical' : 'warning';
+                $recommendation = $p->advisory
+                    ?: $this->shortIntervention((string) $p->pest_name, (string) $p->severity);
 
-                return [
+                return $this->makeAlert([
                     'type' => 'pest_outbreak',
+                    'severity' => $severity,
                     'barangay' => $brgy,
+                    'threat_label' => $p->pest_name ?: 'Pest Outbreak',
+                    'crop' => $crop,
+                    'pest_name' => $p->pest_name,
+                    'recommendation' => $recommendation,
                     'message' => sprintf(
-                        'Encoded %s report (%s severity) in %s%s. Recommend field validation and targeted spray advisory.',
-                        $p->pest_name ?: 'pest',
+                        '%s (%s severity) in %s%s. %s',
+                        $p->pest_name ?: 'Pest report',
                         $p->severity ?: 'unspecified',
                         $brgy ?: 'an unlisted barangay',
-                        $p->crop ? " ({$p->crop})" : ''
+                        $crop ? " ({$crop})" : '',
+                        $recommendation
                     ),
-                ];
+                ]);
             })
             ->all();
 
         return array_values(array_merge($alerts, $monitoring));
+    }
+
+    private function shortIntervention(string $pestName, string $severity): string
+    {
+        $full = $this->resolvePestIntervention($pestName, $severity);
+        $clause = trim(explode(';', $full)[0]);
+
+        return $clause !== '' ? $clause : $full;
+    }
+
+    private function resolvePestIntervention(string $pestName, string $severity): string
+    {
+        $interventions = config('pest_guidelines.interventions', []);
+        $normalized = Str::lower(trim($pestName));
+
+        $match = collect($interventions)
+            ->first(fn ($text, $label) => Str::lower((string) $label) === $normalized);
+
+        $recommendation = $match ?? config('pest_guidelines.default', 'Coordinate with the assigned MAO technician for a site-specific countermeasure.');
+
+        if (in_array($severity, ['High', 'Critical'], true) || $this->isCriticalSeverity($severity)) {
+            $escalation = config('pest_guidelines.escalation');
+            if ($escalation) {
+                $recommendation .= ' '.$escalation;
+            }
+        }
+
+        return (string) $recommendation;
     }
 
     private function assumedYieldKgPerHa(?string $cropType): float
@@ -756,14 +1217,65 @@ class DashboardController extends Controller
             }
         }
 
+        $floodRiskPoints = $this->overviewFloodRiskPoints($barangay);
+
         return response()->json([
             'status' => 'success',
             'data' => [
                 'farm_plots' => $farmPlots,
                 'damage_points' => $damagePoints,
                 'pest_outbreaks' => $pestOutbreaks->values(),
+                'flood_risk_points' => $floodRiskPoints,
             ],
         ]);
+    }
+
+    /**
+     * Barangay centroids flagged for 72h precip ≥ 80% (GIS flood / lodging layer).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function overviewFloodRiskPoints(?string $barangay): array
+    {
+        if (! Schema::hasTable('tbl_weather_cache') || ! Schema::hasTable('tbl_barangays')) {
+            return [];
+        }
+
+        $risky = WeatherCache::query()
+            ->whereDate('forecast_date', '>=', Carbon::today())
+            ->whereDate('forecast_date', '<=', Carbon::today()->addDays(3))
+            ->where('precipitation_probability', '>=', 80)
+            ->when($barangay, fn ($q) => $q->where('barangay_name', $barangay))
+            ->select('barangay_name', DB::raw('MAX(precipitation_probability) as max_precip'))
+            ->groupBy('barangay_name')
+            ->get()
+            ->keyBy(fn ($row) => Str::lower(trim((string) $row->barangay_name)));
+
+        if ($risky->isEmpty()) {
+            return [];
+        }
+
+        return DB::table('tbl_barangays')
+            ->whereNotNull('latitude')
+            ->whereNotNull('longitude')
+            ->get(['name', 'latitude', 'longitude'])
+            ->map(function ($b) use ($risky) {
+                $row = $risky->get(Str::lower(trim((string) $b->name)));
+                if (! $row) {
+                    return null;
+                }
+
+                return [
+                    'id' => 'flood-'.$b->name,
+                    'lat' => (float) $b->latitude,
+                    'lng' => (float) $b->longitude,
+                    'brgy' => $b->name,
+                    'precipitation_probability' => (int) $row->max_precip,
+                ];
+            })
+            ->filter()
+            ->values()
+            ->all();
     }
 
     /**
