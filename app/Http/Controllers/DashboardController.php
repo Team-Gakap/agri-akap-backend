@@ -1067,22 +1067,7 @@ class DashboardController extends Controller
 
         $farmPlots = [];
         if ($wantFarms) {
-            $farmPlots = FarmPlot::with('farmer:id,first_name,surname')
-                ->whereNotNull('latitude')
-                ->whereNotNull('longitude')
-                ->when($barangay, fn ($q) => $q->where('location_brgy', $barangay))
-                ->when($commodity, fn ($q) => $q->where('commodity', $commodity))
-                ->get()
-                ->map(fn ($p) => [
-                    'id' => $p->id,
-                    'lat' => (float) $p->latitude,
-                    'lng' => (float) $p->longitude,
-                    'commodity' => $p->commodity,
-                    'size_ha' => $p->size_ha !== null ? (float) $p->size_ha : null,
-                    'brgy' => $p->location_brgy,
-                    'farmer_name' => trim((optional($p->farmer)->first_name ?? '') . ' ' . (optional($p->farmer)->surname ?? '')),
-                ])
-                ->values();
+            $farmPlots = $this->mapFarmPlots($barangay, $commodity);
         }
 
         $damagePoints = [];
@@ -1148,6 +1133,11 @@ class DashboardController extends Controller
                             return null;
                         }
 
+                        $recommendation = (Schema::hasColumn('pest_outbreaks', 'recommended_intervention')
+                            ? $p->recommended_intervention
+                            : null)
+                            ?: $this->shortIntervention((string) $p->pest_name, (string) $p->severity);
+
                         return [
                             'id' => $p->id,
                             'lat' => (float) $lat,
@@ -1157,6 +1147,8 @@ class DashboardController extends Controller
                             'status' => $p->status ?: 'Active',
                             'commodity' => optional($p->farmPlot)->commodity,
                             'brgy' => optional($p->farmPlot)->location_brgy,
+                            'date_spotted' => optional($p->date_spotted)?->toDateString(),
+                            'recommendation' => $recommendation,
                         ];
                     })
                     ->filter()
@@ -1198,6 +1190,12 @@ class DashboardController extends Controller
                             $isActive = (bool) $p->is_outbreak
                                 || ($hasDamagePct && (float) $p->area_damage_pct >= 30);
 
+                            $recommendation = $p->advisory
+                                ?: $this->shortIntervention((string) $p->pest_name, (string) $p->severity);
+                            $inspected = Schema::hasColumn('pest_monitoring', 'date_of_inspection')
+                                ? optional($p->date_of_inspection)?->toDateString()
+                                : optional($p->created_at)?->toDateString();
+
                             return [
                                 'id' => $p->id,
                                 'lat' => (float) $lat,
@@ -1209,6 +1207,8 @@ class DashboardController extends Controller
                                 'brgy' => optional($p->farmPlot)->location_brgy
                                     ?? optional($p->farmer)->permanent_brgy
                                     ?? $p->farm_location,
+                                'date_spotted' => $inspected,
+                                'recommendation' => $recommendation,
                             ];
                         })
                         ->filter()
@@ -1217,7 +1217,19 @@ class DashboardController extends Controller
             }
         }
 
-        $floodRiskPoints = $this->overviewFloodRiskPoints($barangay);
+        $barangayClimate = $this->overviewBarangayClimate($barangay);
+        $floodRiskPoints = collect($barangayClimate)
+            ->filter(fn ($row) => (int) ($row['precipitation_probability'] ?? 0) >= 80)
+            ->map(fn ($row) => [
+                'id' => 'flood-'.$row['barangay'],
+                'lat' => $row['lat'],
+                'lng' => $row['lng'],
+                'brgy' => $row['barangay'],
+                'precipitation_probability' => $row['precipitation_probability'],
+            ])
+            ->filter(fn ($row) => $row['lat'] !== null && $row['lng'] !== null)
+            ->values()
+            ->all();
 
         return response()->json([
             'status' => 'success',
@@ -1226,56 +1238,210 @@ class DashboardController extends Controller
                 'damage_points' => $damagePoints,
                 'pest_outbreaks' => $pestOutbreaks->values(),
                 'flood_risk_points' => $floodRiskPoints,
+                'barangay_climate' => $barangayClimate,
             ],
         ]);
     }
 
     /**
-     * Barangay centroids flagged for 72h precip ≥ 80% (GIS flood / lodging layer).
+     * Registered parcels with GPS and/or walked boundary polygons.
      *
-     * @return array<int, array<string, mixed>>
+     * @return \Illuminate\Support\Collection<int, array<string, mixed>>
      */
-    private function overviewFloodRiskPoints(?string $barangay): array
+    private function mapFarmPlots(?string $barangay, ?string $commodity)
     {
-        if (! Schema::hasTable('tbl_weather_cache') || ! Schema::hasTable('tbl_barangays')) {
-            return [];
+        $plots = FarmPlot::with('farmer:id,first_name,surname,rsbsa_no')
+            ->where(function ($q) {
+                $q->where(function ($geo) {
+                    $geo->whereNotNull('latitude')
+                        ->whereNotNull('longitude')
+                        ->where(function ($c) {
+                            $c->whereRaw('ABS(latitude) > 0.0001')
+                                ->orWhereRaw('ABS(longitude) > 0.0001');
+                        });
+                })->orWhereNotNull('boundary_points');
+            })
+            ->when($barangay, fn ($q) => $q->where('location_brgy', $barangay))
+            ->when($commodity, fn ($q) => $q->where('commodity', $commodity))
+            ->get();
+
+        $stageByPlot = [];
+        if (Schema::hasTable('standing_crop_logs') && $plots->isNotEmpty()) {
+            StandingCropLog::query()
+                ->whereIn('farm_plot_id', $plots->pluck('id'))
+                ->orderByDesc('created_at')
+                ->get(['farm_plot_id', 'growth_stage'])
+                ->each(function ($row) use (&$stageByPlot) {
+                    $id = (string) $row->farm_plot_id;
+                    if ($id !== '' && ! isset($stageByPlot[$id])) {
+                        $stageByPlot[$id] = $row->growth_stage;
+                    }
+                });
         }
 
-        $risky = WeatherCache::query()
-            ->whereDate('forecast_date', '>=', Carbon::today())
-            ->whereDate('forecast_date', '<=', Carbon::today()->addDays(3))
-            ->where('precipitation_probability', '>=', 80)
-            ->when($barangay, fn ($q) => $q->where('barangay_name', $barangay))
-            ->select('barangay_name', DB::raw('MAX(precipitation_probability) as max_precip'))
-            ->groupBy('barangay_name')
-            ->get()
-            ->keyBy(fn ($row) => Str::lower(trim((string) $row->barangay_name)));
-
-        if ($risky->isEmpty()) {
-            return [];
-        }
-
-        return DB::table('tbl_barangays')
-            ->whereNotNull('latitude')
-            ->whereNotNull('longitude')
-            ->get(['name', 'latitude', 'longitude'])
-            ->map(function ($b) use ($risky) {
-                $row = $risky->get(Str::lower(trim((string) $b->name)));
-                if (! $row) {
+        return $plots
+            ->map(function ($p) use ($stageByPlot) {
+                $boundary = $this->normaliseBoundaryPoints($p->boundary_points ?? null);
+                $lat = $p->latitude !== null ? (float) $p->latitude : null;
+                $lng = $p->longitude !== null ? (float) $p->longitude : null;
+                if (! $this->hasValidGps($lat, $lng) && $boundary) {
+                    $centroid = $this->polygonCentroid($boundary);
+                    $lat = $centroid['lat'];
+                    $lng = $centroid['lng'];
+                }
+                if (! $this->hasValidGps($lat, $lng) && ! $boundary) {
                     return null;
                 }
 
                 return [
-                    'id' => 'flood-'.$b->name,
-                    'lat' => (float) $b->latitude,
-                    'lng' => (float) $b->longitude,
-                    'brgy' => $b->name,
-                    'precipitation_probability' => (int) $row->max_precip,
+                    'id' => $p->id,
+                    'lat' => $lat,
+                    'lng' => $lng,
+                    'boundary_points' => $boundary,
+                    'commodity' => $p->commodity,
+                    'size_ha' => $p->size_ha !== null ? (float) $p->size_ha : null,
+                    'brgy' => $p->location_brgy,
+                    'farmer_name' => trim((optional($p->farmer)->first_name ?? '').' '.(optional($p->farmer)->surname ?? '')),
+                    'rsbsa_no' => optional($p->farmer)->rsbsa_no,
+                    'georef_id' => $p->georef_id,
+                    'geotag_status' => $p->geotag_status ?: (empty($boundary) ? 'unmapped' : 'mapped'),
+                    'growth_stage' => $stageByPlot[(string) $p->id] ?? null,
                 ];
             })
             ->filter()
-            ->values()
-            ->all();
+            ->values();
+    }
+
+    /**
+     * 72h climate snapshot for every cached barangay (choropleth + inspector).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function overviewBarangayClimate(?string $barangay): array
+    {
+        if (! Schema::hasTable('tbl_weather_cache')) {
+            return [];
+        }
+
+        $farmerCounts = Farmer::query()
+            ->selectRaw("COALESCE(NULLIF(permanent_brgy, ''), 'Unspecified') as barangay")
+            ->selectRaw('COUNT(*) as farmer_count')
+            ->groupByRaw('1')
+            ->pluck('farmer_count', 'barangay');
+
+        $farmerIndex = [];
+        foreach ($farmerCounts as $name => $count) {
+            $farmerIndex[Str::lower(trim((string) $name))] = (int) $count;
+        }
+
+        $hasSoil = Schema::hasColumn('tbl_weather_cache', 'soil_moisture_28cm');
+        $hasSoilShallow = Schema::hasColumn('tbl_weather_cache', 'soil_moisture');
+        $hasWind = Schema::hasColumn('tbl_weather_cache', 'wind_speed_10m');
+
+        $select = [
+            'barangay_name',
+            DB::raw('MAX(precipitation_probability) as max_precip'),
+        ];
+        if ($hasSoil) {
+            $select[] = DB::raw('MAX(soil_moisture_28cm) as max_soil_deep');
+        }
+        if ($hasSoilShallow) {
+            $select[] = DB::raw('MAX(soil_moisture) as max_soil');
+        }
+        if ($hasWind) {
+            $select[] = DB::raw('MAX(wind_speed_10m) as max_wind');
+        }
+
+        $rows = WeatherCache::query()
+            ->whereDate('forecast_date', '>=', Carbon::today())
+            ->whereDate('forecast_date', '<=', Carbon::today()->addDays(3))
+            ->when($barangay, fn ($q) => $q->where('barangay_name', $barangay))
+            ->select($select)
+            ->groupBy('barangay_name')
+            ->orderBy('barangay_name')
+            ->get();
+
+        $pins = [];
+        if (Schema::hasTable('tbl_barangays')) {
+            $pins = DB::table('tbl_barangays')
+                ->get(['name', 'latitude', 'longitude'])
+                ->keyBy(fn ($b) => Str::lower(trim((string) $b->name)));
+        }
+
+        return $rows->map(function ($w) use ($farmerIndex, $pins, $hasSoil, $hasSoilShallow, $hasWind) {
+            $name = (string) $w->barangay_name;
+            $key = Str::lower(trim($name));
+            $pin = $pins[$key] ?? null;
+            $soil = $hasSoil ? ($w->max_soil_deep ?? null) : null;
+            if ($soil === null && $hasSoilShallow) {
+                $soil = $w->max_soil ?? null;
+            }
+
+            return [
+                'barangay' => $name,
+                'precipitation_probability' => (int) ($w->max_precip ?? 0),
+                'soil_moisture' => $soil !== null ? round((float) $soil, 3) : null,
+                'wind_speed_kmh' => $hasWind && $w->max_wind !== null ? round((float) $w->max_wind, 1) : null,
+                'farmer_count' => $farmerIndex[$key] ?? 0,
+                'lat' => $pin?->latitude !== null ? (float) $pin->latitude : null,
+                'lng' => $pin?->longitude !== null ? (float) $pin->longitude : null,
+            ];
+        })->values()->all();
+    }
+
+    /**
+     * @param  mixed  $raw
+     * @return array<int, array{lat: float, lng: float}>
+     */
+    private function normaliseBoundaryPoints(mixed $raw): array
+    {
+        if (is_string($raw)) {
+            $raw = json_decode($raw, true);
+        }
+        if (! is_array($raw)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($raw as $point) {
+            if (! is_array($point)) {
+                continue;
+            }
+            $lat = $point['lat'] ?? $point['latitude'] ?? null;
+            $lng = $point['lng'] ?? $point['longitude'] ?? null;
+            if ($lat === null || $lng === null) {
+                continue;
+            }
+            $out[] = ['lat' => (float) $lat, 'lng' => (float) $lng];
+        }
+
+        return count($out) >= 3 ? $out : [];
+    }
+
+    private function hasValidGps(?float $lat, ?float $lng): bool
+    {
+        if ($lat === null || $lng === null) {
+            return false;
+        }
+
+        return abs($lat) > 0.0001 || abs($lng) > 0.0001;
+    }
+
+    /**
+     * @param  array<int, array{lat: float, lng: float}>  $points
+     * @return array{lat: float, lng: float}
+     */
+    private function polygonCentroid(array $points): array
+    {
+        $n = count($points);
+        $lat = 0.0;
+        $lng = 0.0;
+        foreach ($points as $p) {
+            $lat += (float) $p['lat'];
+            $lng += (float) $p['lng'];
+        }
+
+        return ['lat' => $lat / max(1, $n), 'lng' => $lng / max(1, $n)];
     }
 
     /**
