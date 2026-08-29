@@ -13,7 +13,6 @@ use App\Models\PlantingLog;
 use App\Models\StandingCropLog;
 use App\Services\FarmAreaBudgetService;
 use App\Services\PolygonIntegrityService;
-use App\Services\SmsService;
 use App\Traits\AssertsPlotAreaCap;
 use App\Traits\DecodesBase64Image;
 use Illuminate\Http\JsonResponse;
@@ -32,7 +31,6 @@ class SyncController extends Controller
     public function __construct(
         private DistributionController $distributions,
         private SubsidyController $subsidies,
-        private SmsService $sms,
         private PolygonIntegrityService $polygonIntegrity,
         private FarmAreaBudgetService $farmAreaBudget,
     ) {
@@ -817,10 +815,6 @@ class SyncController extends Controller
 
                 $geoTag->farm_plot_id = $farmPlot->id;
                 $geoTag->save();
-
-                if ((bool) ($item['notify_sms'] ?? true)) {
-                    $this->sendGeoreferencingReceipt($farmPlot, $geoTag);
-                }
             }
 
             return $this->itemResult($clientId ?? $geoTag->id, 'synced', 'Geo-tag saved.');
@@ -994,39 +988,6 @@ class SyncController extends Controller
         );
 
         return FarmPlot::with('farmer')->findOrFail($id);
-    }
-
-    /**
-     * Fire the DA-RSBSA "Georeferencing Stub" SMS receipt once a farm boundary
-     * has been successfully mapped and saved. Wrapped in try/catch so a
-     * gateway failure never breaks the sync batch.
-     */
-    private function sendGeoreferencingReceipt(FarmPlot $farmPlot, GeoTag $geoTag): void
-    {
-        $farmer = $farmPlot->farmer ?? Farmer::find($farmPlot->farmer_id);
-        if (! $farmer || empty($farmer->mobile_number)) {
-            return;
-        }
-
-        try {
-            $name = trim($farmer->first_name.' '.$farmer->surname);
-            $areaHa = number_format((float) $farmPlot->size_ha, 4);
-            $coords = number_format((float) $farmPlot->latitude, 5).', '.number_format((float) $farmPlot->longitude, 5);
-            $discrepancyNote = $geoTag->has_discrepancy
-                ? ' A spatial discrepancy was flagged for MAO review.'
-                : '';
-
-            $message = "AGRI-AKAP Georeferencing Stub: Hi {$name}, your farm ({$areaHa} ha) at {$coords}, "
-                ."{$farmPlot->location_brgy} has been successfully mapped and verified under the RSBSA protocol."
-                .$discrepancyNote;
-
-            $this->sms->send($farmer->mobile_number, $message);
-
-            $farmPlot->forceFill(['georef_sms_sent_at' => now()])->save();
-            $geoTag->forceFill(['sms_sent_at' => now()])->save();
-        } catch (\Throwable $e) {
-            Log::warning('Georeferencing SMS receipt failed: '.$e->getMessage());
-        }
     }
 
     /**

@@ -26,6 +26,7 @@ use App\Http\Controllers\ExecutiveReportingController;
 use App\Http\Controllers\ReportsController;
 use App\Http\Controllers\StaffController;
 use App\Http\Controllers\SystemAuditLogController;
+use App\Http\Controllers\SmsSettingsController;
 use Illuminate\Support\Facades\Route;
 
 // ── Public ────────────────────────────────────────────────────────────────────
@@ -71,6 +72,10 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:admin');
 
     Route::get('/system/audit-logs', [SystemAuditLogController::class, 'index'])
+        ->middleware('role:super_admin');
+    Route::get('/system/sms-settings', [SmsSettingsController::class, 'show'])
+        ->middleware('role:super_admin');
+    Route::patch('/system/sms-settings', [SmsSettingsController::class, 'update'])
         ->middleware('role:super_admin');
 
     // Farmer Registry

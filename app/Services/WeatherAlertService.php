@@ -6,8 +6,6 @@ use App\Models\Farmer;
 use App\Models\SmsBroadcast;
 use App\Models\WeatherCache;
 use Carbon\Carbon;
-use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 
 class WeatherAlertService
 {
@@ -17,6 +15,10 @@ class WeatherAlertService
 
     /** km/h — above this, pesticide spray drift risk is high. */
     public const WIND_THRESHOLD = 15.0;
+
+    public function __construct(private SmsService $sms)
+    {
+    }
 
     /**
      * Evaluate tomorrow's forecast per barangay and SMS only affected farmers.
@@ -80,7 +82,7 @@ class WeatherAlertService
                 continue;
             }
 
-            $send = $this->dispatchViaSemaphore($numbers, $evaluation['message']);
+            $send = $this->dispatchSms($numbers, $evaluation['message']);
             $anyMocked = $anyMocked || $send['mocked'];
             $status = $send['success'] ? SmsBroadcast::STATUS_SENT : SmsBroadcast::STATUS_FAILED;
 
@@ -268,63 +270,16 @@ class WeatherAlertService
      * @param  array<int, string>  $numbers
      * @return array{success:bool, mocked:bool, raw:mixed}
      */
-    protected function dispatchViaSemaphore(array $numbers, string $message): array
+    protected function dispatchSms(array $numbers, string $message): array
     {
-        $apiKey = config('services.sms.semaphore.key');
-        $sender = config('services.sms.semaphore.sender', 'MAO-ECHAGUE');
-        $csv = implode(',', $numbers);
+        $result = $this->sms->sendBulk($numbers, $message);
+        $provider = (string) ($result['provider'] ?? '');
 
-        if ($this->shouldMockSemaphore($apiKey)) {
-            Log::info('Weather SMS mocked (hyper-local).', [
-                'recipients' => count($numbers),
-                'message' => $message,
-            ]);
-
-            return [
-                'success' => true,
-                'mocked' => true,
-                'raw' => ['mocked' => true, 'recipients' => count($numbers)],
-            ];
-        }
-
-        try {
-            $response = Http::timeout(30)->asForm()->post('https://api.semaphore.co/api/v4/messages', [
-                'apikey' => $apiKey,
-                'number' => $csv,
-                'message' => $message,
-                'sendername' => $sender,
-            ]);
-
-            if (! $response->successful()) {
-                Log::error('Semaphore weather alert failed', [
-                    'status' => $response->status(),
-                    'body' => $response->body(),
-                ]);
-            }
-
-            return [
-                'success' => $response->successful(),
-                'mocked' => false,
-                'raw' => $response->json() ?? $response->body(),
-            ];
-        } catch (\Throwable $e) {
-            Log::error('Semaphore weather alert exception: '.$e->getMessage());
-
-            return [
-                'success' => false,
-                'mocked' => false,
-                'raw' => $e->getMessage(),
-            ];
-        }
-    }
-
-    protected function shouldMockSemaphore(?string $apiKey): bool
-    {
-        if ($apiKey === null || trim($apiKey) === '') {
-            return true;
-        }
-
-        return app()->environment('local', 'testing');
+        return [
+            'success' => (bool) ($result['success'] ?? false),
+            'mocked' => str_contains($provider, 'mock'),
+            'raw' => $result['raw'] ?? null,
+        ];
     }
 
     protected function forecastSummary(WeatherCache $row): array

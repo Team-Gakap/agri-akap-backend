@@ -297,7 +297,7 @@ class WeatherController extends Controller
             ], 422);
         }
 
-        $mockNote = $result['mocked'] ? ' (mocked in local — no Semaphore charge)' : '';
+        $mockNote = $result['mocked'] ? ' (mocked in local — no SMS charge)' : '';
 
         return response()->json([
             'status' => 'success',

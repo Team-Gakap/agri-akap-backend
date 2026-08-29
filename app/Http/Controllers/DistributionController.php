@@ -6,7 +6,6 @@ use App\Models\Distribution;
 use App\Models\Farmer;
 use App\Models\Program;
 use App\Http\Requests\ClaimSubsidyRequest;
-use App\Services\SmsService;
 use App\Traits\DecodesBase64Image;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -16,10 +15,6 @@ use Illuminate\Support\Facades\Log;
 class DistributionController extends Controller
 {
     use DecodesBase64Image;
-
-    public function __construct(private SmsService $sms)
-    {
-    }
 
     /**
      * Verify eligibility, calculate allocation, and process the subsidy claim.
@@ -255,21 +250,8 @@ class DistributionController extends Controller
                         'quantity_dispensed' => $quantityToDispense . ' ' . $program->unit_of_measurement,
                         'inventory_remaining' => $program->remaining_quantity,
                     ],
-                    '_sms' => [
-                        'mobile_number' => $farmer->mobile_number,
-                        'name' => trim($farmer->first_name . ' ' . $farmer->surname),
-                        'item' => $program->name,
-                        'quantity' => $quantityToDispense . ' ' . $program->unit_of_measurement,
-                    ],
                 ]);
             });
-
-            // Best-effort SMS receipt AFTER the transaction commits, so a slow
-            // or failing gateway never rolls back a successful claim.
-            if ($result['outcome'] === 'synced' && !empty($result['body']['_sms'])) {
-                $this->sendClaimReceipt($result['body']['_sms']);
-                unset($result['body']['_sms']);
-            }
 
             return $result;
         } catch (\Exception $e) {
@@ -280,28 +262,6 @@ class DistributionController extends Controller
                 'message' => 'A critical error occurred while processing the claim.',
                 'error' => $e->getMessage(),
             ]);
-        }
-    }
-
-    /**
-     * Fire a transaction receipt to the farmer's mobile number. Never throws.
-     *
-     * @param  array{mobile_number:?string, name:string, item:string, quantity:string}  $ctx
-     */
-    protected function sendClaimReceipt(array $ctx): void
-    {
-        if (empty($ctx['mobile_number'])) {
-            return;
-        }
-
-        try {
-            $message = "AGRI-AKAP: Hi {$ctx['name']}, you have successfully claimed "
-                . "{$ctx['quantity']} of {$ctx['item']} from the Municipal Agriculture Office. "
-                . "Thank you.";
-
-            $this->sms->send($ctx['mobile_number'], $message);
-        } catch (\Throwable $e) {
-            Log::warning('Distribution SMS receipt failed: ' . $e->getMessage());
         }
     }
 

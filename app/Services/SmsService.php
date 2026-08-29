@@ -6,29 +6,50 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Provider-agnostic SMS gateway. Switches between IPROG and Semaphore based on
- * config('services.sms.provider'). All methods degrade gracefully and never
- * throw so callers (e.g. enrollment) are never blocked by SMS failures.
+ * Provider-agnostic SMS gateway. Super Admin chooses IPROG or Semaphore
+ * (system_settings.sms.provider); SMS_PROVIDER in .env is the fallback.
+ * API keys stay in env. Callers are never blocked by gateway failures.
  */
 class SmsService
 {
+    public function __construct(private SystemSettingService $settings)
+    {
+    }
+
+    public function provider(): string
+    {
+        return $this->settings->smsProvider();
+    }
+
+    /**
+     * Whether the given gateway has an API token/key in env (not mocked).
+     */
+    public function hasCredentials(string $provider): bool
+    {
+        if ($provider === SystemSettingService::PROVIDER_SEMAPHORE) {
+            return filled(config('services.sms.semaphore.key'));
+        }
+
+        return filled(config('services.sms.iprog.token'));
+    }
+
+    /**
+     * Whether a real send (or a local/testing mock) can be attempted.
+     */
+    public function canDispatch(?string $provider = null): bool
+    {
+        $provider ??= $this->provider();
+
+        return $this->hasCredentials($provider)
+            || app()->environment('local', 'testing');
+    }
+
     /**
      * Whether a real gateway (or a local/testing mock) can deliver OTP SMS.
      */
     public function isConfigured(): bool
     {
-        $provider = config('services.sms.provider', 'iprog');
-
-        if ($provider === 'semaphore') {
-            return filled(config('services.sms.semaphore.key'))
-                || app()->environment('local', 'testing');
-        }
-
-        if (filled(config('services.sms.iprog.token'))) {
-            return true;
-        }
-
-        return app()->environment('testing');
+        return $this->canDispatch();
     }
 
     /**
@@ -47,7 +68,7 @@ class SmsService
      */
     public function sendBulk(array $numbers, string $message): array
     {
-        $provider = config('services.sms.provider', 'iprog');
+        $provider = $this->provider();
 
         $numbers = array_values(array_filter(array_map('trim', $numbers)));
         $csv = implode(',', $numbers);
@@ -57,7 +78,7 @@ class SmsService
         }
 
         try {
-            return $provider === 'semaphore'
+            return $provider === SystemSettingService::PROVIDER_SEMAPHORE
                 ? $this->sendViaSemaphore($csv, $message, count($numbers))
                 : $this->sendViaIprog($csv, $message, count($numbers));
         } catch (\Throwable $e) {

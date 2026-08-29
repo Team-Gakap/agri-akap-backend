@@ -25,9 +25,3 @@ Schedule::command('weather:fetch --daily')
     ->dailyAt('17:00')
     ->timezone('Asia/Manila')
     ->withoutOverlapping();
-
-// After the morning sync settles, evaluate tomorrow's risk and SMS farmers if needed.
-Schedule::command('weather:alert')
-    ->dailyAt('06:00')
-    ->timezone('Asia/Manila')
-    ->withoutOverlapping();

@@ -373,9 +373,6 @@ class FarmerController extends Controller
 
             DB::commit();
 
-            // Step 4 — instant SMS receipt. Best-effort: never blocks enrollment.
-            $this->sendEnrollmentReceipt($farmer);
-
             return response()->json([
                 'status' => 'success',
                 'message' => 'Farmer and corresponding parcel logs enrolled successfully.',
@@ -389,29 +386,6 @@ class FarmerController extends Controller
                 'message' => 'Database transaction failed. Record aborted.',
                 'error' => app()->isLocal() ? $e->getMessage() : 'Please contact support.',
             ], 500);
-        }
-    }
-
-    /**
-     * Fire an instant SMS receipt to a freshly enrolled farmer. Wrapped in a
-     * try/catch so any gateway failure is logged but never breaks enrollment.
-     */
-    protected function sendEnrollmentReceipt(Farmer $farmer): void
-    {
-        if (empty($farmer->mobile_number)) {
-            return;
-        }
-
-        try {
-            $reference = $farmer->rsbsa_no ?: $farmer->transaction_code;
-            $name = trim($farmer->first_name . ' ' . $farmer->surname);
-
-            $message = "AGRI-AKAP: Hi {$name}, your RSBSA enrollment is received. "
-                . "Reference: {$reference}. Present your QR ID at the MAO for programs and claims.";
-
-            $this->sms->send($farmer->mobile_number, $message);
-        } catch (\Throwable $e) {
-            Log::warning('Enrollment SMS receipt failed: ' . $e->getMessage());
         }
     }
 

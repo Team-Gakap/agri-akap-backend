@@ -40,7 +40,8 @@ return [
     | SMS Gateway
     |--------------------------------------------------------------------------
     | AGRI-AKAP can dispatch bulk/transactional SMS through either IPROG or
-    | Semaphore. Switch providers with SMS_PROVIDER (iprog|semaphore).
+    | Semaphore. Super Admin selects the live provider in the SMS Gateway
+    | page; SMS_PROVIDER is the fallback until that override is saved.
     */
     'sms' => [
         'provider' => env('SMS_PROVIDER', 'iprog'),

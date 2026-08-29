@@ -33,5 +33,6 @@
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="NIGHTWATCH_ENABLED" value="false"/>
         <env name="TURNSTILE_SECRET_KEY" value=""/>
+        <env name="SMS_PROVIDER" value="iprog"/>
     </php>
 </phpunit>
