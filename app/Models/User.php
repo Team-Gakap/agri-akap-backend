@@ -16,7 +16,7 @@ use Laravel\Sanctum\HasApiTokens;
 #[Fillable([
     'name', 'email', 'password', 'role', 'assigned_barangay', 'is_active',
     'failed_login_attempts', 'locked_until', 'must_change_password', 'password_changed_at',
-    'mobile_number',
+    'mobile_number', 'enforce_mfa',
 ])]
 #[Hidden(['password', 'remember_token', 'mfa_secret', 'mfa_recovery_codes'])]
 class User extends Authenticatable
@@ -45,6 +45,7 @@ class User extends Authenticatable
             'mfa_secret' => 'encrypted',
             'mfa_confirmed_at' => 'datetime',
             'mfa_recovery_codes' => 'array',
+            'enforce_mfa' => 'boolean',
         ];
     }
 
@@ -63,6 +64,17 @@ class User extends Authenticatable
         return $this->locked_until !== null && $this->locked_until->isFuture();
     }
 
+    public function requiresMfa(): bool
+    {
+        return $this->isSuperAdmin()
+            || ($this->role === self::ROLE_ADMIN && (bool) $this->enforce_mfa);
+    }
+
+    public function mfaIsEnrolled(): bool
+    {
+        return $this->mfa_confirmed_at !== null && filled($this->mfa_secret);
+    }
+
     /** @return array<string, mixed> */
     public function toAuthPayload(): array
     {
@@ -74,6 +86,7 @@ class User extends Authenticatable
             'assigned_barangay' => $this->assigned_barangay,
             'must_change_password' => (bool) $this->must_change_password,
             'is_active' => (bool) $this->is_active,
+            'requires_mfa' => $this->requiresMfa(),
         ];
     }
 
@@ -94,6 +107,8 @@ class User extends Authenticatable
             'password_changed_at' => $this->password_changed_at?->toIso8601String(),
             'created_at' => $this->created_at?->toIso8601String(),
             'tokens_count' => (int) ($this->tokens_count ?? $this->tokens()->count()),
+            'enforce_mfa' => (bool) $this->enforce_mfa,
+            'mfa_enrolled' => $this->mfaIsEnrolled(),
         ];
     }
 

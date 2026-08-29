@@ -91,6 +91,19 @@ class StaffController extends Controller
         $validated = $request->validated();
         $temporary = $this->temporarySecret();
 
+        $mfaError = $this->authorizeEnforceMfa(
+            $request->user(),
+            $validated['role'],
+            array_key_exists('enforce_mfa', $validated),
+        );
+        if ($mfaError) {
+            return $mfaError;
+        }
+
+        $enforce = $validated['role'] === User::ROLE_ADMIN
+            && ($request->user()?->isSuperAdmin() ?? false)
+            && (bool) ($validated['enforce_mfa'] ?? false);
+
         $user = User::create([
             'name' => $validated['name'],
             'email' => $validated['email'],
@@ -102,11 +115,13 @@ class StaffController extends Controller
             'is_active' => $validated['is_active'] ?? true,
             'must_change_password' => true,
             'password_changed_at' => now(),
+            'enforce_mfa' => $enforce,
         ]);
 
         $this->audit->record('user.created', $request->user(), $user, [
             'role' => $user->role,
             'email' => $user->email,
+            'enforce_mfa' => $user->enforce_mfa,
         ], $request);
 
         return response()->json([
@@ -129,7 +144,8 @@ class StaffController extends Controller
         }
 
         $validated = $request->validated();
-        $before = $user->only(['name', 'email', 'role', 'assigned_barangay', 'is_active']);
+        $before = $user->only(['name', 'email', 'role', 'assigned_barangay', 'is_active', 'enforce_mfa']);
+        $wasEnforced = (bool) $user->enforce_mfa;
 
         if (array_key_exists('is_active', $validated) && $validated['is_active'] === false) {
             if ($user->id === $actor->id) {
@@ -141,17 +157,35 @@ class StaffController extends Controller
         }
 
         if ($user->isSuperAdmin()) {
-            unset($validated['role'], $validated['is_active'], $validated['assigned_barangay']);
+            unset($validated['role'], $validated['is_active'], $validated['assigned_barangay'], $validated['enforce_mfa']);
+        }
+
+        $effectiveRole = $validated['role'] ?? $user->role;
+
+        $mfaError = $this->authorizeEnforceMfa(
+            $actor,
+            $effectiveRole,
+            array_key_exists('enforce_mfa', $validated),
+        );
+        if ($mfaError) {
+            return $mfaError;
         }
 
         if (array_key_exists('role', $validated) && $validated['role'] !== User::ROLE_BARANGAY_OFFICIAL) {
             $validated['assigned_barangay'] = null;
         }
 
+        if (! in_array($effectiveRole, [User::ROLE_ADMIN, User::ROLE_SUPER_ADMIN], true)) {
+            $validated['enforce_mfa'] = false;
+        }
+
         $user->fill($validated);
         $user->save();
 
+        $nowEnforced = (bool) $user->enforce_mfa;
         if (array_key_exists('is_active', $validated) && $validated['is_active'] === false) {
+            $user->tokens()->delete();
+        } elseif (! $wasEnforced && $nowEnforced) {
             $user->tokens()->delete();
         }
 
@@ -161,7 +195,7 @@ class StaffController extends Controller
 
         $this->audit->record($action, $actor, $user, [
             'before' => $before,
-            'after' => $user->only(['name', 'email', 'role', 'assigned_barangay', 'is_active']),
+            'after' => $user->only(['name', 'email', 'role', 'assigned_barangay', 'is_active', 'enforce_mfa']),
         ], $request);
 
         return response()->json([
@@ -249,6 +283,23 @@ class StaffController extends Controller
             'message' => 'All sessions revoked.',
             'data' => $user->fresh()->toStaffPayload(),
         ]);
+    }
+
+    private function authorizeEnforceMfa(User $actor, string $effectiveRole, bool $requested): ?JsonResponse
+    {
+        if (! $requested) {
+            return null;
+        }
+
+        if (! $actor->isSuperAdmin()) {
+            return $this->unprocessable('Only a SuperAdmin can change MFA enforcement.');
+        }
+
+        if ($effectiveRole !== User::ROLE_ADMIN) {
+            return $this->unprocessable('Authenticator enforcement can only be set on MAO Administrator accounts.');
+        }
+
+        return null;
     }
 
     private function temporarySecret(): string

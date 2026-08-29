@@ -6,6 +6,7 @@ use App\Models\MfaChallenge;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
+use Laravel\Sanctum\Sanctum;
 use PragmaRX\Google2FA\Google2FA;
 use Tests\TestCase;
 
@@ -189,12 +190,69 @@ class SuperAdminMfaTest extends TestCase
         $this->assertNull($user->mfa_recovery_codes);
     }
 
+    public function test_flagged_admin_login_requires_mfa_and_totp_issues_token(): void
+    {
+        [$admin, $secret] = $this->enrolledAdmin();
+
+        $challengeId = $this->startMfa($admin);
+        $response = $this->postJson('/api/auth/mfa/verify', [
+            'mfa_challenge_id' => $challengeId,
+            'code' => $this->totp($secret),
+        ])->assertOk();
+
+        $this->assertNotEmpty($response->json('data.access_token'));
+        $this->assertTrue($response->json('data.user.requires_mfa'));
+    }
+
+    public function test_flagged_admin_sms_send_refused_when_totp_not_enrolled(): void
+    {
+        $admin = User::factory()->admin()->create([
+            'enforce_mfa' => true,
+            'mobile_number' => '09171234567',
+        ]);
+        $challengeId = $this->startMfa($admin);
+
+        $this->postJson('/api/auth/mfa/sms/send', [
+            'mfa_challenge_id' => $challengeId,
+        ])->assertUnprocessable()
+            ->assertJsonPath('message', 'Authenticator enrollment is required before SMS can be used.');
+    }
+
+    public function test_unflagged_admin_cannot_read_mfa_status(): void
+    {
+        Sanctum::actingAs(User::factory()->admin()->create(['enforce_mfa' => false]));
+
+        $this->getJson('/api/auth/mfa/status')->assertForbidden();
+    }
+
+    public function test_flagged_admin_can_read_mfa_status(): void
+    {
+        Sanctum::actingAs(User::factory()->admin()->create(['enforce_mfa' => true]));
+
+        $this->getJson('/api/auth/mfa/status')->assertOk()
+            ->assertJsonPath('data.enrolled', false);
+    }
+
     /** @return array{0: User, 1: string} */
     private function enrolledSuperAdmin(array $overrides = []): array
     {
+        return $this->enrolledUser(User::factory()->superAdmin(), $overrides);
+    }
+
+    /** @return array{0: User, 1: string} */
+    private function enrolledAdmin(array $overrides = []): array
+    {
+        return $this->enrolledUser(User::factory()->admin(), array_merge([
+            'enforce_mfa' => true,
+        ], $overrides));
+    }
+
+    /** @return array{0: User, 1: string} */
+    private function enrolledUser($factory, array $overrides = []): array
+    {
         $secret = (new Google2FA())->generateSecretKey();
 
-        $user = User::factory()->superAdmin()->create(array_merge([
+        $user = $factory->create(array_merge([
             'mfa_secret' => $secret,
             'mfa_confirmed_at' => now(),
         ], $overrides));

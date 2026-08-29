@@ -89,7 +89,7 @@ class MfaController extends Controller
 
     public function status(Request $request): JsonResponse
     {
-        $user = $this->superAdmin($request);
+        $user = $this->assertMfaAccount($request);
 
         return $this->ok('MFA status retrieved.', $this->mfa->status($user));
     }
@@ -102,7 +102,7 @@ class MfaController extends Controller
             'totp' => 'nullable|string',
         ]);
 
-        $user = $this->superAdmin($request);
+        $user = $this->assertMfaAccount($request);
         $codes = $this->mfa->regenerateRecoveryCodes(
             $user,
             (string) $request->input('current_password'),
@@ -122,19 +122,19 @@ class MfaController extends Controller
         ]);
 
         $user = $this->mfa->updateMobile(
-            $this->superAdmin($request),
+            $this->assertMfaAccount($request),
             (string) $request->input('mobile_number'),
         );
 
         return $this->ok('Mobile number updated.', $this->mfa->status($user));
     }
 
-    private function superAdmin(Request $request): User
+    private function assertMfaAccount(Request $request): User
     {
         /** @var User $user */
         $user = $request->user();
 
-        if (! $user->isSuperAdmin()) {
+        if (! $user->requiresMfa()) {
             abort(response()->json([
                 'status' => 'error',
                 'message' => 'You do not have permission to perform this action.',

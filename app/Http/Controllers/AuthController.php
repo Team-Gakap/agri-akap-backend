@@ -82,7 +82,7 @@ class AuthController extends Controller
             'locked_until' => null,
         ])->save();
 
-        if ($user->isSuperAdmin()) {
+        if ($this->mfa->requiredFor($user)) {
             $challenge = $this->mfa->createChallenge($user, $request->device_name);
 
             return response()->json([

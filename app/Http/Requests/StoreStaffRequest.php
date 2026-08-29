@@ -32,6 +32,7 @@ class StoreStaffRequest extends FormRequest
                 Rule::in(OfficialBarangays::names()),
             ],
             'is_active' => 'sometimes|boolean',
+            'enforce_mfa' => 'sometimes|boolean',
         ];
     }
 }

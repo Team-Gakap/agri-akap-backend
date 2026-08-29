@@ -121,4 +121,45 @@ class StaffGovernanceTest extends TestCase
         $this->getJson('/api/users?role=admin')->assertOk()
             ->assertJsonCount(0, 'data');
     }
+
+    public function test_super_admin_can_toggle_enforce_mfa_on_admin_and_revokes_sessions(): void
+    {
+        $root = User::factory()->superAdmin()->create();
+        $admin = User::factory()->admin()->create(['enforce_mfa' => false]);
+        $admin->createToken('phpunit');
+        $this->assertSame(1, $admin->tokens()->count());
+
+        Sanctum::actingAs($root);
+        $this->patchJson("/api/staff/{$admin->id}", [
+            'enforce_mfa' => true,
+        ])->assertOk()
+            ->assertJsonPath('data.enforce_mfa', true);
+
+        $this->assertSame(0, $admin->tokens()->count());
+        $this->assertTrue($admin->fresh()->enforce_mfa);
+    }
+
+    public function test_admin_cannot_set_enforce_mfa(): void
+    {
+        $admin = User::factory()->admin()->create();
+        $tech = User::factory()->technician()->create();
+
+        Sanctum::actingAs($admin);
+        $this->patchJson("/api/staff/{$tech->id}", [
+            'enforce_mfa' => true,
+        ])->assertUnprocessable();
+
+        $this->assertFalse($tech->fresh()->enforce_mfa);
+    }
+
+    public function test_super_admin_cannot_set_enforce_mfa_on_technician(): void
+    {
+        $root = User::factory()->superAdmin()->create();
+        $tech = User::factory()->technician()->create();
+
+        Sanctum::actingAs($root);
+        $this->patchJson("/api/staff/{$tech->id}", [
+            'enforce_mfa' => true,
+        ])->assertUnprocessable();
+    }
 }

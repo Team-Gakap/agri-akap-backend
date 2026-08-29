@@ -31,7 +31,12 @@ class MfaService
 
     public function isEnrolled(User $user): bool
     {
-        return $user->mfa_confirmed_at !== null && filled($user->mfa_secret);
+        return $user->mfaIsEnrolled();
+    }
+
+    public function requiredFor(User $user): bool
+    {
+        return $user->requiresMfa();
     }
 
     /** @return list<string> */
@@ -101,7 +106,7 @@ class MfaService
 
         $user = User::query()->find($challenge->user_id);
 
-        if (! $user || ! $user->isSuperAdmin() || ! $user->is_active || $user->isLocked()) {
+        if (! $user || ! $this->requiredFor($user) || ! $user->is_active || $user->isLocked()) {
             $challenge->delete();
             throw new MfaException('MFA challenge expired. Please sign in again.');
         }

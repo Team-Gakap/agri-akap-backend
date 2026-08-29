@@ -49,11 +49,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
     Route::post('/auth/change-password', [AuthController::class, 'changePassword']);
     Route::get('/auth/mfa/status', [MfaController::class, 'status'])
-        ->middleware('role:super_admin');
+        ->middleware('role:super_admin,admin');
     Route::post('/auth/mfa/recovery-codes', [MfaController::class, 'recoveryCodes'])
-        ->middleware('role:super_admin');
+        ->middleware('role:super_admin,admin');
     Route::patch('/auth/mfa/mobile', [MfaController::class, 'updateMobile'])
-        ->middleware('role:super_admin');
+        ->middleware('role:super_admin,admin');
 
     Route::get('/staff/summary', [StaffController::class, 'summary'])
         ->middleware('role:admin');

@@ -8,9 +8,9 @@ use Illuminate\Console\Command;
 
 class ResetMfaCommand extends Command
 {
-    protected $signature = 'agri:reset-mfa {email : SuperAdmin account email}';
+    protected $signature = 'agri:reset-mfa {email : Account email}';
 
-    protected $description = 'Clear SuperAdmin TOTP enrollment so the account can enroll again after lockout';
+    protected $description = 'Clear TOTP enrollment so a SuperAdmin or MFA-enforced admin can enroll again after lockout';
 
     public function handle(MfaService $mfa): int
     {
@@ -23,8 +23,8 @@ class ResetMfaCommand extends Command
             return self::FAILURE;
         }
 
-        if (! $user->isSuperAdmin()) {
-            $this->error('MFA reset is only available for SuperAdmin accounts.');
+        if (! $user->requiresMfa() && ! $user->mfaIsEnrolled()) {
+            $this->error('MFA reset is only available for SuperAdmin or MFA-enforced admin accounts.');
 
             return self::FAILURE;
         }
