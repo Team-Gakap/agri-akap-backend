@@ -157,16 +157,26 @@ class DashboardController extends Controller
             'total_hectares' => round($totalHectares, 2),
             'rice_hectares' => round($hectares['rice'], 2),
             'corn_hectares' => round($hectares['corn'], 2),
-            'subsidy_claimed' => $subsidy['claimed'],
-            'subsidy_allocated' => $subsidy['allocated'],
-            'subsidy_percent' => $subsidy['percent'],
-            'subsidy_unit' => $subsidy['unit'],
+            'subsidy_claimed' => $subsidy['beneficiaries_claimed'],
+            'subsidy_allocated' => $subsidy['beneficiaries_enrolled'],
+            'subsidy_percent' => $subsidy['uptake_percent'],
+            'subsidy_unit' => 'Beneficiaries',
+            'subsidy_uptake_percent' => $subsidy['uptake_percent'],
+            'subsidy_active_campaigns' => $subsidy['active_campaigns'],
+            'subsidy_beneficiaries_claimed' => $subsidy['beneficiaries_claimed'],
+            'subsidy_beneficiaries_enrolled' => $subsidy['beneficiaries_enrolled'],
+            'subsidy_top_campaign' => $subsidy['top_campaign'],
+            'subsidy_low_stock_programs' => $subsidy['low_stock_programs'],
             'active_subsidies' => $activeSubsidies,
             'active_calamities' => $threats['active_calamities'],
             'active_pests' => $threats['active_pests'],
             'threat_total' => $threats['total'],
-            'threat_critical' => $threats['critical'],
-            'threat_moderate' => $threats['moderate'],
+            'threat_critical' => $threats['pest_critical'],
+            'threat_moderate' => $threats['pest_moderate'],
+            'pest_critical' => $threats['pest_critical'],
+            'pest_moderate' => $threats['pest_moderate'],
+            'top_pest_name' => $threats['top_pest_name'],
+            'dispatches_active' => $threats['dispatches_active'],
             'pending_subsidy_releases' => $pendingSubsidyReleases,
         ];
     }
@@ -200,130 +210,241 @@ class DashboardController extends Controller
     }
 
     /**
-     * Active-campaign liquidation: claimed vs allocated input units (sacks/bags).
+     * Active-campaign uptake: claimed vs enrolled beneficiary rows (unit-agnostic).
      *
-     * @return array{claimed: int, allocated: int, percent: int, unit: string}
+     * @return array{
+     *     claimed: int,
+     *     allocated: int,
+     *     percent: float,
+     *     unit: string,
+     *     uptake_percent: float,
+     *     active_campaigns: int,
+     *     beneficiaries_claimed: int,
+     *     beneficiaries_enrolled: int,
+     *     top_campaign: array{name: string, percent: float}|null,
+     *     low_stock_programs: int
+     * }
      */
     private function overviewSubsidyProgress(): array
     {
         $out = [
             'claimed' => 0,
             'allocated' => 0,
-            'percent' => 0,
-            'unit' => 'Sacks',
+            'percent' => 0.0,
+            'unit' => 'Beneficiaries',
+            'uptake_percent' => 0.0,
+            'active_campaigns' => 0,
+            'beneficiaries_claimed' => 0,
+            'beneficiaries_enrolled' => 0,
+            'top_campaign' => null,
+            'low_stock_programs' => 0,
         ];
+
+        $hasPrograms = Schema::hasTable('tbl_subsidy_programs');
+
+        if ($hasPrograms) {
+            $activeQuery = DB::table('tbl_subsidy_programs');
+            if (Schema::hasColumn('tbl_subsidy_programs', 'status')) {
+                $activeQuery->where('status', 'Active');
+            }
+            $out['active_campaigns'] = (int) $activeQuery->count();
+
+            if (Schema::hasColumn('tbl_subsidy_programs', 'remaining_quantity')
+                && Schema::hasColumn('tbl_subsidy_programs', 'reorder_level')) {
+                $lowStockQuery = DB::table('tbl_subsidy_programs')
+                    ->when(
+                        Schema::hasColumn('tbl_subsidy_programs', 'status'),
+                        fn ($q) => $q->where('status', 'Active')
+                    )
+                    ->whereNotNull('reorder_level')
+                    ->whereColumn('remaining_quantity', '<=', 'reorder_level');
+                $out['low_stock_programs'] = (int) $lowStockQuery->count();
+            }
+        }
 
         if (! Schema::hasTable('tbl_subsidy_beneficiaries')) {
             return $out;
         }
 
-        $query = DB::table('tbl_subsidy_beneficiaries');
-        if (Schema::hasTable('tbl_subsidy_programs')) {
-            $query->join(
-                'tbl_subsidy_programs',
-                'tbl_subsidy_programs.id',
-                '=',
-                'tbl_subsidy_beneficiaries.program_id'
-            )->where('tbl_subsidy_programs.status', 'Active');
-        }
+        $claimed = 0;
+        $enrolled = 0;
+        $topCampaign = null;
+        $topEnrolled = 0;
 
-        $row = $query
-            ->selectRaw('COALESCE(SUM(tbl_subsidy_beneficiaries.calculated_allocation), 0) as allocated')
-            ->selectRaw("COALESCE(SUM(CASE WHEN tbl_subsidy_beneficiaries.status = 'Claimed' THEN tbl_subsidy_beneficiaries.calculated_allocation ELSE 0 END), 0) as claimed")
-            ->first();
-
-        $allocated = (int) ($row->allocated ?? 0);
-        $claimed = (int) ($row->claimed ?? 0);
-
-        if ($allocated === 0 && Schema::hasTable('tbl_subsidy_programs')) {
-            $fallback = DB::table('tbl_subsidy_beneficiaries')
-                ->selectRaw('COALESCE(SUM(calculated_allocation), 0) as allocated')
-                ->selectRaw("COALESCE(SUM(CASE WHEN status = 'Claimed' THEN calculated_allocation ELSE 0 END), 0) as claimed")
-                ->first();
-            $allocated = (int) ($fallback->allocated ?? 0);
-            $claimed = (int) ($fallback->claimed ?? 0);
-        }
-
-        $unit = 'Sacks';
-        if (Schema::hasTable('tbl_subsidy_programs') && Schema::hasColumn('tbl_subsidy_programs', 'unit_of_measurement')) {
-            $unitRow = DB::table('tbl_subsidy_programs')
+        if ($hasPrograms) {
+            $rows = DB::table('tbl_subsidy_beneficiaries')
+                ->join(
+                    'tbl_subsidy_programs',
+                    'tbl_subsidy_programs.id',
+                    '=',
+                    'tbl_subsidy_beneficiaries.program_id'
+                )
                 ->when(
                     Schema::hasColumn('tbl_subsidy_programs', 'status'),
-                    fn ($q) => $q->where('status', 'Active')
+                    fn ($q) => $q->where('tbl_subsidy_programs.status', 'Active')
                 )
-                ->select('unit_of_measurement')
-                ->first();
-            if ($unitRow && $unitRow->unit_of_measurement) {
-                $unit = (string) $unitRow->unit_of_measurement;
+                ->selectRaw('tbl_subsidy_programs.id as program_id')
+                ->selectRaw('tbl_subsidy_programs.program_name as program_name')
+                ->selectRaw('COUNT(*) as enrolled')
+                ->selectRaw("SUM(CASE WHEN tbl_subsidy_beneficiaries.status = 'Claimed' THEN 1 ELSE 0 END) as claimed")
+                ->groupBy('tbl_subsidy_programs.id', 'tbl_subsidy_programs.program_name')
+                ->get();
+
+            foreach ($rows as $row) {
+                $programEnrolled = (int) ($row->enrolled ?? 0);
+                $programClaimed = (int) ($row->claimed ?? 0);
+                $enrolled += $programEnrolled;
+                $claimed += $programClaimed;
+
+                if ($programEnrolled <= 0) {
+                    continue;
+                }
+
+                $percent = round(($programClaimed / $programEnrolled) * 100, 1);
+                $isBetter = $topCampaign === null
+                    || $percent > $topCampaign['percent']
+                    || ($percent === $topCampaign['percent'] && $programEnrolled > $topEnrolled);
+
+                if ($isBetter) {
+                    $topCampaign = [
+                        'name' => (string) ($row->program_name ?: 'Unnamed program'),
+                        'percent' => $percent,
+                    ];
+                    $topEnrolled = $programEnrolled;
+                }
             }
+        } else {
+            $enrolled = (int) DB::table('tbl_subsidy_beneficiaries')->count();
+            $claimed = (int) DB::table('tbl_subsidy_beneficiaries')->where('status', 'Claimed')->count();
         }
 
+        $uptake = $enrolled > 0 ? round(($claimed / $enrolled) * 100, 1) : 0.0;
+
         $out['claimed'] = $claimed;
-        $out['allocated'] = $allocated;
-        $out['percent'] = $allocated > 0 ? (int) round(($claimed / $allocated) * 100) : 0;
-        $out['unit'] = $unit;
+        $out['allocated'] = $enrolled;
+        $out['percent'] = $uptake;
+        $out['uptake_percent'] = $uptake;
+        $out['beneficiaries_claimed'] = $claimed;
+        $out['beneficiaries_enrolled'] = $enrolled;
+        $out['top_campaign'] = $topCampaign;
 
         return $out;
     }
 
     /**
-     * Combined field-threat index: pest outbreaks + pending calamities, split by severity.
+     * Field-threat triage: pests vs pending calamities. Severity is pest-only.
      *
-     * @return array{active_pests: int, active_calamities: int, total: int, critical: int, moderate: int}
+     * @return array{
+     *     active_pests: int,
+     *     active_calamities: int,
+     *     total: int,
+     *     critical: int,
+     *     moderate: int,
+     *     pest_critical: int,
+     *     pest_moderate: int,
+     *     top_pest_name: string|null,
+     *     dispatches_active: int
+     * }
      */
     private function overviewThreatIndex(): array
     {
-        $critical = 0;
-        $moderate = 0;
+        $pestCritical = 0;
+        $pestModerate = 0;
         $activePests = 0;
         $activeCalamities = 0;
+        $pestNameCounts = [];
+        $technicianIds = [];
+
+        $noteTechnician = function ($id) use (&$technicianIds): void {
+            if ($id === null || $id === '') {
+                return;
+            }
+            $technicianIds[(string) $id] = true;
+        };
+
+        $notePestName = function ($name) use (&$pestNameCounts): void {
+            $label = trim((string) $name);
+            if ($label === '') {
+                return;
+            }
+            $pestNameCounts[$label] = ($pestNameCounts[$label] ?? 0) + 1;
+        };
 
         if (Schema::hasTable('pest_outbreaks')) {
+            $cols = ['severity'];
+            if (Schema::hasColumn('pest_outbreaks', 'pest_name')) {
+                $cols[] = 'pest_name';
+            }
+            if (Schema::hasColumn('pest_outbreaks', 'technician_id')) {
+                $cols[] = 'technician_id';
+            }
+
             $outbreaks = PestOutbreak::query()
                 ->whereRaw('LOWER(status) = ?', ['active'])
-                ->get(['severity']);
+                ->get($cols);
             $activePests += $outbreaks->count();
             foreach ($outbreaks as $row) {
-                if ($this->isCriticalSeverity($row->severity)) {
-                    $critical++;
+                if ($this->isCriticalSeverity($row->severity ?? null)) {
+                    $pestCritical++;
                 } else {
-                    $moderate++;
+                    $pestModerate++;
                 }
+                $notePestName($row->pest_name ?? '');
+                $noteTechnician($row->technician_id ?? null);
             }
         }
 
         if (Schema::hasTable('pest_monitoring')) {
-            $monitoring = $this->unverifiedPestQuery()->get(['severity']);
+            $cols = ['severity'];
+            if (Schema::hasColumn('pest_monitoring', 'pest_name')) {
+                $cols[] = 'pest_name';
+            }
+            if (Schema::hasColumn('pest_monitoring', 'technician_id')) {
+                $cols[] = 'technician_id';
+            }
+
+            $monitoring = $this->unverifiedPestQuery()->get($cols);
             $activePests += $monitoring->count();
             foreach ($monitoring as $row) {
-                if ($this->isCriticalSeverity($row->severity)) {
-                    $critical++;
+                if ($this->isCriticalSeverity($row->severity ?? null)) {
+                    $pestCritical++;
                 } else {
-                    $moderate++;
+                    $pestModerate++;
                 }
+                $notePestName($row->pest_name ?? '');
+                $noteTechnician($row->technician_id ?? null);
             }
         }
 
         if (Schema::hasTable('damage_assessments')) {
-            $pending = DamageAssessment::query()
-                ->where('status', 'Pending')
-                ->get(['damage_percentage']);
-            $activeCalamities = $pending->count();
-            foreach ($pending as $row) {
-                if ((float) $row->damage_percentage >= 50) {
-                    $critical++;
-                } else {
-                    $moderate++;
-                }
+            $activeCalamities = (int) DamageAssessment::query()->where('status', 'Pending')->count();
+
+            if (Schema::hasColumn('damage_assessments', 'technician_id')) {
+                DamageAssessment::query()
+                    ->where('status', 'Pending')
+                    ->whereNotNull('technician_id')
+                    ->where('technician_id', '!=', '')
+                    ->pluck('technician_id')
+                    ->each(fn ($id) => $noteTechnician($id));
             }
+        }
+
+        $topPestName = null;
+        if ($pestNameCounts !== []) {
+            arsort($pestNameCounts);
+            $topPestName = (string) array_key_first($pestNameCounts);
         }
 
         return [
             'active_pests' => $activePests,
             'active_calamities' => $activeCalamities,
-            'total' => $critical + $moderate,
-            'critical' => $critical,
-            'moderate' => $moderate,
+            'total' => $activePests + $activeCalamities,
+            'critical' => $pestCritical,
+            'moderate' => $pestModerate,
+            'pest_critical' => $pestCritical,
+            'pest_moderate' => $pestModerate,
+            'top_pest_name' => $topPestName,
+            'dispatches_active' => count($technicianIds),
         ];
     }
 
@@ -1235,6 +1356,7 @@ class DashboardController extends Controller
             'status' => 'success',
             'data' => [
                 'farm_plots' => $farmPlots,
+                'plot_totals' => $this->mapPlotTotals($barangay, $commodity, $farmPlots),
                 'damage_points' => $damagePoints,
                 'pest_outbreaks' => $pestOutbreaks->values(),
                 'flood_risk_points' => $floodRiskPoints,
@@ -1295,6 +1417,7 @@ class DashboardController extends Controller
 
                 return [
                     'id' => $p->id,
+                    'farmer_id' => $p->farmer_id,
                     'lat' => $lat,
                     'lng' => $lng,
                     'boundary_points' => $boundary,
@@ -1310,6 +1433,34 @@ class DashboardController extends Controller
             })
             ->filter()
             ->values();
+    }
+
+    /**
+     * Georeferenced parcel count vs all registered plots (soft-deleted excluded).
+     *
+     * @param  iterable<int, array<string, mixed>>  $farmPlots
+     * @return array{mapped: int, total: int}
+     */
+    private function mapPlotTotals(?string $barangay, ?string $commodity, $farmPlots): array
+    {
+        $total = (int) FarmPlot::query()
+            ->when($barangay, fn ($q) => $q->where('location_brgy', $barangay))
+            ->when($commodity, fn ($q) => $q->where('commodity', $commodity))
+            ->count();
+
+        $mapped = 0;
+        foreach ($farmPlots as $plot) {
+            $status = strtolower((string) ($plot['geotag_status'] ?? ''));
+            $points = $plot['boundary_points'] ?? [];
+            if ($status === 'mapped' || (is_array($points) && count($points) >= 3)) {
+                $mapped++;
+            }
+        }
+
+        return [
+            'mapped' => $mapped,
+            'total' => $total,
+        ];
     }
 
     /**
