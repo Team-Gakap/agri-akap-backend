@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Farmer;
 use App\Models\SubsidyProgram;
+use App\Support\SubsidyCatalog;
 use App\Traits\DecodesBase64Image;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -33,23 +34,7 @@ class SubsidyController extends Controller
         $programs = $query
             ->orderByDesc('created_at')
             ->get()
-            ->map(fn (SubsidyProgram $p) => [
-                'id' => $p->id,
-                'program_name' => $p->program_name,
-                'target_crop' => $p->target_crop,
-                'max_hectares_limit' => (float) $p->max_hectares_limit,
-                'min_hectares_limit' => (float) ($p->min_hectares_limit ?? 0),
-                'items_per_hectare' => (int) $p->items_per_hectare,
-                'status' => $p->status,
-                'unit_of_measurement' => $p->unit_of_measurement,
-                'total_quantity' => (int) $p->total_quantity,
-                'remaining_quantity' => (int) $p->remaining_quantity,
-                'reorder_level' => $p->reorder_level !== null ? (int) $p->reorder_level : null,
-                'is_low_stock' => $p->reorder_level !== null && $p->remaining_quantity <= $p->reorder_level,
-                'beneficiaries_count' => (int) $p->beneficiaries_count,
-                'claimed_count' => (int) $p->claimed_count,
-                'created_at' => optional($p->created_at)->toIso8601String(),
-            ]);
+            ->map(fn (SubsidyProgram $p) => $this->serializeProgram($p));
 
         return response()->json([
             'status' => 'success',
@@ -60,34 +45,76 @@ class SubsidyController extends Controller
 
     /**
      * Create a new subsidy program (Draft by default).
+     *
+     * Catalog-driven programs (seed_class + item_type given) take their unit
+     * labels and dual-unit shape from SubsidyCatalog — the client cannot
+     * override them. Legacy free-text programs (neither field given) keep
+     * the old single-unit behaviour.
      */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'program_name' => 'required|string|max:255',
             'target_crop' => ['required', Rule::in(['Rice', 'Corn', 'Both'])],
+            'seed_class' => ['nullable', Rule::in(SubsidyCatalog::seedClasses())],
+            'item_type' => ['nullable', Rule::in(['seed', 'abono', 'liquid_fertilizer', 'wettable', 'cash'])],
             'max_hectares_limit' => 'required|numeric|min:0.01|max:9999',
             'min_hectares_limit' => 'nullable|numeric|min:0|max:9999|lte:max_hectares_limit',
-            'items_per_hectare' => 'required|integer|min:1|max:1000',
+            'items_per_hectare' => 'required|numeric|min:0.01|max:100000',
+            'secondary_items_per_hectare' => 'nullable|numeric|min:0.01|max:100000',
             'status' => ['nullable', Rule::in(['Draft', 'Active', 'Completed'])],
             'unit_of_measurement' => 'nullable|string|max:64',
-            'total_quantity' => 'nullable|integer|min:0|max:1000000',
-            'reorder_level' => 'nullable|integer|min:0|max:1000000',
+            'total_quantity' => 'nullable|numeric|min:0|max:1000000',
+            'reorder_level' => 'nullable|numeric|min:0|max:1000000',
+            'secondary_total_quantity' => 'nullable|numeric|min:0|max:1000000',
+            'secondary_reorder_level' => 'nullable|numeric|min:0|max:1000000',
         ]);
 
+        $seedClass = $validated['seed_class'] ?? null;
+        $itemType = $validated['item_type'] ?? null;
+        $isCatalogProgram = $seedClass !== null || $itemType !== null;
+
+        if ($isCatalogProgram && ! SubsidyCatalog::isValidCombo($seedClass, $itemType)) {
+            return response()->json([
+                'status' => 'error',
+                'message' => "{$itemType} is not offered for {$seedClass} in the MAO catalog.",
+            ], 422);
+        }
+
+        $unit = $isCatalogProgram
+            ? SubsidyCatalog::unit($seedClass, $itemType)
+            : ($validated['unit_of_measurement'] ?? 'Bags');
+        $secondaryUnit = $isCatalogProgram ? SubsidyCatalog::secondaryUnit($seedClass, $itemType) : null;
+        $isDualUnit = $secondaryUnit !== null;
+
+        if ($isDualUnit && empty($validated['secondary_items_per_hectare'])) {
+            return response()->json([
+                'status' => 'error',
+                'message' => "This item needs both a {$unit}/ha rate and a {$secondaryUnit}/ha rate.",
+            ], 422);
+        }
+
         $totalQuantity = $validated['total_quantity'] ?? 0;
+        $secondaryTotalQuantity = $isDualUnit ? ($validated['secondary_total_quantity'] ?? 0) : null;
 
         $program = SubsidyProgram::create([
             'program_name' => $validated['program_name'],
             'target_crop' => $validated['target_crop'],
+            'seed_class' => $seedClass,
+            'item_type' => $itemType,
             'max_hectares_limit' => $validated['max_hectares_limit'],
             'min_hectares_limit' => $validated['min_hectares_limit'] ?? 0,
             'items_per_hectare' => $validated['items_per_hectare'],
+            'secondary_items_per_hectare' => $isDualUnit ? $validated['secondary_items_per_hectare'] : null,
             'status' => $validated['status'] ?? 'Draft',
-            'unit_of_measurement' => $validated['unit_of_measurement'] ?? 'Bags',
+            'unit_of_measurement' => $unit ?: 'Bags',
+            'secondary_unit' => $secondaryUnit,
             'total_quantity' => $totalQuantity,
             'remaining_quantity' => $totalQuantity,
             'reorder_level' => $validated['reorder_level'] ?? null,
+            'secondary_total_quantity' => $secondaryTotalQuantity,
+            'secondary_remaining_quantity' => $secondaryTotalQuantity,
+            'secondary_reorder_level' => $isDualUnit ? ($validated['secondary_reorder_level'] ?? null) : null,
         ]);
 
         return response()->json([
@@ -99,46 +126,69 @@ class SubsidyController extends Controller
 
     /**
      * Log an incoming warehouse delivery for one subsidy program (admin only).
-     * Adds to both the lifetime total and the currently claimable stock.
+     * Adds to both the lifetime total and the currently claimable stock, for
+     * both units when the program is dual-unit (e.g. kg + bags).
      */
     public function restock(Request $request, string $id): JsonResponse
     {
         $validated = $request->validate([
-            'quantity_added' => 'required|integer|min:1|max:1000000',
+            'quantity_added' => 'required|numeric|min:0.01|max:1000000',
+            'secondary_quantity_added' => 'nullable|numeric|min:0.01|max:1000000',
         ]);
 
         $program = DB::transaction(function () use ($id, $validated) {
             $program = SubsidyProgram::where('id', $id)->lockForUpdate()->firstOrFail();
             $program->total_quantity += $validated['quantity_added'];
             $program->remaining_quantity += $validated['quantity_added'];
+
+            if (! empty($validated['secondary_quantity_added']) && $program->secondary_unit) {
+                $program->secondary_total_quantity = (float) ($program->secondary_total_quantity ?? 0) + $validated['secondary_quantity_added'];
+                $program->secondary_remaining_quantity = (float) ($program->secondary_remaining_quantity ?? 0) + $validated['secondary_quantity_added'];
+            }
+
             $program->save();
 
             return $program;
         });
 
+        $message = "Delivery logged. {$validated['quantity_added']} {$program->unit_of_measurement} added to stock.";
+        if (! empty($validated['secondary_quantity_added']) && $program->secondary_unit) {
+            $message .= " Plus {$validated['secondary_quantity_added']} {$program->secondary_unit}.";
+        }
+
         return response()->json([
             'status' => 'success',
-            'message' => "Delivery logged. {$validated['quantity_added']} {$program->unit_of_measurement} added to stock.",
+            'message' => $message,
             'data' => $program->fresh(),
         ]);
     }
 
     /**
-     * Update stock-management configuration (admin only): unit label and
-     * minimum reorder threshold for low-stock warnings.
+     * Update stock-management configuration (admin only): reorder threshold(s)
+     * for low-stock warnings. Unit labels can only be retagged on legacy
+     * (non-catalog) programs — catalog programs keep their MAO-defined units.
      */
     public function updateConfig(Request $request, string $id): JsonResponse
     {
         $validated = $request->validate([
             'unit_of_measurement' => 'nullable|string|max:64',
-            'reorder_level' => 'nullable|integer|min:0|max:1000000',
+            'reorder_level' => 'nullable|numeric|min:0|max:1000000',
+            'secondary_reorder_level' => 'nullable|numeric|min:0|max:1000000',
         ]);
 
         $program = SubsidyProgram::query()->findOrFail($id);
-        $program->update([
-            'unit_of_measurement' => $validated['unit_of_measurement'] ?? $program->unit_of_measurement,
-            'reorder_level' => $validated['reorder_level'] ?? null,
-        ]);
+
+        $updates = ['reorder_level' => $validated['reorder_level'] ?? null];
+
+        if (! $program->item_type) {
+            $updates['unit_of_measurement'] = $validated['unit_of_measurement'] ?? $program->unit_of_measurement;
+        }
+
+        if ($program->secondary_unit) {
+            $updates['secondary_reorder_level'] = $validated['secondary_reorder_level'] ?? null;
+        }
+
+        $program->update($updates);
 
         return response()->json([
             'status' => 'success',
@@ -169,6 +219,8 @@ class SubsidyController extends Controller
 
     /**
      * Generate eligible beneficiaries from current, active planting records.
+     * Dual-unit catalog items (e.g. Hybrid Seed: kg + bags) compute an
+     * allocation for each unit from its own per-hectare rate.
      */
     public function generateMasterlist(string $id): JsonResponse
     {
@@ -211,8 +263,9 @@ class SubsidyController extends Controller
 
         $now = now();
         $minHa = (float) ($program->min_hectares_limit ?? 0);
+        $isDualUnit = $program->secondary_unit !== null;
         $rows = $eligibleFarmers
-            ->map(function ($farmer) use ($program, $now, $minHa) {
+            ->map(function ($farmer) use ($program, $now, $minHa, $isDualUnit) {
                 $farmArea = (float) $farmer->farm_area;
                 if ($minHa > 0 && $farmArea + 0.0000001 < $minHa) {
                     return null;
@@ -225,11 +278,18 @@ class SubsidyController extends Controller
 
                 // Allocations are whole items; partial items are not distributable.
                 $allocation = (int) floor(
-                    ($eligibleArea * (int) $program->items_per_hectare) + 0.0000001
+                    ($eligibleArea * (float) $program->items_per_hectare) + 0.0000001
                 );
                 $allocation = $this->cashCappedAllocation($program, $allocation);
 
-                if ($allocation < 1) {
+                $allocationSecondary = null;
+                if ($isDualUnit) {
+                    $allocationSecondary = (int) floor(
+                        ($eligibleArea * (float) $program->secondary_items_per_hectare) + 0.0000001
+                    );
+                }
+
+                if ($allocation < 1 && ($allocationSecondary === null || $allocationSecondary < 1)) {
                     return null;
                 }
 
@@ -238,6 +298,7 @@ class SubsidyController extends Controller
                     'program_id' => $program->id,
                     'farmer_rsbsa_no' => $farmer->rsbsa_no,
                     'calculated_allocation' => $allocation,
+                    'calculated_allocation_secondary' => $allocationSecondary,
                     'status' => 'Pending',
                     'claimed_at' => null,
                     'created_at' => $now,
@@ -306,6 +367,7 @@ class SubsidyController extends Controller
                 'farmers.first_name',
                 'farmers.permanent_brgy as barangay',
                 'beneficiaries.calculated_allocation',
+                'beneficiaries.calculated_allocation_secondary',
                 'beneficiaries.status',
             ])
             ->selectRaw('ROUND(COALESCE(planted.area, plots.area, 0), 4) as farm_area')
@@ -315,20 +377,7 @@ class SubsidyController extends Controller
             'status' => 'success',
             'message' => 'Subsidy masterlist loaded.',
             'data' => [
-                'program' => [
-                    'id' => $program->id,
-                    'program_name' => $program->program_name,
-                    'target_crop' => $program->target_crop,
-                    'max_hectares_limit' => $program->max_hectares_limit,
-                    'min_hectares_limit' => (float) ($program->min_hectares_limit ?? 0),
-                    'items_per_hectare' => $program->items_per_hectare,
-                    'status' => $program->status,
-                    'unit_of_measurement' => $program->unit_of_measurement,
-                    'total_quantity' => (int) $program->total_quantity,
-                    'remaining_quantity' => (int) $program->remaining_quantity,
-                    'reorder_level' => $program->reorder_level !== null ? (int) $program->reorder_level : null,
-                    'is_low_stock' => $program->reorder_level !== null && $program->remaining_quantity <= $program->reorder_level,
-                ],
+                'program' => $this->serializeProgram($program),
                 'count' => $masterlist->count(),
                 'masterlist' => $masterlist,
             ],
@@ -338,6 +387,7 @@ class SubsidyController extends Controller
     /**
      * Mark one beneficiary as Claimed and deduct their allocation from the
      * program's warehouse stock (DA 6-step distribution: release = stock out).
+     * Deducts both units in one transaction when the item is dual-unit.
      */
     public function claimBeneficiary(Request $request, string $id, string $beneficiaryId): JsonResponse
     {
@@ -366,15 +416,19 @@ class SubsidyController extends Controller
             }
 
             $allocation = $this->cashCappedAllocation($program, (int) $beneficiary->calculated_allocation);
+            $allocationSecondary = $beneficiary->calculated_allocation_secondary !== null
+                ? (int) $beneficiary->calculated_allocation_secondary
+                : null;
 
-            if ($program->remaining_quantity < $allocation) {
-                return [
-                    'error' => "Insufficient stock. Only {$program->remaining_quantity} {$program->unit_of_measurement} remaining, but this beneficiary is allocated {$allocation}. Log a delivery first.",
-                    'code' => 409,
-                ];
+            $shortfall = $this->stockShortfallMessage($program, $allocation, $allocationSecondary);
+            if ($shortfall) {
+                return ['error' => $shortfall, 'code' => 409];
             }
 
             $program->remaining_quantity -= $allocation;
+            if ($allocationSecondary !== null && $program->secondary_unit) {
+                $program->secondary_remaining_quantity = (float) ($program->secondary_remaining_quantity ?? 0) - $allocationSecondary;
+            }
             $program->save();
 
             $photoPath = $this->storeBase64Image($validated['photo_proof_base64'] ?? null, 'subsidy-claims');
@@ -477,12 +531,16 @@ class SubsidyController extends Controller
         }
 
         $allocation = $this->cashCappedAllocation($program, (int) $beneficiary->calculated_allocation);
+        $allocationSecondary = $beneficiary->calculated_allocation_secondary !== null
+            ? (int) $beneficiary->calculated_allocation_secondary
+            : null;
 
-        if ($program->remaining_quantity < $allocation) {
+        $shortfall = $this->stockShortfallMessage($program, $allocation, $allocationSecondary);
+        if ($shortfall) {
             return response()->json([
                 'status' => 'error',
                 'eligible' => false,
-                'message' => "Insufficient stock. Only {$program->remaining_quantity} {$program->unit_of_measurement} remaining, but this farmer is allocated {$allocation}.",
+                'message' => $shortfall,
             ], 409);
         }
 
@@ -510,11 +568,18 @@ class SubsidyController extends Controller
                 'farmer_name' => trim($farmer->surname.', '.$farmer->first_name.' '.$farmer->middle_name),
                 'mobile_number' => $farmer->mobile_number,
                 'item_released' => $program->program_name,
+                'seed_class' => $program->seed_class,
+                'item_type' => $program->item_type,
                 'unit' => $program->unit_of_measurement,
                 'total_farm_size' => $totalFarmSize,
                 'eligible_size' => $eligibleSize,
                 'quantity' => $allocation,
-                'inventory_remaining' => (int) $program->remaining_quantity,
+                'inventory_remaining' => (float) $program->remaining_quantity,
+                'unit_secondary' => $program->secondary_unit,
+                'quantity_secondary' => $allocationSecondary,
+                'inventory_remaining_secondary' => $program->secondary_unit
+                    ? (float) ($program->secondary_remaining_quantity ?? 0)
+                    : null,
                 'plot_lat' => $primaryPlot?->latitude,
                 'plot_long' => $primaryPlot?->longitude,
                 'source' => 'subsidy',
@@ -602,16 +667,19 @@ class SubsidyController extends Controller
             }
 
             $allocation = $this->cashCappedAllocation($program, (int) $beneficiary->calculated_allocation);
+            $allocationSecondary = $beneficiary->calculated_allocation_secondary !== null
+                ? (int) $beneficiary->calculated_allocation_secondary
+                : null;
 
-            if ($program->remaining_quantity < $allocation) {
-                return [
-                    'error' => "Insufficient stock. Only {$program->remaining_quantity} {$program->unit_of_measurement} remaining, but this farmer is allocated {$allocation}.",
-                    'code' => 409,
-                    'outcome' => 'failed',
-                ];
+            $shortfall = $this->stockShortfallMessage($program, $allocation, $allocationSecondary);
+            if ($shortfall) {
+                return ['error' => $shortfall, 'code' => 409, 'outcome' => 'failed'];
             }
 
             $program->remaining_quantity -= $allocation;
+            if ($allocationSecondary !== null && $program->secondary_unit) {
+                $program->secondary_remaining_quantity = (float) ($program->secondary_remaining_quantity ?? 0) - $allocationSecondary;
+            }
             $program->save();
 
             $photoPath = $this->storeBase64Image($item['photo_proof_base64'] ?? null, 'subsidy-claims');
@@ -648,7 +716,14 @@ class SubsidyController extends Controller
                 'farmer_name' => $farmerName,
                 'quantity_dispensed' => (int) $result['beneficiary']->calculated_allocation,
                 'unit' => $result['program']->unit_of_measurement,
-                'inventory_remaining' => (int) $result['program']->remaining_quantity,
+                'inventory_remaining' => (float) $result['program']->remaining_quantity,
+                'quantity_dispensed_secondary' => $result['beneficiary']->calculated_allocation_secondary !== null
+                    ? (int) $result['beneficiary']->calculated_allocation_secondary
+                    : null,
+                'unit_secondary' => $result['program']->secondary_unit,
+                'inventory_remaining_secondary' => $result['program']->secondary_unit
+                    ? (float) ($result['program']->secondary_remaining_quantity ?? 0)
+                    : null,
                 'program' => $result['program'],
             ],
         ];
@@ -666,6 +741,73 @@ class SubsidyController extends Controller
         }
 
         return Farmer::with('farmPlots')->where('rsbsa_no', $rsbsa)->first();
+    }
+
+    /**
+     * Shared index/masterlist program payload: seed class, item type, both
+     * units, both stock buckets, and a combined low-stock flag.
+     */
+    private function serializeProgram(SubsidyProgram $p): array
+    {
+        return [
+            'id' => $p->id,
+            'program_name' => $p->program_name,
+            'target_crop' => $p->target_crop,
+            'seed_class' => $p->seed_class,
+            'item_type' => $p->item_type,
+            'max_hectares_limit' => (float) $p->max_hectares_limit,
+            'min_hectares_limit' => (float) ($p->min_hectares_limit ?? 0),
+            'items_per_hectare' => (float) $p->items_per_hectare,
+            'secondary_items_per_hectare' => $p->secondary_items_per_hectare !== null ? (float) $p->secondary_items_per_hectare : null,
+            'status' => $p->status,
+            'unit_of_measurement' => $p->unit_of_measurement,
+            'secondary_unit' => $p->secondary_unit,
+            'total_quantity' => (float) $p->total_quantity,
+            'remaining_quantity' => (float) $p->remaining_quantity,
+            'reorder_level' => $p->reorder_level !== null ? (float) $p->reorder_level : null,
+            'secondary_total_quantity' => $p->secondary_total_quantity !== null ? (float) $p->secondary_total_quantity : null,
+            'secondary_remaining_quantity' => $p->secondary_remaining_quantity !== null ? (float) $p->secondary_remaining_quantity : null,
+            'secondary_reorder_level' => $p->secondary_reorder_level !== null ? (float) $p->secondary_reorder_level : null,
+            'is_low_stock' => $this->isLowStock($p),
+            'beneficiaries_count' => (int) ($p->beneficiaries_count ?? 0),
+            'claimed_count' => (int) ($p->claimed_count ?? 0),
+            'created_at' => optional($p->created_at)->toIso8601String(),
+        ];
+    }
+
+    /**
+     * Low stock if either unit bucket is at/below its own reorder level.
+     */
+    private function isLowStock(SubsidyProgram $program): bool
+    {
+        $primaryLow = $program->reorder_level !== null
+            && (float) $program->remaining_quantity <= (float) $program->reorder_level;
+
+        $secondaryLow = $program->secondary_unit !== null
+            && $program->secondary_reorder_level !== null
+            && (float) ($program->secondary_remaining_quantity ?? 0) <= (float) $program->secondary_reorder_level;
+
+        return $primaryLow || $secondaryLow;
+    }
+
+    /**
+     * Null when both stock buckets can cover the allocation; otherwise the
+     * user-facing shortage message for whichever bucket is short.
+     */
+    private function stockShortfallMessage(SubsidyProgram $program, int $allocation, ?int $allocationSecondary): ?string
+    {
+        if ((float) $program->remaining_quantity < $allocation) {
+            return "Insufficient stock. Only {$program->remaining_quantity} {$program->unit_of_measurement} remaining, but this farmer is allocated {$allocation}. Log a delivery first.";
+        }
+
+        if ($allocationSecondary !== null && $program->secondary_unit) {
+            $secondaryRemaining = (float) ($program->secondary_remaining_quantity ?? 0);
+            if ($secondaryRemaining < $allocationSecondary) {
+                return "Insufficient stock. Only {$secondaryRemaining} {$program->secondary_unit} remaining, but this farmer is allocated {$allocationSecondary}. Log a delivery first.";
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -707,6 +849,10 @@ class SubsidyController extends Controller
 
     private function isCashProgram(SubsidyProgram $program): bool
     {
+        if ($program->item_type) {
+            return SubsidyCatalog::isCash($program->item_type);
+        }
+
         return strcasecmp(trim((string) $program->unit_of_measurement), 'Cash (PHP)') === 0;
     }
 

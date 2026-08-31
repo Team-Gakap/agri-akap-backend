@@ -15,6 +15,7 @@ use App\Models\Program;
 use App\Models\ReportWorkflow;
 use App\Models\StandingCropLog;
 use App\Models\WeatherCache;
+use App\Services\CropStageService;
 use App\Services\ReportAggregationService;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
@@ -560,55 +561,20 @@ class DashboardController extends Controller
     }
 
     /**
-     * Municipal crop-stage mix from standing-crop logs (fallback: pest monitoring).
+     * Municipal crop-stage mix: live planting stages first, then standing-crop
+     * (fallback: pest monitoring) for plots without an active planting log.
      *
      * @return array<int, array{stage: string, key: string, total: int, percent: float}>
      */
     private function overviewCropStages(): array
     {
-        $counts = [
-            'seedling' => 0,
-            'vegetative' => 0,
-            'reproductive' => 0,
-            'maturity' => 0,
-        ];
-
-        $tally = function (string $raw) use (&$counts): void {
-            $key = match (true) {
-                str_contains($raw, 'seed') => 'seedling',
-                str_contains($raw, 'veget') => 'vegetative',
-                str_contains($raw, 'reprod') => 'reproductive',
-                str_contains($raw, 'matur') => 'maturity',
-                default => null,
-            };
-            if ($key) {
-                $counts[$key]++;
-            }
-        };
-
-        if (Schema::hasTable('standing_crop_logs')) {
-            StandingCropLog::query()
-                ->pluck('growth_stage')
-                ->each(fn ($stage) => $tally(strtolower((string) $stage)));
-        }
-
-        if (array_sum($counts) === 0 && Schema::hasTable('pest_monitoring') && Schema::hasColumn('pest_monitoring', 'crop_stage')) {
-            PestMonitoring::query()
-                ->pluck('crop_stage')
-                ->each(fn ($stage) => $tally(strtolower((string) $stage)));
-        }
-
+        $counts = app(CropStageService::class)->hybridStageTally();
         $total = array_sum($counts);
-        $labels = [
-            'seedling' => 'Seedling',
-            'vegetative' => 'Vegetative',
-            'reproductive' => 'Reproductive',
-            'maturity' => 'Maturity',
-        ];
+        $labels = CropStageService::BUCKET_LABELS;
 
         return collect($counts)
             ->map(fn ($n, $key) => [
-                'stage' => $labels[$key],
+                'stage' => $labels[$key] ?? ucfirst((string) $key),
                 'key' => $key,
                 'total' => (int) $n,
                 'percent' => $total > 0 ? round(($n / $total) * 100, 1) : 0.0,
@@ -1388,6 +1354,12 @@ class DashboardController extends Controller
             ->get();
 
         $stageByPlot = [];
+        if ($plots->isNotEmpty()) {
+            $cropStages = app(CropStageService::class);
+            foreach ($cropStages->liveStageBuckets($barangay)['by_plot'] as $plotId => $bucket) {
+                $stageByPlot[(string) $plotId] = $cropStages->bucketLabel($bucket);
+            }
+        }
         if (Schema::hasTable('standing_crop_logs') && $plots->isNotEmpty()) {
             StandingCropLog::query()
                 ->whereIn('farm_plot_id', $plots->pluck('id'))

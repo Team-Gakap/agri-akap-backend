@@ -4,8 +4,10 @@ namespace App\Http\Controllers;
 
 use App\Imports\FarmersImport;
 use App\Models\Farmer;
+use App\Models\PlantingLog;
 use App\Http\Requests\StoreFarmerRequest;
 use App\Http\Requests\UpdateFarmerRequest;
+use App\Services\CropStageService;
 use App\Services\FarmAreaBudgetService;
 use App\Services\SmsService;
 use App\Support\OfficialBarangays;
@@ -24,6 +26,7 @@ class FarmerController extends Controller
     public function __construct(
         private SmsService $sms,
         private FarmAreaBudgetService $farmAreaBudget,
+        private CropStageService $cropStages,
     ) {
     }
 
@@ -254,6 +257,66 @@ class FarmerController extends Controller
     }
 
     /**
+     * Live stage + details for a farmer's most recent active planting log.
+     * Optional `farm_plot_id` / `commodity` narrow the match. Returns data:null
+     * (200) when the farmer has no matching active planting — not a 404.
+     */
+    public function activePlanting(Request $request, string $id): JsonResponse
+    {
+        Farmer::findOrFail($id);
+
+        $plotId = trim((string) $request->query('farm_plot_id', ''));
+        $commodity = trim((string) $request->query('commodity', ''));
+
+        $query = PlantingLog::query()
+            ->where('farmer_id', $id)
+            ->whereRaw('LOWER(status) = ?', ['active']);
+
+        if ($commodity !== '') {
+            $query->where('crop_type', $commodity);
+        }
+
+        if ($plotId !== '') {
+            $query->where(function ($q) use ($plotId) {
+                $q->where('farm_plot_id', $plotId)->orWhereNull('farm_plot_id');
+            });
+            $query->orderByRaw('CASE WHEN farm_plot_id IS NULL THEN 1 ELSE 0 END');
+        }
+
+        $log = $query
+            ->orderByDesc('date_planted')
+            ->orderByDesc('created_at')
+            ->first();
+
+        if (! $log) {
+            return response()->json([
+                'status' => 'success',
+                'message' => 'No active planting log.',
+                'data' => null,
+            ]);
+        }
+
+        $stage = $this->cropStages->resolveForPlantingLog($log);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Active planting retrieved.',
+            'data' => [
+                'id' => $log->id,
+                'farm_plot_id' => $log->farm_plot_id,
+                'commodity' => $log->crop_type,
+                'variety' => $log->variety,
+                'area_planted_ha' => $log->area_planted !== null ? (float) $log->area_planted : null,
+                'date_planted' => optional($log->date_planted)->toDateString(),
+                'computed_stage' => $stage['current_stage'] ?? null,
+                'days_elapsed' => $stage['days_elapsed'] ?? null,
+                'days_to_harvest' => $stage['days_to_harvest'] ?? null,
+                'estimated_harvest_date' => $stage['estimated_harvest_date'] ?? null,
+            ],
+        ]);
+    }
+
+    /**
      * Return official Echague barangay names for filter and enrollment dropdowns.
      * Pass ?with_farmers=1 to limit to barangays that already have registered farmers.
      */
@@ -317,7 +380,10 @@ class FarmerController extends Controller
         return response()->json([
             'status' => 'success',
             'message' => 'Farmer photo saved.',
-            'data' => ['photo_url' => asset('storage/' . $path)],
+            'data' => [
+                'photo_url' => public_storage_url($path),
+                'photo_path' => $path,
+            ],
         ]);
     }
 

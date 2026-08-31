@@ -6,10 +6,10 @@ use App\Models\DamageAssessment;
 use App\Models\Farmer;
 use App\Models\HarvestLog;
 use App\Models\PestMonitoring;
-use App\Models\StandingCropLog;
 use App\Models\SubsidyBeneficiary;
 use App\Models\WeatherCache;
 use App\Models\WeatherHourly;
+use App\Services\CropStageService;
 use App\Services\WeatherHourlyService;
 use App\Services\WeatherService;
 use Carbon\Carbon;
@@ -154,47 +154,14 @@ class BrgyDashboardController extends Controller
     }
 
     /**
-     * Active crop lifecycle mix from standing crops (fallback: pest inspections).
+     * Active crop lifecycle mix: live planting stages first, then standing crops
+     * (fallback: pest inspections) for plots without an active planting log.
      *
      * @return array{seedling: int, vegetative: int, reproductive: int, maturity: int}
      */
     private function cropStages(string $barangay): array
     {
-        $stages = [
-            'seedling' => 0,
-            'vegetative' => 0,
-            'reproductive' => 0,
-            'maturity' => 0,
-        ];
-
-        $tally = function (string $raw) use (&$stages): void {
-            $key = match (true) {
-                str_contains($raw, 'seed') => 'seedling',
-                str_contains($raw, 'veget') => 'vegetative',
-                str_contains($raw, 'reprod') => 'reproductive',
-                str_contains($raw, 'matur') => 'maturity',
-                default => null,
-            };
-            if ($key) {
-                $stages[$key]++;
-            }
-        };
-
-        if (Schema::hasTable('standing_crop_logs')) {
-            StandingCropLog::query()
-                ->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay))
-                ->pluck('growth_stage')
-                ->each(fn ($stage) => $tally(strtolower((string) $stage)));
-        }
-
-        if (array_sum($stages) === 0 && Schema::hasColumn('pest_monitoring', 'crop_stage')) {
-            PestMonitoring::query()
-                ->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay))
-                ->pluck('crop_stage')
-                ->each(fn ($stage) => $tally(strtolower((string) $stage)));
-        }
-
-        return $stages;
+        return app(CropStageService::class)->hybridStageTally($barangay);
     }
 
     /**

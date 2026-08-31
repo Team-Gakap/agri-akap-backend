@@ -87,6 +87,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/farmers/barangays', [FarmerController::class, 'barangays']);
     Route::get('/farmers/commodities', [FarmerController::class, 'commodities']);
     Route::get('/farmers/{id}', [FarmerController::class, 'show']);
+    Route::get('/farmers/{id}/active-planting', [FarmerController::class, 'activePlanting']);
     Route::patch('/farmers/{id}', [FarmerController::class, 'update'])
         ->middleware('role:admin');
     Route::delete('/farmers/{id}', [FarmerController::class, 'destroy'])

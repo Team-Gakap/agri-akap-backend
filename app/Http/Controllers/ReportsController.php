@@ -8,6 +8,7 @@ use App\Models\PestMonitoring;
 use App\Models\PlantingLog;
 use App\Models\SubsidyBeneficiary;
 use App\Models\SubsidyProgram;
+use App\Support\SubsidyCatalog;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -27,6 +28,8 @@ class ReportsController extends Controller
             'program_id' => ['nullable', 'string'],
             'barangay'   => ['nullable', 'string'],
             'crop_type'  => ['nullable', 'string'],
+            'seed_class' => ['nullable', 'string'],
+            'item_type'  => ['nullable', 'string'],
             'date_from'  => ['nullable', 'date'],
             'date_to'    => ['nullable', 'date'],
         ]);
@@ -39,11 +42,15 @@ class ReportsController extends Controller
                 'tbl_subsidy_beneficiaries.id',
                 'tbl_subsidy_beneficiaries.farmer_rsbsa_no',
                 'tbl_subsidy_beneficiaries.calculated_allocation',
+                'tbl_subsidy_beneficiaries.calculated_allocation_secondary',
                 'tbl_subsidy_beneficiaries.claimed_at',
                 'tbl_subsidy_beneficiaries.photo_proof_path',
                 'tbl_subsidy_programs.program_name',
                 'tbl_subsidy_programs.target_crop',
+                'tbl_subsidy_programs.seed_class',
+                'tbl_subsidy_programs.item_type',
                 'tbl_subsidy_programs.unit_of_measurement',
+                'tbl_subsidy_programs.secondary_unit',
                 'farmers.surname',
                 'farmers.first_name',
                 'farmers.permanent_brgy',
@@ -55,6 +62,12 @@ class ReportsController extends Controller
         }
         if ($request->filled('crop_type')) {
             $query->where('tbl_subsidy_programs.target_crop', $request->crop_type);
+        }
+        if ($request->filled('seed_class')) {
+            $query->where('tbl_subsidy_programs.seed_class', $request->seed_class);
+        }
+        if ($request->filled('item_type')) {
+            $query->where('tbl_subsidy_programs.item_type', $request->item_type);
         }
         $barangay = $this->scopedBarangay($request);
         if ($barangay !== null) {
@@ -68,8 +81,7 @@ class ReportsController extends Controller
         }
 
         $rows = $query->limit(3000)->get()->map(function ($row) {
-            $itemReceived = trim($row->calculated_allocation . ' ' . ($row->unit_of_measurement ?? 'Bags'));
-            $farmerName   = trim(($row->first_name ?? '') . ' ' . ($row->surname ?? ''));
+            $farmerName = trim(($row->first_name ?? '') . ' ' . ($row->surname ?? ''));
 
             return [
                 'rsbsa_no'      => $row->farmer_rsbsa_no,
@@ -77,14 +89,18 @@ class ReportsController extends Controller
                 'barangay'      => $row->permanent_brgy ?? '',
                 'program_name'  => $row->program_name ?? '',
                 'target_crop'   => $row->target_crop ?? '',
-                'item_received' => $itemReceived,
+                'seed_class'    => $row->seed_class,
+                'item_type'     => $row->item_type,
+                'item_received' => $this->formatItemReceived($row),
                 'quantity'      => (float) ($row->calculated_allocation ?? 0),
                 'unit'          => $row->unit_of_measurement ?? 'Bags',
+                'quantity_secondary' => $row->calculated_allocation_secondary !== null
+                    ? (float) $row->calculated_allocation_secondary
+                    : null,
+                'unit_secondary' => $row->secondary_unit,
                 'date_claimed'  => $row->claimed_at,
                 'photo_path'    => $row->photo_proof_path,
-                'photo_url'     => $row->photo_proof_path
-                    ? asset('storage/' . ltrim($row->photo_proof_path, '/'))
-                    : null,
+                'photo_url'     => public_storage_url($row->photo_proof_path),
             ];
         });
 
@@ -92,6 +108,43 @@ class ReportsController extends Controller
             'status' => 'success',
             'data'   => ['rows' => $rows],
         ]);
+    }
+
+    /**
+     * "40 kg / 2 bags", "3 bottle", or "₱1,000" depending on the catalog
+     * shape of the item; legacy rows fall back to a single quantity + unit.
+     */
+    private function formatItemReceived($row): string
+    {
+        $unit = $row->unit_of_measurement ?? 'Bags';
+        $qty = (float) ($row->calculated_allocation ?? 0);
+
+        if (($row->item_type ?? null) && SubsidyCatalog::isCash($row->item_type)) {
+            return '₱' . number_format($qty, 0);
+        }
+        if (strcasecmp(trim((string) $unit), 'Cash (PHP)') === 0) {
+            return '₱' . number_format($qty, 0);
+        }
+
+        $primary = trim($this->trimTrailingZero($qty) . ' ' . $unit);
+
+        if ($row->secondary_unit && $row->calculated_allocation_secondary !== null) {
+            $secondaryQty = (float) $row->calculated_allocation_secondary;
+            $primary .= ' / ' . trim($this->trimTrailingZero($secondaryQty) . ' ' . $row->secondary_unit);
+        }
+
+        return $primary;
+    }
+
+    /**
+     * Display quantities as whole numbers when they have no fractional part
+     * (e.g. "40 kg" instead of "40.00 kg"), otherwise keep 2 decimals.
+     */
+    private function trimTrailingZero(float $value): string
+    {
+        return fmod($value, 1.0) === 0.0
+            ? number_format($value, 0)
+            : number_format($value, 2);
     }
 
     // ── Crop Production Report ────────────────────────────────────────────────
@@ -322,9 +375,7 @@ class ReportsController extends Controller
                 'severity'      => $row->severity ?? 'Low',
                 'area_affected' => $areaAffected,
                 'status'        => $status,
-                'photo_url'     => $row->photo_path
-                    ? asset('storage/' . ltrim($row->photo_path, '/'))
-                    : null,
+                'photo_url'     => public_storage_url($row->photo_path),
             ];
         });
 
@@ -402,9 +453,7 @@ class ReportsController extends Controller
                 'area_affected'  => $areaAffected,
                 'damage_value'   => (float) ($row->estimated_value_lost ?? 0),
                 'status'         => $effectiveStatus,
-                'photo_url'      => $row->photo_evidence_path
-                    ? asset('storage/' . ltrim($row->photo_evidence_path, '/'))
-                    : null,
+                'photo_url'      => public_storage_url($row->photo_evidence_path),
             ];
         });
 

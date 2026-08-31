@@ -17,6 +17,7 @@ class SubsidyBeneficiary extends Model
         'program_id',
         'farmer_rsbsa_no',
         'calculated_allocation',
+        'calculated_allocation_secondary',
         'status',
         'claimed_at',
         'claimed_by',
@@ -24,7 +25,8 @@ class SubsidyBeneficiary extends Model
     ];
 
     protected $casts = [
-        'calculated_allocation' => 'integer',
+        'calculated_allocation' => 'decimal:2',
+        'calculated_allocation_secondary' => 'decimal:2',
         'claimed_at' => 'datetime',
     ];
 

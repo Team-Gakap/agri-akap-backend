@@ -60,7 +60,7 @@ class DamageAssessment extends Model
             return null;
         }
 
-        return asset('storage/' . $this->photo_evidence_path);
+        return public_storage_url($this->photo_evidence_path);
     }
 
     public function farmPlot(): BelongsTo
