@@ -330,7 +330,9 @@ class SyncController extends Controller
             return $this->itemResult($clientId, 'failed', 'Dispatched assessment no longer exists on the server.');
         }
 
-        if ($assessment->status !== 'Pending') {
+        // Queue membership is photo + GPS, not status. Barangay verify() can
+        // flip status to Verified without field evidence — still attach proof.
+        if ($assessment->photo_evidence_path && $assessment->latitude) {
             return $this->itemResult($clientId ?? $assessmentId, 'duplicate', 'Assessment already field-validated.');
         }
 
@@ -556,15 +558,60 @@ class SyncController extends Controller
             return $this->itemResult($clientId, 'failed', $validator->errors()->first());
         }
 
-        $photoPath = null;
-        if (! empty($item['photo_base64'])) {
+        $lat = $item['lat'] ?? ($item['latitude'] ?? null);
+        $lng = $item['lng'] ?? ($item['longitude'] ?? null);
+
+        if ($serverId) {
+            $existing = PestMonitoring::find($serverId);
+            if (! $existing) {
+                return $this->itemResult($clientId, 'failed', 'Dispatched pest report no longer exists on the server.');
+            }
+
+            if ($lat === null || $lng === null || empty($item['photo_base64'])) {
+                return $this->itemResult($clientId, 'failed', 'GPS coordinates and a photo are required to field-validate.');
+            }
+
             $photoPath = $this->storeBase64Image($item['photo_base64'], 'pest-monitoring');
             if ($photoPath === null) {
                 return $this->itemResult($clientId, 'failed', 'Pest photo could not be decoded.');
             }
+
+            $existing->update([
+                'technician_id' => $technicianId,
+                'pest_name' => $item['pest_name'] ?? $existing->pest_name,
+                'incidence' => (int) $item['incidence'],
+                'severity' => $item['severity'],
+                'advisory' => $item['advisory'] ?? $existing->advisory,
+                'is_outbreak' => array_key_exists('is_outbreak', $item)
+                    ? (bool) $item['is_outbreak']
+                    : $existing->is_outbreak,
+                'latitude' => $lat,
+                'longitude' => $lng,
+                'photo_path' => $photoPath,
+                'report_ref' => $item['report_id'] ?? $existing->report_ref,
+                'item_distributed' => $item['item_distributed'] ?? $existing->item_distributed,
+                'quantity' => isset($item['quantity']) ? (string) $item['quantity'] : $existing->quantity,
+                'device_id' => $item['device_id'] ?? $deviceId,
+            ]);
+
+            return $this->itemResult($clientId ?? $existing->id, 'synced', 'Pest report updated.');
         }
 
-        $payload = [
+        if ($lat === null || $lng === null || empty($item['photo_base64'])) {
+            return $this->itemResult($clientId, 'failed', 'GPS coordinates and a photo are required.');
+        }
+
+        $photoPath = $this->storeBase64Image($item['photo_base64'], 'pest-monitoring');
+        if ($photoPath === null) {
+            return $this->itemResult($clientId, 'failed', 'Pest photo could not be decoded.');
+        }
+
+        if ($clientId && PestMonitoring::where('client_id', $clientId)->exists()) {
+            return $this->itemResult($clientId, 'duplicate', 'Pest report already synced.');
+        }
+
+        $row = PestMonitoring::create([
+            'client_id' => $clientId,
             'farmer_id' => $farmerId,
             'technician_id' => $technicianId,
             'crop' => $item['crop'] ?? null,
@@ -573,34 +620,14 @@ class SyncController extends Controller
             'severity' => $item['severity'],
             'advisory' => $item['advisory'] ?? null,
             'is_outbreak' => (bool) ($item['is_outbreak'] ?? false),
-            'latitude' => $item['lat'] ?? ($item['latitude'] ?? null),
-            'longitude' => $item['lng'] ?? ($item['longitude'] ?? null),
+            'latitude' => $lat,
+            'longitude' => $lng,
+            'photo_path' => $photoPath,
             'report_ref' => $item['report_id'] ?? null,
             'item_distributed' => $item['item_distributed'] ?? null,
             'quantity' => isset($item['quantity']) ? (string) $item['quantity'] : null,
             'device_id' => $item['device_id'] ?? $deviceId,
-        ];
-        if ($photoPath) {
-            $payload['photo_path'] = $photoPath;
-        }
-
-        if ($serverId) {
-            $existing = PestMonitoring::find($serverId);
-            if ($existing) {
-                $existing->update($payload);
-
-                return $this->itemResult($clientId ?? $existing->id, 'synced', 'Pest report updated.');
-            }
-        }
-
-        if ($clientId && PestMonitoring::where('client_id', $clientId)->exists()) {
-            return $this->itemResult($clientId, 'duplicate', 'Pest report already synced.');
-        }
-
-        $row = PestMonitoring::create(array_merge($payload, [
-            'client_id' => $clientId,
-            'photo_path' => $photoPath,
-        ]));
+        ]);
 
         return $this->itemResult($clientId ?? $row->id, 'synced', 'Pest report saved.');
     }
@@ -773,10 +800,38 @@ class SyncController extends Controller
         $finalAreaHa = $finalAreaSqm !== null ? round($finalAreaSqm / 10000, 4) : null;
         $hasDiscrepancy = (bool) ($item['has_discrepancy'] ?? false);
 
+        // Polygon walks must update farm_plots (admin + dispatch queue read that
+        // table). Fail before writing geo_tags so a retry can still succeed.
+        if ($geometryType === 'polygon') {
+            if (! $farmerId) {
+                return $this->itemResult($clientId, 'failed', 'Farmer could not be resolved for this geo-tag walk.');
+            }
+            if ($finalAreaHa === null || $finalAreaHa <= 0) {
+                return $this->itemResult($clientId, 'failed', 'Mapped area is zero. Walk a closed boundary before syncing.');
+            }
+        }
+
         try {
+            $farmPlot = null;
+            if ($geometryType === 'polygon') {
+                try {
+                    $farmPlot = $this->createFarmPlotFromBoundary(
+                        (string) $farmerId,
+                        $points,
+                        (float) $finalAreaHa,
+                        $nonProductiveSqm,
+                        $hasDiscrepancy,
+                        $item,
+                    );
+                } catch (\InvalidArgumentException $e) {
+                    return $this->itemResult($clientId, 'failed', $e->getMessage());
+                }
+            }
+
             $geoTag = GeoTag::create([
                 'client_id' => $clientId,
                 'farmer_id' => $farmerId,
+                'farm_plot_id' => $farmPlot?->id,
                 'rsbsa_no' => $item['rsbsa_no'] ?? null,
                 'technician_id' => $technicianId,
                 'device_id' => $item['device_id'] ?? $deviceId,
@@ -798,24 +853,6 @@ class SyncController extends Controller
                 'final_area_ha' => $finalAreaHa,
                 'has_discrepancy' => $hasDiscrepancy,
             ]);
-
-            if ($geometryType === 'polygon' && $farmerId && $finalAreaHa !== null && $finalAreaHa > 0) {
-                try {
-                    $farmPlot = $this->createFarmPlotFromBoundary(
-                        $farmerId,
-                        $points,
-                        $finalAreaHa,
-                        $nonProductiveSqm,
-                        $hasDiscrepancy,
-                        $item,
-                    );
-                } catch (\InvalidArgumentException $e) {
-                    return $this->itemResult($clientId, 'failed', $e->getMessage());
-                }
-
-                $geoTag->farm_plot_id = $farmPlot->id;
-                $geoTag->save();
-            }
 
             return $this->itemResult($clientId ?? $geoTag->id, 'synced', 'Geo-tag saved.');
         } catch (\Throwable $e) {
@@ -892,6 +929,9 @@ class SyncController extends Controller
                 ->where('id', $requestedPlotId)
                 ->where('farmer_id', $farmerId)
                 ->first();
+            if (! $existing) {
+                throw new \InvalidArgumentException('Dispatched farm plot was not found for this farmer.');
+            }
         }
         if (! $existing) {
             $existing = FarmPlot::query()
@@ -941,6 +981,11 @@ class SyncController extends Controller
                 'planting_end_month' => $item['planting_end_month'] ?? $existing->planting_end_month,
                 'remarks' => $item['observations'] ?? $existing->remarks,
                 'geotag_status' => 'mapped',
+                'geotag_assigned_user_id' => null,
+                'geotag_assigned_name' => null,
+                'geotag_priority' => null,
+                'geotag_notes' => null,
+                'geotag_deadline' => null,
             ]);
 
             DB::update(

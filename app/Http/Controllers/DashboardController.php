@@ -8,6 +8,8 @@ use App\Models\Distribution;
 use App\Models\Farmer;
 use App\Models\FarmPlot;
 use App\Models\GeoTag;
+use App\Models\GeoTagRefusal;
+use App\Models\HarvestLog;
 use App\Models\PestMonitoring;
 use App\Models\PestOutbreak;
 use App\Models\PlantingLog;
@@ -1817,7 +1819,7 @@ class DashboardController extends Controller
 
         PestMonitoring::with('farmer:id,first_name,surname')
             ->where('technician_id', $techId)
-            ->orderByDesc('created_at')
+            ->orderByDesc('updated_at')
             ->limit(10)
             ->get()
             ->each(function (PestMonitoring $row) use ($items) {
@@ -1826,13 +1828,13 @@ class DashboardController extends Controller
                     'type' => 'Pest',
                     'title' => $farmer !== '' ? $farmer : ($row->pest_name ?: 'Pest report'),
                     'detail' => trim(($row->pest_name ?: $row->crop ?: 'Pest').($row->severity ? ' · '.$row->severity : '')),
-                    'created_at' => optional($row->created_at)?->toIso8601String(),
+                    'created_at' => optional($row->updated_at ?? $row->created_at)?->toIso8601String(),
                 ]);
             });
 
         DamageAssessment::with('farmer:id,first_name,surname')
             ->where('technician_id', $techId)
-            ->orderByDesc('created_at')
+            ->orderByRaw('COALESCE(verified_at, updated_at, created_at) DESC')
             ->limit(10)
             ->get()
             ->each(function (DamageAssessment $row) use ($items) {
@@ -1841,7 +1843,7 @@ class DashboardController extends Controller
                     'type' => 'Calamity',
                     'title' => $farmer !== '' ? $farmer : ($row->calamity_name ?: 'Damage report'),
                     'detail' => trim(($row->calamity_name ?: $row->calamity_type ?: 'Calamity').($row->status ? ' · '.$row->status : '')),
-                    'created_at' => optional($row->created_at)?->toIso8601String(),
+                    'created_at' => optional($row->verified_at ?? $row->updated_at ?? $row->created_at)?->toIso8601String(),
                 ]);
             });
 
@@ -1884,6 +1886,78 @@ class DashboardController extends Controller
                         'detail' => trim(($row->program_name ?: 'Subsidy').' · '.($row->calculated_allocation ?? '').' '.($row->unit_of_measurement ?? '')),
                         'created_at' => $row->claimed_at
                             ? Carbon::parse($row->claimed_at)->toIso8601String()
+                            : null,
+                    ]);
+                });
+        }
+
+        HarvestLog::with('farmer:id,first_name,surname')
+            ->where('technician_id', $techId)
+            ->orderByDesc('created_at')
+            ->limit(10)
+            ->get()
+            ->each(function (HarvestLog $row) use ($items) {
+                $farmer = trim((string) ($row->farmer?->surname ?? '').', '.($row->farmer?->first_name ?? ''), ' ,');
+                $items->push([
+                    'type' => 'Harvest',
+                    'title' => $farmer !== '' ? $farmer : ($row->crop_type ?: 'Harvest log'),
+                    'detail' => trim(($row->crop_type ?: 'Crop').' · '.($row->total_yield ?? '').' '.($row->yield_unit ?? '')),
+                    'created_at' => optional($row->created_at)?->toIso8601String(),
+                ]);
+            });
+
+        StandingCropLog::with('farmer:id,first_name,surname')
+            ->where('technician_id', $techId)
+            ->orderByDesc('created_at')
+            ->limit(10)
+            ->get()
+            ->each(function (StandingCropLog $row) use ($items) {
+                $farmer = trim((string) ($row->farmer?->surname ?? '').', '.($row->farmer?->first_name ?? ''), ' ,');
+                $items->push([
+                    'type' => 'Standing crop',
+                    'title' => $farmer !== '' ? $farmer : ($row->crop_type ?: 'Standing crop'),
+                    'detail' => trim(($row->crop_type ?: 'Crop').($row->growth_stage ? ' · '.$row->growth_stage : '')),
+                    'created_at' => optional($row->created_at)?->toIso8601String(),
+                ]);
+            });
+
+        GeoTagRefusal::with('farmer:id,first_name,surname')
+            ->where('technician_id', $techId)
+            ->orderByDesc('created_at')
+            ->limit(10)
+            ->get()
+            ->each(function (GeoTagRefusal $row) use ($items) {
+                $farmer = trim((string) ($row->farmer?->surname ?? '').', '.($row->farmer?->first_name ?? ''), ' ,');
+                $items->push([
+                    'type' => 'Geo refusal',
+                    'title' => $farmer !== '' ? $farmer : 'Refusal',
+                    'detail' => 'Attempt '.($row->attempt_number ?? 1),
+                    'created_at' => optional($row->created_at)?->toIso8601String(),
+                ]);
+            });
+
+        if (Schema::hasTable('field_distribution_logs')) {
+            DB::table('field_distribution_logs')
+                ->leftJoin('farmers', 'farmers.id', '=', 'field_distribution_logs.farmer_id')
+                ->where('field_distribution_logs.technician_id', $techId)
+                ->orderByDesc('field_distribution_logs.created_at')
+                ->limit(10)
+                ->get([
+                    'field_distribution_logs.created_at',
+                    'field_distribution_logs.item_dispensed',
+                    'field_distribution_logs.rsbsa_id',
+                    'field_distribution_logs.quantity',
+                    'farmers.surname',
+                    'farmers.first_name',
+                ])
+                ->each(function ($row) use ($items) {
+                    $farmer = trim((string) ($row->surname ?? '').', '.($row->first_name ?? ''), ' ,');
+                    $items->push([
+                        'type' => 'Subsidy',
+                        'title' => $farmer !== '' ? $farmer : ($row->item_dispensed ?: 'Field dispense'),
+                        'detail' => trim(($row->item_dispensed ?: 'Subsidy').' · '.($row->rsbsa_id ?? '').' · '.($row->quantity ?? '')),
+                        'created_at' => $row->created_at
+                            ? Carbon::parse($row->created_at)->toIso8601String()
                             : null,
                     ]);
                 });
