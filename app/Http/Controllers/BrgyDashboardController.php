@@ -86,6 +86,11 @@ class BrgyDashboardController extends Controller
             'total_farmers' => $totalFarmers,
             'verified_farmers' => $verifiedFarmers,
             'pending_farmers' => $pendingFarmers,
+            'missing_id_photos' => (clone $farmers)
+                ->where(function ($q) {
+                    $q->whereNull('photo_path')->orWhere('photo_path', '');
+                })
+                ->count(),
             'total_hectares' => round($hectares['rice'] + $hectares['corn'] + $hectares['other'], 2),
             'rice_hectares' => round($hectares['rice'], 2),
             'corn_hectares' => round($hectares['corn'], 2),

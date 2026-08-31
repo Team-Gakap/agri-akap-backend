@@ -120,6 +120,16 @@ class FarmerController extends Controller
             $query->whereHas('farmPlots', fn ($q) => $q->pendingFieldGeotag());
         }
 
+        if ($request->has('has_photo') && $request->query('has_photo') !== '') {
+            if ($request->boolean('has_photo')) {
+                $query->whereNotNull('photo_path')->where('photo_path', '!=', '');
+            } else {
+                $query->where(function ($q) {
+                    $q->whereNull('photo_path')->orWhere('photo_path', '');
+                });
+            }
+        }
+
         if ($searchQuery !== '') {
             if ($role === 'technician') {
                 $term = '%'.$searchQuery.'%';
@@ -202,12 +212,14 @@ class FarmerController extends Controller
     /**
      * Show a single farmer profile with their farm plots and distributions.
      */
-    public function show(string $id): JsonResponse
+    public function show(Request $request, string $id): JsonResponse
     {
         $farmer = Farmer::with([
             'farmPlots',
             'distributions.program:id,name,unit_of_measurement,type',
         ])->findOrFail($id);
+
+        $this->assertBarangayFarmerAccess($request, $farmer);
 
         $budget = $this->farmAreaBudget->summary($farmer);
         $farmer->setAttribute('mapped_area_ha', $budget['mapped_area_ha']);
@@ -357,7 +369,8 @@ class FarmerController extends Controller
     }
 
     /**
-     * Upload/update a farmer's photo (base64 from the admin ID issuance UI).
+     * Upload/update a farmer's ID portrait (base64 from admin or barangay issuance UI).
+     * Barangay officials may only write photos for farmers in their assigned barangay.
      */
     public function uploadPhoto(Request $request, string $id): JsonResponse
     {
@@ -366,6 +379,7 @@ class FarmerController extends Controller
         ]);
 
         $farmer = Farmer::findOrFail($id);
+        $this->assertBarangayFarmerAccess($request, $farmer);
         $path = $this->storeBase64Image($request->input('photo_base64'), 'farmer-photos');
 
         if ($path === null) {
@@ -684,6 +698,36 @@ class FarmerController extends Controller
         $farmer->setAttribute('pending_geotag', $pending);
 
         return $farmer;
+    }
+
+    /**
+     * Barangay officials may only read/write farmers in their assigned barangay.
+     * Admin, super-admin, and technician are unrestricted here (list routes still
+     * apply their own filters).
+     */
+    private function assertBarangayFarmerAccess(Request $request, Farmer $farmer): void
+    {
+        $user = $request->user();
+        $role = $user?->role;
+
+        if (! in_array($role, ['barangay_official', 'barangay'], true)) {
+            return;
+        }
+
+        $assigned = trim((string) ($user->assigned_barangay ?? ''));
+        if ($assigned === '') {
+            abort(response()->json([
+                'status' => 'error',
+                'message' => 'No barangay assignment on this account.',
+            ], 403));
+        }
+
+        if (strcasecmp(trim((string) $farmer->permanent_brgy), $assigned) !== 0) {
+            abort(response()->json([
+                'status' => 'error',
+                'message' => 'You can only manage farmers in your assigned barangay.',
+            ], 403));
+        }
     }
 
     /**

@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Farmer extends Model
 {
+    /** @use HasFactory<\Database\Factories\FarmerFactory> */
     use HasFactory, HasUuid, SoftDeletes;
 
     protected $fillable = [

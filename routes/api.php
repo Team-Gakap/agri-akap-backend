@@ -93,7 +93,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('/farmers/{id}', [FarmerController::class, 'destroy'])
         ->middleware('role:admin');
     Route::post('/farmers/{id}/photo', [FarmerController::class, 'uploadPhoto'])
-        ->middleware('role:admin');
+        ->middleware('role:admin,barangay_official');
     Route::post('/farmers/{id}/return-for-correction', [FarmerController::class, 'returnForCorrection'])
         ->middleware('role:admin');
     Route::post('/farmers/{id}/verify', [FarmerController::class, 'verify'])
