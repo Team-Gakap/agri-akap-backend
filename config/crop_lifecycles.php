@@ -45,6 +45,11 @@ return [
                         'NSIC Rc 216',
                         'NSIC Rc 160',
                         'PSB Rc 82',
+                        'NSIC Rc 218',
+                        'NSIC Rc 480',
+                        'NSIC Rc 402',
+                        'NSIC Rc 438',
+                        'PSB Rc 18',
                     ],
                 ],
                 'late_inbred' => [
