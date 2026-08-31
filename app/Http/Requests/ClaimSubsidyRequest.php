@@ -22,10 +22,10 @@ class ClaimSubsidyRequest extends FormRequest
             'client_id' => 'nullable|uuid', // client-generated Distribution UUID
             'device_id' => 'nullable|string|max:255',
             'claimed_at' => 'nullable|date',
-            // Release evidence: best-effort geo-tag + required photo voucher
+            // Optional geo-tag + photo (photo voucher is no longer required in the field)
             'geo_tag_lat' => 'nullable|numeric|between:-90,90',
             'geo_tag_long' => 'nullable|numeric|between:-180,180',
-            'photo_proof_base64' => 'required|string',
+            'photo_proof_base64' => 'nullable|string',
         ];
     }
 }

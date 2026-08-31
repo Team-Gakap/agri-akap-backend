@@ -98,8 +98,9 @@ class SyncController extends Controller
 
         if ($hasOfflineBatch) {
             try {
-                DB::beginTransaction();
-
+                // Per-item validation failures must not roll back siblings or
+                // return HTTP 500 — the client needs `results` on 200 to mark
+                // failed rows and drop synced ones. Unexpected crashes still 500.
                 if ($request->has('planting_logs')) {
                     foreach ((array) $request->input('planting_logs', []) as $item) {
                         $results['planting_logs'][] = $this->syncPlantingLog($item, $technicianId, $deviceId);
@@ -147,37 +148,13 @@ class SyncController extends Controller
                         $results['standing_crop_logs'][] = $this->syncStandingCropLog($item, $technicianId, $deviceId);
                     }
                 }
-
-                // Fail the batch if any offline item failed validation/insert.
-                $offlineFailed = collect([
-                    ...$results['planting_logs'],
-                    ...$results['pest_reports'],
-                    ...$results['farm_profiles'],
-                    ...$results['field_distributions'],
-                    ...$results['geo_tags'],
-                    ...$results['geo_tag_refusals'],
-                    ...$results['harvest_logs'],
-                    ...$results['standing_crop_logs'],
-                ])->contains(fn ($r) => ($r['outcome'] ?? '') === 'failed');
-
-                if ($offlineFailed) {
-                    DB::rollBack();
-
-                    return response()->json([
-                        'status' => 'error',
-                        'message' => 'Sync failed. Offline batch rolled back.',
-                        'results' => $results,
-                    ], 500);
-                }
-
-                DB::commit();
             } catch (\Throwable $e) {
-                DB::rollBack();
                 Log::error('Offline bulk sync failed: '.$e->getMessage());
 
                 return response()->json([
                     'status' => 'error',
                     'message' => 'Sync failed. '.$e->getMessage(),
+                    'results' => $results,
                 ], 500);
             }
         }
@@ -724,6 +701,12 @@ class SyncController extends Controller
             return $this->itemResult($clientId, 'duplicate', 'Geo-tag already synced.');
         }
 
+        $incidentType = $item['incident_type'] ?? 'none';
+        if (! is_string($incidentType) || trim($incidentType) === '') {
+            $incidentType = 'none';
+        }
+        $item['incident_type'] = $incidentType;
+
         $validator = Validator::make($item, [
             'geometry_type' => ['required', Rule::in(['polygon', 'marker'])],
             'coordinates' => 'required',
@@ -778,6 +761,9 @@ class SyncController extends Controller
         }
 
         $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null);
+        if (! $farmerId && ! empty($item['farm_plot_id'])) {
+            $farmerId = FarmPlot::whereKey($item['farm_plot_id'])->value('farmer_id');
+        }
 
         $photoPath = null;
         if (! empty($item['photo_base64'])) {
@@ -812,9 +798,25 @@ class SyncController extends Controller
         }
 
         try {
-            $farmPlot = null;
-            if ($geometryType === 'polygon') {
-                try {
+            $geoTag = DB::transaction(function () use (
+                $geometryType,
+                $farmerId,
+                $points,
+                $finalAreaHa,
+                $nonProductiveSqm,
+                $hasDiscrepancy,
+                $item,
+                $clientId,
+                $technicianId,
+                $deviceId,
+                $photoPath,
+                $farmerSignaturePath,
+                $aewSignaturePath,
+                $grossAreaSqm,
+                $finalAreaSqm,
+            ) {
+                $farmPlot = null;
+                if ($geometryType === 'polygon') {
                     $farmPlot = $this->createFarmPlotFromBoundary(
                         (string) $farmerId,
                         $points,
@@ -823,38 +825,41 @@ class SyncController extends Controller
                         $hasDiscrepancy,
                         $item,
                     );
-                } catch (\InvalidArgumentException $e) {
-                    return $this->itemResult($clientId, 'failed', $e->getMessage());
+                    if ($farmPlot->farmer_id) {
+                        $farmerId = (string) $farmPlot->farmer_id;
+                    }
                 }
-            }
 
-            $geoTag = GeoTag::create([
-                'client_id' => $clientId,
-                'farmer_id' => $farmerId,
-                'farm_plot_id' => $farmPlot?->id,
-                'rsbsa_no' => $item['rsbsa_no'] ?? null,
-                'technician_id' => $technicianId,
-                'device_id' => $item['device_id'] ?? $deviceId,
-                'geometry_type' => $geometryType,
-                'coordinates' => $points,
-                'crop_planted' => $item['crop_planted'] ?? null,
-                'crop_variety' => $item['crop_variety'] ?? null,
-                'planting_start_month' => $item['planting_start_month'] ?? null,
-                'planting_end_month' => $item['planting_end_month'] ?? null,
-                'incident_type' => $item['incident_type'] ?? 'none',
-                'observations' => $item['observations'] ?? null,
-                'photo_path' => $photoPath,
-                'farmer_signature_path' => $farmerSignaturePath,
-                'aew_signature_path' => $aewSignaturePath,
-                'accuracy_m' => $item['accuracy_m'] ?? null,
-                'gross_area_sqm' => $grossAreaSqm,
-                'non_productive_area_sqm' => $nonProductiveSqm,
-                'final_area_sqm' => $finalAreaSqm,
-                'final_area_ha' => $finalAreaHa,
-                'has_discrepancy' => $hasDiscrepancy,
-            ]);
+                return GeoTag::create([
+                    'client_id' => $clientId,
+                    'farmer_id' => $farmerId,
+                    'farm_plot_id' => $farmPlot?->id,
+                    'rsbsa_no' => $item['rsbsa_no'] ?? null,
+                    'technician_id' => $technicianId,
+                    'device_id' => $item['device_id'] ?? $deviceId,
+                    'geometry_type' => $geometryType,
+                    'coordinates' => $points,
+                    'crop_planted' => $item['crop_planted'] ?? null,
+                    'crop_variety' => $item['crop_variety'] ?? null,
+                    'planting_start_month' => $item['planting_start_month'] ?? null,
+                    'planting_end_month' => $item['planting_end_month'] ?? null,
+                    'incident_type' => $item['incident_type'] ?? 'none',
+                    'observations' => $item['observations'] ?? null,
+                    'photo_path' => $photoPath,
+                    'farmer_signature_path' => $farmerSignaturePath,
+                    'aew_signature_path' => $aewSignaturePath,
+                    'accuracy_m' => $item['accuracy_m'] ?? null,
+                    'gross_area_sqm' => $grossAreaSqm,
+                    'non_productive_area_sqm' => $nonProductiveSqm,
+                    'final_area_sqm' => $finalAreaSqm,
+                    'final_area_ha' => $finalAreaHa,
+                    'has_discrepancy' => $hasDiscrepancy,
+                ]);
+            });
 
             return $this->itemResult($clientId ?? $geoTag->id, 'synced', 'Geo-tag saved.');
+        } catch (\InvalidArgumentException $e) {
+            return $this->itemResult($clientId, 'failed', $e->getMessage());
         } catch (\Throwable $e) {
             Log::error('Geo-tag sync failed: '.$e->getMessage());
 
@@ -925,12 +930,15 @@ class SyncController extends Controller
         $existing = null;
         $requestedPlotId = $item['farm_plot_id'] ?? null;
         if (is_string($requestedPlotId) && $requestedPlotId !== '') {
-            $existing = FarmPlot::query()
-                ->where('id', $requestedPlotId)
-                ->where('farmer_id', $farmerId)
-                ->first();
+            $existing = FarmPlot::query()->where('id', $requestedPlotId)->first();
             if (! $existing) {
-                throw new \InvalidArgumentException('Dispatched farm plot was not found for this farmer.');
+                throw new \InvalidArgumentException('Dispatched farm plot was not found.');
+            }
+            // Dispatched ticket is source of truth — use the plot's farmer
+            // even if the payload farmer_id is missing or mismatched.
+            if ($existing->farmer_id) {
+                $farmerId = (string) $existing->farmer_id;
+                $farmer = Farmer::find($farmerId) ?: $farmer;
             }
         }
         if (! $existing) {
