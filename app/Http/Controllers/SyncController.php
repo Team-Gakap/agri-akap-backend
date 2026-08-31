@@ -722,9 +722,30 @@ class SyncController extends Controller
 
         $geometryType = $item['geometry_type'];
         $points = $this->parseGeoTagPoints($item['coordinates'] ?? null, $geometryType);
+        if ($points === null && $geometryType === 'marker') {
+            $points = $this->parseGeoTagPoints($item['coordinates'] ?? null, 'polygon');
+        }
 
-        if ($points === null || ($geometryType === 'polygon' && count($points) < 3)) {
+        if ($points === null || $points === []) {
             return $this->itemResult($clientId, 'failed', 'Invalid geo-tag coordinates payload.');
+        }
+
+        $nonProductiveSqm = (float) ($item['non_productive_area_sqm'] ?? 0);
+        $grossAreaSqm = $geometryType === 'polygon' && count($points) >= 3
+            ? $this->polygonAreaSqm($points)
+            : ($geometryType === 'polygon' ? 0.0 : null);
+        $finalAreaSqm = $grossAreaSqm !== null ? max(0.0, $grossAreaSqm - $nonProductiveSqm) : null;
+        $finalAreaHa = $finalAreaSqm !== null ? round($finalAreaSqm / 10000, 4) : null;
+
+        // Defense / GPS-same-spot walks: a polygon with no area is stored as a
+        // location pin instead of rejected. Real perimeter walks are unchanged.
+        if ($geometryType === 'polygon' && ($finalAreaHa === null || $finalAreaHa <= 0 || ($grossAreaSqm ?? 0) < 1.0)) {
+            $geometryType = 'marker';
+            $item['geometry_type'] = 'marker';
+            $points = [$this->polygonCentroid($points)];
+            $grossAreaSqm = null;
+            $finalAreaSqm = null;
+            $finalAreaHa = null;
         }
 
         // ── DA Polygon Integrity Checks (polygon boundaries only) ──────────────
@@ -780,10 +801,6 @@ class SyncController extends Controller
             $aewSignaturePath = $this->storeBase64Image($item['aew_signature_base64'], 'geo-tags/signatures');
         }
 
-        $nonProductiveSqm = (float) ($item['non_productive_area_sqm'] ?? 0);
-        $grossAreaSqm = $geometryType === 'polygon' ? $this->polygonAreaSqm($points) : null;
-        $finalAreaSqm = $grossAreaSqm !== null ? max(0.0, $grossAreaSqm - $nonProductiveSqm) : null;
-        $finalAreaHa = $finalAreaSqm !== null ? round($finalAreaSqm / 10000, 4) : null;
         $hasDiscrepancy = (bool) ($item['has_discrepancy'] ?? false);
 
         // Polygon walks must update farm_plots (admin + dispatch queue read that
@@ -791,9 +808,6 @@ class SyncController extends Controller
         if ($geometryType === 'polygon') {
             if (! $farmerId) {
                 return $this->itemResult($clientId, 'failed', 'Farmer could not be resolved for this geo-tag walk.');
-            }
-            if ($finalAreaHa === null || $finalAreaHa <= 0) {
-                return $this->itemResult($clientId, 'failed', 'Mapped area is zero. Walk a closed boundary before syncing.');
             }
         }
 
@@ -826,6 +840,15 @@ class SyncController extends Controller
                         $item,
                     );
                     if ($farmPlot->farmer_id) {
+                        $farmerId = (string) $farmPlot->farmer_id;
+                    }
+                } elseif (! empty($item['farm_plot_id']) && isset($points[0])) {
+                    $farmPlot = $this->stampFarmPlotFromPin(
+                        (string) ($farmerId ?? ''),
+                        $points[0],
+                        $item,
+                    );
+                    if ($farmPlot?->farmer_id) {
                         $farmerId = (string) $farmPlot->farmer_id;
                     }
                 }
@@ -1044,6 +1067,50 @@ class SyncController extends Controller
     }
 
     /**
+     * Location-pin fallback: stamp a dispatched plot's GPS without writing a
+     * farm-boundary polygon or changing registered size_ha.
+     *
+     * @param  array{lat: float, lng: float}  $point
+     */
+    private function stampFarmPlotFromPin(string $farmerId, array $point, array $item): FarmPlot
+    {
+        $requestedPlotId = $item['farm_plot_id'] ?? null;
+        if (! is_string($requestedPlotId) || $requestedPlotId === '') {
+            throw new \InvalidArgumentException('Dispatched farm plot was not found.');
+        }
+
+        $plot = FarmPlot::query()->where('id', $requestedPlotId)->first();
+        if (! $plot) {
+            throw new \InvalidArgumentException('Dispatched farm plot was not found.');
+        }
+
+        $lat = (float) $point['lat'];
+        $lng = (float) $point['lng'];
+
+        $plot->update([
+            'latitude' => $lat,
+            'longitude' => $lng,
+            'parcel_name' => $item['parcel_name'] ?? $plot->parcel_name,
+            'planting_start_month' => $item['planting_start_month'] ?? $plot->planting_start_month,
+            'planting_end_month' => $item['planting_end_month'] ?? $plot->planting_end_month,
+            'remarks' => $item['observations'] ?? $plot->remarks,
+            'geotag_status' => 'mapped',
+            'geotag_assigned_user_id' => null,
+            'geotag_assigned_name' => null,
+            'geotag_priority' => null,
+            'geotag_notes' => null,
+            'geotag_deadline' => null,
+        ]);
+
+        DB::update(
+            'UPDATE farm_plots SET coordinates = POINT(?, ?) WHERE id = ?',
+            [$lng, $lat, $plot->id]
+        );
+
+        return FarmPlot::with('farmer')->findOrFail($plot->id);
+    }
+
+    /**
      * Parses geo-tag coordinates: a single {lat,lng} for markers, or an
      * ordered vertex list [{lat,lng}, ...] for boundary polygons.
      *
@@ -1067,7 +1134,17 @@ class SyncController extends Controller
                 return [['lat' => (float) $raw['lat'], 'lng' => (float) $raw['lng']]];
             }
 
-            return null;
+            $listed = [];
+            foreach ($raw as $p) {
+                if (is_array($p) && isset($p['lat'], $p['lng'])) {
+                    $listed[] = ['lat' => (float) $p['lat'], 'lng' => (float) $p['lng']];
+                }
+            }
+            if (! $listed) {
+                return null;
+            }
+
+            return count($listed) === 1 ? $listed : [$this->polygonCentroid($listed)];
         }
 
         $points = [];
