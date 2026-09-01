@@ -73,4 +73,23 @@ return [
         ),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | PAGASA Panahon (radar overlay)
+    |--------------------------------------------------------------------------
+    */
+    'pagasa' => [
+        'radar_enabled' => env('PAGASA_RADAR_ENABLED', true),
+        'panahon_base_url' => env('PAGASA_PANAHON_BASE_URL', 'https://cdn.panahon.gov.ph'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Bagyo API (cyclone / rainfall advisories)
+    |--------------------------------------------------------------------------
+    */
+    'bagyo' => [
+        'base_url' => env('BAGYO_API_BASE_URL', 'https://api.bagyo.io'),
+    ],
+
 ];

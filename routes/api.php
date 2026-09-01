@@ -162,6 +162,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/weather/hourly/{barangay_name}', [WeatherController::class, 'hourly']);
     Route::get('/weather/historical/{barangay_name}', [WeatherController::class, 'historical']);
     Route::get('/weather/heatmap', [WeatherController::class, 'heatmap']);
+    Route::get('/weather/radar', [WeatherController::class, 'radar']);
+    Route::get('/weather/radar/point', [WeatherController::class, 'radarPoint']);
+    Route::get('/weather/national-advisories', [WeatherController::class, 'nationalAdvisories']);
     Route::get('/weather/barangays', [WeatherController::class, 'barangays']);
     Route::get('/weather/nearest', [WeatherController::class, 'nearest']);
     Route::get('/weather/reverse', [WeatherController::class, 'reverse']);

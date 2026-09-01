@@ -5,8 +5,11 @@ namespace App\Http\Controllers;
 use App\Models\Barangay;
 use App\Models\SmsBroadcast;
 use App\Models\WeatherCache;
+use App\Models\WeatherCurrent;
 use App\Models\WeatherHistorical;
 use App\Models\WeatherHourly;
+use App\Services\BagyoAdvisoryService;
+use App\Services\PagasaRadarService;
 use App\Services\WeatherAlertService;
 use App\Services\WeatherHistoricalService;
 use App\Services\WeatherHourlyService;
@@ -18,8 +21,11 @@ use Illuminate\Support\Facades\Http;
 
 class WeatherController extends Controller
 {
-    public function __construct(private WeatherAlertService $weatherAlerts)
-    {
+    public function __construct(
+        private WeatherAlertService $weatherAlerts,
+        private PagasaRadarService $pagasaRadar,
+        private BagyoAdvisoryService $bagyoAdvisories,
+    ) {
     }
 
     /**
@@ -241,6 +247,20 @@ class WeatherController extends Controller
             $date = Carbon::now(WeatherService::TIMEZONE)->toDateString();
         }
 
+        $now = Carbon::now(WeatherHourlyService::TIMEZONE);
+        $windowEnd = $now->copy()->addHours(6);
+
+        $hourlyAgg = WeatherHourly::query()
+            ->where('forecast_datetime', '>=', $now)
+            ->where('forecast_datetime', '<', $windowEnd)
+            ->selectRaw('barangay_name, MAX(precipitation_probability) as precip_next_6h')
+            ->groupBy('barangay_name')
+            ->pluck('precip_next_6h', 'barangay_name');
+
+        $currentByBarangay = WeatherCurrent::query()
+            ->get()
+            ->keyBy('barangay_name');
+
         $pins = Barangay::query()
             ->where('is_active', true)
             ->get(['name', 'latitude', 'longitude'])
@@ -250,8 +270,19 @@ class WeatherController extends Controller
             ->whereDate('forecast_date', $date)
             ->orderBy('barangay_name')
             ->get()
-            ->map(function (WeatherCache $row) use ($pins) {
+            ->map(function (WeatherCache $row) use ($pins, $hourlyAgg, $currentByBarangay) {
                 $payload = $this->transform($row);
+                $payload['precipitation_probability_daily'] = $row->precipitation_probability;
+                $next6h = $hourlyAgg->get($row->barangay_name);
+                $payload['precipitation_probability_next_6h'] = $next6h !== null
+                    ? (int) $next6h
+                    : null;
+
+                $current = $currentByBarangay->get($row->barangay_name);
+                $payload['current_conditions'] = $current
+                    ? $this->transformCurrent($current)
+                    : null;
+
                 $pin = $pins->get($row->barangay_name);
                 $payload['latitude'] = $pin !== null ? (float) $pin->latitude : null;
                 $payload['longitude'] = $pin !== null ? (float) $pin->longitude : null;
@@ -260,10 +291,80 @@ class WeatherController extends Controller
             })
             ->values();
 
+        $dailySynced = WeatherCache::query()->max('updated_at');
+        $hourlySynced = WeatherHourly::query()->max('updated_at');
+        $currentSynced = WeatherCurrent::query()->max('updated_at');
+
         return response()->json([
             'data' => [
                 'forecast_date' => $date,
                 'barangays' => $rows,
+                'meta' => [
+                    'timezone' => WeatherService::TIMEZONE,
+                    'daily_synced_at' => $dailySynced
+                        ? Carbon::parse($dailySynced, WeatherService::TIMEZONE)->toIso8601String()
+                        : null,
+                    'hourly_synced_at' => $hourlySynced
+                        ? Carbon::parse($hourlySynced, WeatherHourlyService::TIMEZONE)->toIso8601String()
+                        : null,
+                    'current_synced_at' => $currentSynced
+                        ? Carbon::parse($currentSynced, WeatherHourlyService::TIMEZONE)->toIso8601String()
+                        : null,
+                    'generated_at' => $now->toIso8601String(),
+                ],
+            ],
+        ]);
+    }
+
+    /**
+     * PAGASA Panahon radar frames for map overlay.
+     * Query: ?product=mosaic-qpe
+     */
+    public function radar(Request $request): JsonResponse
+    {
+        $product = $request->query('product', 'mosaic-qpe');
+        if (! is_string($product) || trim($product) === '') {
+            $product = 'mosaic-qpe';
+        }
+
+        return response()->json([
+            'data' => $this->pagasaRadar->timeline($product),
+        ]);
+    }
+
+    /**
+     * National rainfall / cyclone advisories (Bagyo API proxy).
+     */
+    public function nationalAdvisories(): JsonResponse
+    {
+        return response()->json([
+            'data' => $this->bagyoAdvisories->nationalAdvisories(),
+        ]);
+    }
+
+    /**
+     * Radar QPE at a barangay pin. Query: ?lat=&lng=
+     */
+    public function radarPoint(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'lat' => ['required', 'numeric', 'between:-90,90'],
+            'lng' => ['required', 'numeric', 'between:-180,180'],
+            'product' => ['nullable', 'string', 'max:64'],
+        ]);
+
+        $product = $validated['product'] ?? 'mosaic-qpe';
+        $value = $this->pagasaRadar->pointValue(
+            (float) $validated['lat'],
+            (float) $validated['lng'],
+            is_string($product) ? $product : 'mosaic-qpe'
+        );
+
+        return response()->json([
+            'data' => [
+                'rainfall_mm_hr' => $value,
+                'product' => is_string($product) ? $product : 'mosaic-qpe',
+                'attribution' => 'PAGASA / DOST via Panahon',
             ],
         ]);
     }
@@ -353,6 +454,24 @@ class WeatherController extends Controller
             'et0_fao_evapotranspiration' => $row->et0_fao_evapotranspiration !== null
                 ? (float) $row->et0_fao_evapotranspiration
                 : null,
+        ];
+    }
+
+    protected function transformCurrent(WeatherCurrent $row): array
+    {
+        $code = $row->weather_code;
+
+        return [
+            'barangay_name' => $row->barangay_name,
+            'observed_at' => $row->observed_at->timezone(WeatherHourlyService::TIMEZONE)->toIso8601String(),
+            'temperature' => $row->temperature !== null ? (float) $row->temperature : null,
+            'precipitation' => $row->precipitation !== null ? (float) $row->precipitation : null,
+            'rain' => $row->rain !== null ? (float) $row->rain : null,
+            'precipitation_probability' => $row->precipitation_probability,
+            'wind_speed' => $row->wind_speed !== null ? (float) $row->wind_speed : null,
+            'weather_code' => $code,
+            'status' => $this->statusFromCode($code),
+            'source' => 'Open-Meteo model now-cast',
         ];
     }
 

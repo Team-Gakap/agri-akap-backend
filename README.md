@@ -40,7 +40,33 @@ This repository contains the core application logic, database schemas, and RESTf
 * **Database Engine:** MariaDB v10.11+ / MySQL
 * **Authentication:** Laravel Sanctum
 * **ORM:** Eloquent
-* **Integrations:** Semaphore SMS API, Open-Meteo Weather API
+* **Integrations:** Semaphore SMS API, Open-Meteo Weather API, Bagyo API (advisories), PAGASA Panahon radar overlay
+
+---
+
+## Railway deployment — weather scheduler
+
+The Laravel scheduler in `routes/console.php` runs daily/hourly Open-Meteo syncs. The web service (`bin/start.sh`) does **not** run the scheduler automatically.
+
+On Railway, add a **Cron** service (or second service) that runs every minute:
+
+```bash
+php artisan schedule:run
+```
+
+Or use `bin/schedule.sh`. After deploy, backfill weather caches once:
+
+```bash
+php artisan weather:sync-all
+```
+
+Optional env vars for radar/advisories:
+
+| Variable | Default |
+|----------|---------|
+| `PAGASA_RADAR_ENABLED` | `true` |
+| `PAGASA_PANAHON_BASE_URL` | `https://cdn.panahon.gov.ph` |
+| `BAGYO_API_BASE_URL` | `https://api.bagyo.io` |
 
 ---
 

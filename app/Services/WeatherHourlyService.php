@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Barangay;
+use App\Models\WeatherCurrent;
 use App\Models\WeatherHourly;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -88,6 +89,7 @@ class WeatherHourlyService
                         'latitude' => $lats,
                         'longitude' => $lngs,
                         'hourly' => 'temperature_2m,precipitation_probability,windspeed_10m,weathercode',
+                        'current' => 'temperature_2m,precipitation,rain,precipitation_probability,weathercode,windspeed_10m',
                         'timezone' => self::TIMEZONE,
                         'forecast_days' => 2,
                     ]);
@@ -145,9 +147,45 @@ class WeatherHourlyService
             }
 
             $synced += $this->upsertLocationHourly($barangay->name, $location);
+            $this->upsertLocationCurrent($barangay->name, $location);
         }
 
         return $synced;
+    }
+
+    /**
+     * @param  array<string,mixed>  $location
+     */
+    protected function upsertLocationCurrent(string $barangayName, array $location): void
+    {
+        $current = $location['current'] ?? null;
+        if (! is_array($current)) {
+            return;
+        }
+
+        $time = $current['time'] ?? null;
+        if (! is_string($time) || trim($time) === '') {
+            $time = Carbon::now(self::TIMEZONE)->toIso8601String();
+        }
+
+        WeatherCurrent::updateOrCreate(
+            ['barangay_name' => $barangayName],
+            [
+                'observed_at' => Carbon::parse($time, self::TIMEZONE),
+                'temperature' => $current['temperature_2m'] ?? null,
+                'precipitation' => $current['precipitation'] ?? null,
+                'rain' => $current['rain'] ?? null,
+                'precipitation_probability' => isset($current['precipitation_probability'])
+                    ? (int) round((float) $current['precipitation_probability'])
+                    : null,
+                'wind_speed' => $current['windspeed_10m']
+                    ?? $current['wind_speed_10m']
+                    ?? null,
+                'weather_code' => isset($current['weathercode'])
+                    ? (int) $current['weathercode']
+                    : (isset($current['weather_code']) ? (int) $current['weather_code'] : null),
+            ]
+        );
     }
 
     /**
