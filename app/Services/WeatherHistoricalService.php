@@ -25,6 +25,8 @@ class WeatherHistoricalService
 
     protected const HTTP_TIMEOUT_SECONDS = 180;
 
+    protected const CONNECT_TIMEOUT_SECONDS = 20;
+
     protected const MAX_ATTEMPTS = 3;
 
     /**
@@ -74,14 +76,17 @@ class WeatherHistoricalService
 
         for ($attempt = 1; $attempt <= self::MAX_ATTEMPTS; $attempt++) {
             try {
-                $response = Http::timeout(self::HTTP_TIMEOUT_SECONDS)->acceptJson()->get(self::FORECAST_URL, [
-                    'latitude' => $lats,
-                    'longitude' => $lngs,
-                    'daily' => 'precipitation_sum,temperature_2m_max,et0_fao_evapotranspiration',
-                    'timezone' => self::TIMEZONE,
-                    'past_days' => self::PAST_DAYS,
-                    'forecast_days' => 1,
-                ]);
+                $response = Http::timeout(self::HTTP_TIMEOUT_SECONDS)
+                    ->connectTimeout(self::CONNECT_TIMEOUT_SECONDS)
+                    ->acceptJson()
+                    ->get(self::FORECAST_URL, [
+                        'latitude' => $lats,
+                        'longitude' => $lngs,
+                        'daily' => 'precipitation_sum,temperature_2m_max,et0_fao_evapotranspiration',
+                        'timezone' => self::TIMEZONE,
+                        'past_days' => self::PAST_DAYS,
+                        'forecast_days' => 1,
+                    ]);
 
                 if ($response->successful()) {
                     break;

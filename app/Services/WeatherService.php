@@ -9,6 +9,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
+use Throwable;
 
 class WeatherService
 {
@@ -22,6 +23,12 @@ class WeatherService
     public const CHUNK_SIZE = 30;
 
     protected const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
+
+    protected const HTTP_TIMEOUT_SECONDS = 60;
+
+    protected const CONNECT_TIMEOUT_SECONDS = 20;
+
+    protected const MAX_ATTEMPTS = 3;
 
     /**
      * Bulk-fetch Open-Meteo for every active barangay (chunked) and upsert a 7-day cache.
@@ -67,22 +74,53 @@ class WeatherService
         $lats = $chunk->pluck('latitude')->map(fn ($v) => (string) $v)->implode(',');
         $lngs = $chunk->pluck('longitude')->map(fn ($v) => (string) $v)->implode(',');
 
-        $response = Http::timeout(60)->acceptJson()->get(self::FORECAST_URL, [
-            'latitude' => $lats,
-            'longitude' => $lngs,
-            'daily' => 'weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max,et0_fao_evapotranspiration,windspeed_10m_max',
-            'hourly' => 'soil_moisture_7_to_28cm',
-            'timezone' => self::TIMEZONE,
-            'forecast_days' => 7,
-        ]);
+        $response = null;
+        $lastError = null;
 
-        if (! $response->successful()) {
+        for ($attempt = 1; $attempt <= self::MAX_ATTEMPTS; $attempt++) {
+            try {
+                $response = Http::timeout(self::HTTP_TIMEOUT_SECONDS)
+                    ->connectTimeout(self::CONNECT_TIMEOUT_SECONDS)
+                    ->acceptJson()
+                    ->get(self::FORECAST_URL, [
+                        'latitude' => $lats,
+                        'longitude' => $lngs,
+                        'daily' => 'weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max,et0_fao_evapotranspiration,windspeed_10m_max',
+                        'hourly' => 'soil_moisture_7_to_28cm',
+                        'timezone' => self::TIMEZONE,
+                        'forecast_days' => 7,
+                    ]);
+
+                if ($response->successful()) {
+                    break;
+                }
+
+                $lastError = 'HTTP '.$response->status();
+                Log::warning('Open-Meteo daily attempt failed', [
+                    'attempt' => $attempt,
+                    'status' => $response->status(),
+                    'count' => $chunk->count(),
+                ]);
+            } catch (Throwable $e) {
+                $lastError = $e->getMessage();
+                Log::warning('Open-Meteo daily connection attempt failed', [
+                    'attempt' => $attempt,
+                    'message' => $e->getMessage(),
+                    'count' => $chunk->count(),
+                ]);
+            }
+
+            if ($attempt < self::MAX_ATTEMPTS) {
+                usleep(500_000 * $attempt);
+            }
+        }
+
+        if ($response === null || ! $response->successful()) {
             Log::error('Open-Meteo bulk fetch failed', [
-                'status' => $response->status(),
-                'body' => $response->body(),
+                'error' => $lastError,
                 'count' => $chunk->count(),
             ]);
-            throw new RuntimeException('Unable to fetch Open-Meteo forecast (HTTP '.$response->status().').');
+            throw new RuntimeException('Unable to fetch Open-Meteo forecast ('.$lastError.').');
         }
 
         $payload = $response->json();

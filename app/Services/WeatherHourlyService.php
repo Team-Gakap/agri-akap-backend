@@ -16,17 +16,21 @@ class WeatherHourlyService
     public const TIMEZONE = WeatherService::TIMEZONE;
 
     /** Smaller than daily chunks — hourly payloads are ~48 timesteps × 4 vars per location. */
-    public const CHUNK_SIZE = 10;
+    public const CHUNK_SIZE = 8;
 
     protected const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 
     protected const HTTP_TIMEOUT_SECONDS = 120;
 
+    protected const CONNECT_TIMEOUT_SECONDS = 20;
+
+    protected const MAX_ATTEMPTS = 3;
+
     /**
      * Bulk-fetch Open-Meteo hourly forecasts for every active barangay and upsert
      * the next ~48 hours into tbl_weather_hourly (enough for a rolling 24h window).
      *
-     * @return array{synced:int, barangays:int, chunks:int}
+     * @return array{synced:int, barangays:int, chunks:int, failed_chunks:int}
      */
     public function fetchAndCache(): array
     {
@@ -41,10 +45,16 @@ class WeatherHourlyService
 
         $synced = 0;
         $chunks = 0;
+        $failedChunks = 0;
 
         foreach ($barangays->chunk(self::CHUNK_SIZE) as $chunk) {
             $chunks++;
-            $synced += $this->fetchChunk($chunk);
+            $rows = $this->fetchChunk($chunk);
+            if ($rows === null) {
+                $failedChunks++;
+                continue;
+            }
+            $synced += $rows;
         }
 
         $this->pruneStaleWindow();
@@ -53,40 +63,66 @@ class WeatherHourlyService
             'synced' => $synced,
             'barangays' => $barangays->count(),
             'chunks' => $chunks,
+            'failed_chunks' => $failedChunks,
         ];
     }
 
     /**
      * @param  Collection<int, Barangay>  $chunk
+     * @return int|null  Synced row count, or null if the chunk failed after retries
      */
-    protected function fetchChunk(Collection $chunk): int
+    protected function fetchChunk(Collection $chunk): ?int
     {
         $lats = $chunk->pluck('latitude')->map(fn ($v) => (string) $v)->implode(',');
         $lngs = $chunk->pluck('longitude')->map(fn ($v) => (string) $v)->implode(',');
 
-        try {
-            $response = Http::timeout(self::HTTP_TIMEOUT_SECONDS)->acceptJson()->get(self::FORECAST_URL, [
-                'latitude' => $lats,
-                'longitude' => $lngs,
-                'hourly' => 'temperature_2m,precipitation_probability,windspeed_10m,weathercode',
-                'timezone' => self::TIMEZONE,
-                'forecast_days' => 2,
-            ]);
-        } catch (Throwable $e) {
-            Log::error('Open-Meteo hourly connection failed', [
-                'message' => $e->getMessage(),
-                'count' => $chunk->count(),
-            ]);
-            throw new RuntimeException('Unable to reach Open-Meteo for hourly forecast: '.$e->getMessage(), 0, $e);
+        $response = null;
+        $lastError = null;
+
+        for ($attempt = 1; $attempt <= self::MAX_ATTEMPTS; $attempt++) {
+            try {
+                $response = Http::timeout(self::HTTP_TIMEOUT_SECONDS)
+                    ->connectTimeout(self::CONNECT_TIMEOUT_SECONDS)
+                    ->acceptJson()
+                    ->get(self::FORECAST_URL, [
+                        'latitude' => $lats,
+                        'longitude' => $lngs,
+                        'hourly' => 'temperature_2m,precipitation_probability,windspeed_10m,weathercode',
+                        'timezone' => self::TIMEZONE,
+                        'forecast_days' => 2,
+                    ]);
+
+                if ($response->successful()) {
+                    break;
+                }
+
+                $lastError = 'HTTP '.$response->status();
+                Log::warning('Open-Meteo hourly attempt failed', [
+                    'attempt' => $attempt,
+                    'status' => $response->status(),
+                    'count' => $chunk->count(),
+                ]);
+            } catch (Throwable $e) {
+                $lastError = $e->getMessage();
+                Log::warning('Open-Meteo hourly connection attempt failed', [
+                    'attempt' => $attempt,
+                    'message' => $e->getMessage(),
+                    'count' => $chunk->count(),
+                ]);
+            }
+
+            if ($attempt < self::MAX_ATTEMPTS) {
+                usleep(500_000 * $attempt);
+            }
         }
 
-        if (! $response->successful()) {
+        if ($response === null || ! $response->successful()) {
             Log::error('Open-Meteo hourly bulk fetch failed', [
-                'status' => $response->status(),
-                'body' => $response->body(),
+                'error' => $lastError,
                 'count' => $chunk->count(),
             ]);
-            throw new RuntimeException('Unable to fetch Open-Meteo hourly forecast (HTTP '.$response->status().').');
+
+            return null;
         }
 
         $payload = $response->json();

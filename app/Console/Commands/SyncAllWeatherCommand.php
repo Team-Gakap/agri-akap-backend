@@ -40,6 +40,12 @@ class SyncAllWeatherCommand extends Command
             try {
                 $result = $hourlyService->fetchAndCache();
                 $this->info("   Synced {$result['synced']} row(s) · {$result['barangays']} barangay(s) · {$result['chunks']} chunk(s).");
+                if (($result['failed_chunks'] ?? 0) > 0) {
+                    $this->warn("   {$result['failed_chunks']} chunk(s) failed after retries.");
+                    if ($result['synced'] === 0) {
+                        $failed = true;
+                    }
+                }
             } catch (Throwable $e) {
                 $this->error('   Hourly sync failed: '.$e->getMessage());
                 $failed = true;

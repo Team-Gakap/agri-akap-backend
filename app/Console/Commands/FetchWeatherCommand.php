@@ -49,6 +49,12 @@ class FetchWeatherCommand extends Command
             }
 
             $this->info("Synced {$hourly['synced']} hourly forecast row(s) across {$hourly['barangays']} barangay(s) in {$hourly['chunks']} chunk(s).");
+            if (($hourly['failed_chunks'] ?? 0) > 0) {
+                $this->warn("{$hourly['failed_chunks']} hourly chunk(s) failed after retries.");
+                if ($hourly['synced'] === 0) {
+                    return self::FAILURE;
+                }
+            }
         }
 
         return self::SUCCESS;
