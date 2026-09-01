@@ -25,6 +25,7 @@ use App\Http\Controllers\PestMonitoringController;
 use App\Http\Controllers\ExecutiveReportingController;
 use App\Http\Controllers\ReportsController;
 use App\Http\Controllers\StaffController;
+use App\Http\Controllers\PsgcController;
 use App\Http\Controllers\SystemAuditLogController;
 use App\Http\Controllers\SmsSettingsController;
 use Illuminate\Support\Facades\Route;
@@ -86,6 +87,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/farmers/lookup', [FarmerController::class, 'lookup']);
     Route::get('/farmers/barangays', [FarmerController::class, 'barangays']);
     Route::get('/farmers/locations', [FarmerController::class, 'locations']);
+    Route::prefix('psgc')->group(function () {
+        Route::get('/regions', [PsgcController::class, 'regions']);
+        Route::get('/regions/{code}/provinces', [PsgcController::class, 'provinces']);
+        Route::get('/provinces/{code}/cities-municipalities', [PsgcController::class, 'cities']);
+        Route::get('/cities-municipalities/{code}/barangays', [PsgcController::class, 'barangays']);
+        Route::get('/defaults/echague', [PsgcController::class, 'echagueDefaults']);
+    });
     Route::get('/farmers/commodities', [FarmerController::class, 'commodities']);
     Route::get('/farmers/{id}', [FarmerController::class, 'show']);
     Route::get('/farmers/{id}/active-planting', [FarmerController::class, 'activePlanting']);

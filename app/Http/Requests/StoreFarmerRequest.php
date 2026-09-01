@@ -2,13 +2,14 @@
 
 namespace App\Http\Requests;
 
-use App\Support\OfficialBarangays;
-use App\Support\OfficialLocations;
+use App\Http\Requests\Concerns\ValidatesFarmerLocationsAndTenure;
+use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
-use Illuminate\Validation\Rule;
 
 class StoreFarmerRequest extends FormRequest
 {
+    use ValidatesFarmerLocationsAndTenure;
+
     public function authorize(): bool
     {
         return true;
@@ -67,22 +68,20 @@ class StoreFarmerRequest extends FormRequest
             'association_2' => 'nullable|string|max:255',
             'association_3' => 'nullable|string|max:255',
 
-            // ── Addresses ──────────────────────────────────────────────────
-            // house_no / street are nullable at DB level (farmers may not have a
-            // formal house number in rural barangays).
+            // ── Addresses (PSGC names; Echague barangays validated in withValidator) ──
             'permanent_house_no' => 'nullable|string|max:50',
             'permanent_street' => 'nullable|string|max:100',
-            'permanent_brgy' => ['required', 'string', 'max:100', Rule::in(OfficialBarangays::names())],
-            'permanent_city' => ['required', 'string', 'max:100', Rule::in(OfficialLocations::cities())],
-            'permanent_province' => ['required', 'string', 'max:100', Rule::in(OfficialLocations::provinces())],
-            'permanent_region' => ['required', 'string', 'max:100', Rule::in(OfficialLocations::regions())],
+            'permanent_brgy' => 'required|string|max:100',
+            'permanent_city' => 'required|string|max:100',
+            'permanent_province' => 'required|string|max:100',
+            'permanent_region' => 'required|string|max:100',
 
             'provincial_house_no' => 'nullable|string|max:50',
             'provincial_street' => 'nullable|string|max:100',
             'provincial_brgy' => 'nullable|string|max:100',
-            'provincial_city' => ['nullable', 'string', 'max:100', Rule::in(OfficialLocations::cities())],
-            'provincial_province' => ['nullable', 'string', 'max:100', Rule::in(OfficialLocations::provinces())],
-            'provincial_region' => ['nullable', 'string', 'max:100', Rule::in(OfficialLocations::regions())],
+            'provincial_city' => 'nullable|string|max:100',
+            'provincial_province' => 'nullable|string|max:100',
+            'provincial_region' => 'nullable|string|max:100',
 
             // ── Part 2: Livelihood ─────────────────────────────────────────
             'livelihood_type' => 'required|in:Farmer,Farm Worker,Fisher,Agri-Youth',
@@ -91,32 +90,37 @@ class StoreFarmerRequest extends FormRequest
             // ── Part 3: Farm Plots (at least one required) ─────────────────
             'plots' => 'required|array|min:1',
             'plots.*.parcel_name' => 'nullable|string|max:100',
-            'plots.*.location_brgy' => ['required', 'string', 'max:100', Rule::in(OfficialBarangays::names())],
-            'plots.*.location_city' => ['required', 'string', 'max:100', Rule::in(OfficialLocations::cities())],
-            'plots.*.location_province' => ['required', 'string', 'max:100', Rule::in(OfficialLocations::provinces())],
+            'plots.*.location_brgy' => 'required|string|max:100',
+            'plots.*.location_city' => 'required|string|max:100',
+            'plots.*.location_province' => 'required|string|max:100',
             'plots.*.total_parcel_area_ha' => 'required|numeric|min:0.01',
             'plots.*.is_ancestral_domain' => 'boolean',
             'plots.*.is_agrarian_reform_beneficiary' => 'boolean',
-            // Official DA tenurial statuses (RSBSA Form 01-2024).
             'plots.*.ownership_type' => 'required|in:Registered Owner,Tenant,Lessee,Others',
-            // Landowner name + RSBSA no are required when the farmer is a Tenant or Lessee.
             'plots.*.land_owner_first_name' => 'required_if:plots.*.ownership_type,Tenant,Lessee|nullable|string|max:100',
             'plots.*.land_owner_surname' => 'required_if:plots.*.ownership_type,Tenant,Lessee|nullable|string|max:100',
             'plots.*.land_owner_ext_name' => 'nullable|string|max:10',
             'plots.*.land_owner_rsbsa_no' => 'required_if:plots.*.ownership_type,Tenant,Lessee|nullable|string|max:100',
-            'plots.*.proof_of_ownership_document' => 'required|string|max:100',
+            'plots.*.proof_of_ownership_document' => 'required|string|max:150',
             'plots.*.commodity' => 'required|in:Rice,Corn,High-Value Crops',
             'plots.*.planting_start_month' => 'nullable|string|max:20',
             'plots.*.planting_end_month' => 'nullable|string|max:20',
             'plots.*.size_ha' => 'required|numeric|min:0.01',
             'plots.*.no_of_heads_or_trees' => 'nullable|integer|min:0',
-            // Official DA farm-type classifications.
             'plots.*.farm_type' => 'required|in:Irrigated,Rainfed Upland,Rainfed Lowland,Urban/Peri-Urban',
             'plots.*.is_organic' => 'boolean',
             'plots.*.cropping_schedule' => 'nullable|string|max:100',
             'plots.*.rotational_tiller_full_name' => 'nullable|string|max:255',
             'plots.*.remarks' => 'nullable|string|max:500',
         ];
+    }
+
+    public function withValidator(Validator $validator): void
+    {
+        $validator->after(function (Validator $validator) {
+            $this->validateLocationBarangays($validator);
+            $this->validatePlotTenurialDocuments($validator);
+        });
     }
 
     public function messages(): array
@@ -126,8 +130,6 @@ class StoreFarmerRequest extends FormRequest
             'plots.min' => 'At least one farm plot must be registered.',
             'plots.*.commodity.required' => 'Each plot must have a commodity specified.',
             'plots.*.commodity.in' => 'Select a valid commodity (Rice, Corn, High-Value Crops).',
-            'permanent_brgy.in' => 'Select an official Echague barangay.',
-            'plots.*.location_brgy.in' => 'Each plot must use an official Echague barangay.',
             'plots.*.size_ha.required' => 'Each plot must have a farm size in hectares.',
             'plots.*.ownership_type.in' => 'Select a valid tenurial status (Registered Owner, Tenant, Lessee, Others).',
             'plots.*.farm_type.in' => 'Select a valid farm type (Irrigated, Rainfed Upland, Rainfed Lowland, Urban/Peri-Urban).',

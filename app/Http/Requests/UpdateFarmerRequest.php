@@ -2,13 +2,15 @@
 
 namespace App\Http\Requests;
 
-use App\Support\OfficialBarangays;
-use App\Support\OfficialLocations;
+use App\Http\Requests\Concerns\ValidatesFarmerLocationsAndTenure;
+use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
 class UpdateFarmerRequest extends FormRequest
 {
+    use ValidatesFarmerLocationsAndTenure;
+
     public function authorize(): bool
     {
         return true;
@@ -72,17 +74,17 @@ class UpdateFarmerRequest extends FormRequest
 
             'permanent_house_no' => 'nullable|string|max:50',
             'permanent_street' => 'nullable|string|max:100',
-            'permanent_brgy' => ['required', 'string', 'max:100', Rule::in(OfficialBarangays::names())],
-            'permanent_city' => ['required', 'string', 'max:100', Rule::in(OfficialLocations::cities())],
-            'permanent_province' => ['required', 'string', 'max:100', Rule::in(OfficialLocations::provinces())],
-            'permanent_region' => ['required', 'string', 'max:100', Rule::in(OfficialLocations::regions())],
+            'permanent_brgy' => 'required|string|max:100',
+            'permanent_city' => 'required|string|max:100',
+            'permanent_province' => 'required|string|max:100',
+            'permanent_region' => 'required|string|max:100',
 
             'provincial_house_no' => 'nullable|string|max:50',
             'provincial_street' => 'nullable|string|max:100',
             'provincial_brgy' => 'nullable|string|max:100',
-            'provincial_city' => ['nullable', 'string', 'max:100', Rule::in(OfficialLocations::cities())],
-            'provincial_province' => ['nullable', 'string', 'max:100', Rule::in(OfficialLocations::provinces())],
-            'provincial_region' => ['nullable', 'string', 'max:100', Rule::in(OfficialLocations::regions())],
+            'provincial_city' => 'nullable|string|max:100',
+            'provincial_province' => 'nullable|string|max:100',
+            'provincial_region' => 'nullable|string|max:100',
 
             'livelihood_type' => 'required|in:Farmer,Farm Worker,Fisher,Agri-Youth',
             'livelihood_detail' => 'nullable|string|max:100',
@@ -90,9 +92,9 @@ class UpdateFarmerRequest extends FormRequest
             'plots' => 'nullable|array|min:1',
             'plots.*.id' => 'nullable|uuid',
             'plots.*.parcel_name' => 'nullable|string|max:100',
-            'plots.*.location_brgy' => ['required_with:plots', 'string', 'max:100', Rule::in(OfficialBarangays::names())],
-            'plots.*.location_city' => ['required_with:plots', 'string', 'max:100', Rule::in(OfficialLocations::cities())],
-            'plots.*.location_province' => ['required_with:plots', 'string', 'max:100', Rule::in(OfficialLocations::provinces())],
+            'plots.*.location_brgy' => 'required_with:plots|string|max:100',
+            'plots.*.location_city' => 'required_with:plots|string|max:100',
+            'plots.*.location_province' => 'required_with:plots|string|max:100',
             'plots.*.total_parcel_area_ha' => 'required_with:plots|numeric|min:0.01',
             'plots.*.is_ancestral_domain' => 'boolean',
             'plots.*.is_agrarian_reform_beneficiary' => 'boolean',
@@ -101,7 +103,7 @@ class UpdateFarmerRequest extends FormRequest
             'plots.*.land_owner_surname' => 'required_if:plots.*.ownership_type,Tenant,Lessee|nullable|string|max:100',
             'plots.*.land_owner_ext_name' => 'nullable|string|max:10',
             'plots.*.land_owner_rsbsa_no' => 'required_if:plots.*.ownership_type,Tenant,Lessee|nullable|string|max:100',
-            'plots.*.proof_of_ownership_document' => 'required_with:plots|string|max:100',
+            'plots.*.proof_of_ownership_document' => 'required_with:plots|string|max:150',
             'plots.*.commodity' => 'required_with:plots|string|max:100',
             'plots.*.planting_start_month' => 'nullable|string|max:20',
             'plots.*.planting_end_month' => 'nullable|string|max:20',
@@ -115,11 +117,17 @@ class UpdateFarmerRequest extends FormRequest
         ];
     }
 
+    public function withValidator(Validator $validator): void
+    {
+        $validator->after(function (Validator $validator) {
+            $this->validateLocationBarangays($validator);
+            $this->validatePlotTenurialDocuments($validator);
+        });
+    }
+
     public function messages(): array
     {
         return [
-            'permanent_brgy.in' => 'Select an official Echague barangay.',
-            'plots.*.location_brgy.in' => 'Each plot must use an official Echague barangay.',
             'plots.*.commodity.in' => 'Select a valid commodity (Rice, Corn, High-Value Crops).',
             'plots.*.land_owner_first_name.required_if' => 'Landowner first name is required for tenant- or lessee-tilled parcels.',
             'plots.*.land_owner_surname.required_if' => 'Landowner surname is required for tenant- or lessee-tilled parcels.',
