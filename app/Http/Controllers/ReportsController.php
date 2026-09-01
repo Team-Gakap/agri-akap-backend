@@ -53,6 +53,7 @@ class ReportsController extends Controller
                 'tbl_subsidy_programs.secondary_unit',
                 'farmers.surname',
                 'farmers.first_name',
+                'farmers.middle_name',
                 'farmers.permanent_brgy',
             ])
             ->orderBy('tbl_subsidy_beneficiaries.claimed_at', 'desc');
@@ -81,11 +82,14 @@ class ReportsController extends Controller
         }
 
         $rows = $query->limit(3000)->get()->map(function ($row) {
-            $farmerName = trim(($row->first_name ?? '') . ' ' . ($row->surname ?? ''));
+            $names = $this->splitFarmerName($row->surname ?? '', $row->first_name ?? '', $row->middle_name ?? '');
 
             return [
                 'rsbsa_no'      => $row->farmer_rsbsa_no,
-                'farmer_name'   => $farmerName,
+                'surname'       => $names['surname'],
+                'first_name'    => $names['first_name'],
+                'middle_name'   => $names['middle_name'],
+                'farmer_name'   => $names['display'],
                 'barangay'      => $row->permanent_brgy ?? '',
                 'program_name'  => $row->program_name ?? '',
                 'target_crop'   => $row->target_crop ?? '',
@@ -184,7 +188,7 @@ class ReportsController extends Controller
     {
         $query = PlantingLog::query()
             ->with([
-                'farmer:id,rsbsa_no,surname,first_name,permanent_brgy',
+                'farmer:id,rsbsa_no,surname,first_name,middle_name,permanent_brgy',
                 'farmPlot:id,location_brgy,commodity',
             ])
             ->orderBy('date_planted', 'desc');
@@ -204,11 +208,18 @@ class ReportsController extends Controller
 
         return $query->limit(3000)->get()->map(function (PlantingLog $log) {
             $farmer = $log->farmer;
-            $name   = trim(($farmer?->first_name ?? '') . ' ' . ($farmer?->surname ?? ''));
+            $names = $this->splitFarmerName(
+                $farmer?->surname ?? '',
+                $farmer?->first_name ?? '',
+                $farmer?->middle_name ?? '',
+            );
 
             return [
                 'rsbsa_no'     => $farmer?->rsbsa_no ?? '',
-                'name'         => $name,
+                'surname'      => $names['surname'],
+                'first_name'   => $names['first_name'],
+                'middle_name'  => $names['middle_name'],
+                'name'         => $names['display'],
                 'farm_location'=> $log->farm_location ?: ($log->farmPlot?->location_brgy ?? $farmer?->permanent_brgy ?? ''),
                 'crop'         => $log->crop_type ?? '',
                 'variety'      => $log->variety ?? '',
@@ -229,6 +240,9 @@ class ReportsController extends Controller
                 ->leftJoin('farm_plots', 'farm_plots.id', '=', 'harvest_logs.farm_plot_id')
                 ->select([
                     'farmers.rsbsa_no',
+                    'farmers.surname',
+                    'farmers.first_name',
+                    'farmers.middle_name',
                     DB::raw("TRIM(CONCAT(COALESCE(farmers.first_name,''), ' ', COALESCE(farmers.surname,''))) AS name"),
                     DB::raw("COALESCE(harvest_logs.farm_location, farm_plots.location_brgy, farmers.permanent_brgy, '') AS farm_location"),
                     DB::raw("COALESCE(harvest_logs.crop_type, farm_plots.commodity, '') AS crop"),
@@ -255,16 +269,27 @@ class ReportsController extends Controller
                 $query->whereDate('harvest_logs.date_harvested', '<=', $f['date_to']);
             }
 
-            return $query->limit(3000)->get()->map(fn ($row) => [
+            return $query->limit(3000)->get()->map(function ($row) {
+                $names = $this->splitFarmerName(
+                    $row->surname ?? '',
+                    $row->first_name ?? '',
+                    $row->middle_name ?? '',
+                );
+
+                return [
                 'rsbsa_no'       => $row->rsbsa_no,
-                'name'           => $row->name,
+                'surname'        => $names['surname'],
+                'first_name'     => $names['first_name'],
+                'middle_name'    => $names['middle_name'],
+                'name'           => $names['display'],
                 'farm_location'  => $row->farm_location,
                 'crop'           => $row->crop,
                 'variety'        => $row->variety,
                 'area_harvested' => (float) $row->area_harvested,
                 'total_yield'    => (float) $row->total_yield,
                 'date_harvested' => $row->date_harvested,
-            ])->values()->all();
+            ];
+            })->values()->all();
 
         } catch (\Exception) {
             // harvest_logs table does not exist yet — return empty result.
@@ -290,7 +315,7 @@ class ReportsController extends Controller
 
         $query = PestMonitoring::query()
             ->with([
-                'farmer:id,rsbsa_no,surname,first_name,permanent_brgy',
+                'farmer:id,rsbsa_no,surname,first_name,middle_name,permanent_brgy',
                 'farmPlot:id,location_brgy,commodity',
             ])
             ->orderByRaw('COALESCE(date_of_inspection, DATE(pest_monitoring.created_at)) DESC');
@@ -350,7 +375,11 @@ class ReportsController extends Controller
 
         $rows = $query->limit(3000)->get()->map(function (PestMonitoring $row) {
             $farmer     = $row->farmer;
-            $name       = trim(($farmer?->first_name ?? '') . ' ' . ($farmer?->surname ?? ''));
+            $names = $this->splitFarmerName(
+                $farmer?->surname ?? '',
+                $farmer?->first_name ?? '',
+                $farmer?->middle_name ?? '',
+            );
             $reportDate = optional($row->date_of_inspection)->format('Y-m-d')
                 ?: optional($row->created_at)->format('Y-m-d');
 
@@ -368,7 +397,10 @@ class ReportsController extends Controller
             return [
                 'date_reported' => $reportDate,
                 'barangay'      => $farmer?->permanent_brgy ?? $row->farmPlot?->location_brgy ?? '',
-                'farmer_name'   => $name,
+                'surname'       => $names['surname'],
+                'first_name'    => $names['first_name'],
+                'middle_name'   => $names['middle_name'],
+                'farmer_name'   => $names['display'],
                 'farm_location' => $row->farm_location ?: ($row->farmPlot?->location_brgy ?? $farmer?->permanent_brgy ?? ''),
                 'crop'          => $row->crop ?? '',
                 'pest_disease'  => $row->pest_name ?? '',
@@ -404,7 +436,7 @@ class ReportsController extends Controller
 
         $query = DamageAssessment::query()
             ->with([
-                'farmer:id,rsbsa_no,surname,first_name,permanent_brgy',
+                'farmer:id,rsbsa_no,surname,first_name,middle_name,permanent_brgy',
                 'farmPlot:id,location_brgy,commodity,size_ha',
             ])
             ->orderBy('date_of_calamity', 'desc');
@@ -434,7 +466,11 @@ class ReportsController extends Controller
 
         $rows = $query->limit(3000)->get()->map(function (DamageAssessment $row) {
             $farmer = $row->farmer;
-            $name   = trim(($farmer?->first_name ?? '') . ' ' . ($farmer?->surname ?? ''));
+            $names = $this->splitFarmerName(
+                $farmer?->surname ?? '',
+                $farmer?->first_name ?? '',
+                $farmer?->middle_name ?? '',
+            );
             $brgy   = $farmer?->permanent_brgy ?? $row->farmPlot?->location_brgy ?? '';
             $effectiveStatus = $this->effectiveDamageStatus($row);
             $areaAffected = (float) ($row->area_destroyed_ha ?? 0);
@@ -446,7 +482,10 @@ class ReportsController extends Controller
             return [
                 'date_reported'  => optional($row->date_of_calamity)->format('Y-m-d'),
                 'barangay'       => $brgy,
-                'farmer_name'    => $name,
+                'surname'        => $names['surname'],
+                'first_name'     => $names['first_name'],
+                'middle_name'    => $names['middle_name'],
+                'farmer_name'    => $names['display'],
                 'farm_location'  => $row->farmPlot?->location_brgy ?? $brgy,
                 'crop'           => $row->farmPlot?->commodity ?? '',
                 'calamity_type'  => $row->calamity_type ?? $row->calamity_name ?? '',
@@ -476,6 +515,24 @@ class ReportsController extends Controller
         }
 
         return $status;
+    }
+
+    /**
+     * @return array{surname: string, first_name: string, middle_name: string, display: string}
+     */
+    private function splitFarmerName(string $surname, string $firstName, string $middleName): array
+    {
+        $surname = trim($surname);
+        $firstName = trim($firstName);
+        $middleName = trim($middleName);
+        $display = trim(implode(' ', array_filter([$firstName, $middleName, $surname])));
+
+        return [
+            'surname' => $surname,
+            'first_name' => $firstName,
+            'middle_name' => $middleName,
+            'display' => $display,
+        ];
     }
 
     /**

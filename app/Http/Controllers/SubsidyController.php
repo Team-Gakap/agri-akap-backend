@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Farmer;
 use App\Models\SubsidyProgram;
+use App\Support\OfficialBarangays;
 use App\Support\SubsidyCatalog;
 use App\Traits\DecodesBase64Image;
 use Illuminate\Http\JsonResponse;
@@ -69,7 +70,14 @@ class SubsidyController extends Controller
             'reorder_level' => 'nullable|numeric|min:0|max:1000000',
             'secondary_total_quantity' => 'nullable|numeric|min:0|max:1000000',
             'secondary_reorder_level' => 'nullable|numeric|min:0|max:1000000',
+            'target_barangays' => 'nullable|array',
+            'target_barangays.*' => Rule::in(OfficialBarangays::names()),
         ]);
+
+        $targetBarangays = $validated['target_barangays'] ?? null;
+        if (is_array($targetBarangays) && count($targetBarangays) === 0) {
+            $targetBarangays = null;
+        }
 
         $seedClass = $validated['seed_class'] ?? null;
         $itemType = $validated['item_type'] ?? null;
@@ -101,6 +109,7 @@ class SubsidyController extends Controller
         $program = SubsidyProgram::create([
             'program_name' => $validated['program_name'],
             'target_crop' => $validated['target_crop'],
+            'target_barangays' => $targetBarangays,
             'seed_class' => $seedClass,
             'item_type' => $itemType,
             'max_hectares_limit' => $validated['max_hectares_limit'],
@@ -236,7 +245,7 @@ class SubsidyController extends Controller
 
         [$plotArea, $plantArea] = $this->cropAreaSubqueries((string) $program->target_crop);
 
-        $skippedNoRsbsa = (int) DB::table('farmers')
+        $skippedNoRsbsaQuery = DB::table('farmers')
             ->leftJoinSub($plotArea, 'plots', fn ($join) => $join->on('plots.farmer_id', '=', 'farmers.id'))
             ->leftJoinSub($plantArea, 'planted', fn ($join) => $join->on('planted.farmer_id', '=', 'farmers.id'))
             ->whereNull('farmers.deleted_at')
@@ -245,10 +254,11 @@ class SubsidyController extends Controller
             })
             ->where(function ($q) {
                 $q->whereNotNull('plots.area')->orWhereNotNull('planted.area');
-            })
-            ->count();
+            });
+        $this->applyBarangayScope($skippedNoRsbsaQuery, $program);
+        $skippedNoRsbsa = (int) $skippedNoRsbsaQuery->count();
 
-        $eligibleFarmers = DB::table('farmers')
+        $eligibleFarmersQuery = DB::table('farmers')
             ->leftJoinSub($plotArea, 'plots', fn ($join) => $join->on('plots.farmer_id', '=', 'farmers.id'))
             ->leftJoinSub($plantArea, 'planted', fn ($join) => $join->on('planted.farmer_id', '=', 'farmers.id'))
             ->whereNull('farmers.deleted_at')
@@ -259,8 +269,9 @@ class SubsidyController extends Controller
                 'farmers.id',
                 'farmers.rsbsa_no',
             ])
-            ->selectRaw('COALESCE(planted.area, plots.area, 0) as farm_area')
-            ->get();
+            ->selectRaw('COALESCE(planted.area, plots.area, 0) as farm_area');
+        $this->applyBarangayScope($eligibleFarmersQuery, $program);
+        $eligibleFarmers = $eligibleFarmersQuery->get();
 
         $now = now();
         $minHa = (float) ($program->min_hectares_limit ?? 0);
@@ -366,6 +377,7 @@ class SubsidyController extends Controller
                 'beneficiaries.farmer_rsbsa_no as rsbsa_no',
                 'farmers.surname as last_name',
                 'farmers.first_name',
+                'farmers.middle_name',
                 'farmers.permanent_brgy as barangay',
                 'beneficiaries.calculated_allocation',
                 'beneficiaries.calculated_allocation_secondary',
@@ -754,6 +766,7 @@ class SubsidyController extends Controller
             'id' => $p->id,
             'program_name' => $p->program_name,
             'target_crop' => $p->target_crop,
+            'target_barangays' => $p->target_barangays,
             'seed_class' => $p->seed_class,
             'item_type' => $p->item_type,
             'max_hectares_limit' => (float) $p->max_hectares_limit,
@@ -857,16 +870,20 @@ class SubsidyController extends Controller
         return strcasecmp(trim((string) $program->unit_of_measurement), 'Cash (PHP)') === 0;
     }
 
-    /**
-     * Cash programs cannot allocate more than ₱1,000 per farmer.
-     */
     private function cashCappedAllocation(SubsidyProgram $program, int $allocation): int
     {
-        if ($allocation < 1) {
-            return $allocation;
-        }
+        return $allocation;
+    }
 
-        return $this->isCashProgram($program) ? min($allocation, 1000) : $allocation;
+    /**
+     * When target_barangays is set, limit masterlist generation to those barangays.
+     */
+    private function applyBarangayScope($query, SubsidyProgram $program): void
+    {
+        $barangays = $program->target_barangays;
+        if (is_array($barangays) && count($barangays) > 0) {
+            $query->whereIn('farmers.permanent_brgy', $barangays);
+        }
     }
 
     private function applyCropFilter($query, string $column, string $targetCrop)

@@ -85,6 +85,7 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:admin');
     Route::get('/farmers/lookup', [FarmerController::class, 'lookup']);
     Route::get('/farmers/barangays', [FarmerController::class, 'barangays']);
+    Route::get('/farmers/locations', [FarmerController::class, 'locations']);
     Route::get('/farmers/commodities', [FarmerController::class, 'commodities']);
     Route::get('/farmers/{id}', [FarmerController::class, 'show']);
     Route::get('/farmers/{id}/active-planting', [FarmerController::class, 'activePlanting']);

@@ -11,6 +11,7 @@ use App\Services\CropStageService;
 use App\Services\FarmAreaBudgetService;
 use App\Services\SmsService;
 use App\Support\OfficialBarangays;
+use App\Support\OfficialLocations;
 use App\Traits\DecodesBase64Image;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -348,6 +349,17 @@ class FarmerController extends Controller
         return response()->json([
             'status' => 'success',
             'data' => $names->values(),
+        ]);
+    }
+
+    /**
+     * Official region / province / city lists for enrollment dropdowns.
+     */
+    public function locations(): JsonResponse
+    {
+        return response()->json([
+            'status' => 'success',
+            'data' => OfficialLocations::catalog(),
         ]);
     }
 

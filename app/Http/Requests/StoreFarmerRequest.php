@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Support\OfficialBarangays;
+use App\Support\OfficialLocations;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -72,16 +73,16 @@ class StoreFarmerRequest extends FormRequest
             'permanent_house_no' => 'nullable|string|max:50',
             'permanent_street' => 'nullable|string|max:100',
             'permanent_brgy' => ['required', 'string', 'max:100', Rule::in(OfficialBarangays::names())],
-            'permanent_city' => 'required|string|max:100',
-            'permanent_province' => 'required|string|max:100',
-            'permanent_region' => 'required|string|max:100',
+            'permanent_city' => ['required', 'string', 'max:100', Rule::in(OfficialLocations::cities())],
+            'permanent_province' => ['required', 'string', 'max:100', Rule::in(OfficialLocations::provinces())],
+            'permanent_region' => ['required', 'string', 'max:100', Rule::in(OfficialLocations::regions())],
 
             'provincial_house_no' => 'nullable|string|max:50',
             'provincial_street' => 'nullable|string|max:100',
             'provincial_brgy' => 'nullable|string|max:100',
-            'provincial_city' => 'nullable|string|max:100',
-            'provincial_province' => 'nullable|string|max:100',
-            'provincial_region' => 'nullable|string|max:100',
+            'provincial_city' => ['nullable', 'string', 'max:100', Rule::in(OfficialLocations::cities())],
+            'provincial_province' => ['nullable', 'string', 'max:100', Rule::in(OfficialLocations::provinces())],
+            'provincial_region' => ['nullable', 'string', 'max:100', Rule::in(OfficialLocations::regions())],
 
             // ── Part 2: Livelihood ─────────────────────────────────────────
             'livelihood_type' => 'required|in:Farmer,Farm Worker,Fisher,Agri-Youth',
@@ -91,8 +92,8 @@ class StoreFarmerRequest extends FormRequest
             'plots' => 'required|array|min:1',
             'plots.*.parcel_name' => 'nullable|string|max:100',
             'plots.*.location_brgy' => ['required', 'string', 'max:100', Rule::in(OfficialBarangays::names())],
-            'plots.*.location_city' => 'required|string|max:100',
-            'plots.*.location_province' => 'required|string|max:100',
+            'plots.*.location_city' => ['required', 'string', 'max:100', Rule::in(OfficialLocations::cities())],
+            'plots.*.location_province' => ['required', 'string', 'max:100', Rule::in(OfficialLocations::provinces())],
             'plots.*.total_parcel_area_ha' => 'required|numeric|min:0.01',
             'plots.*.is_ancestral_domain' => 'boolean',
             'plots.*.is_agrarian_reform_beneficiary' => 'boolean',

@@ -16,6 +16,7 @@ class SubsidyProgram extends Model
     protected $fillable = [
         'program_name',
         'target_crop',
+        'target_barangays',
         'seed_class',
         'item_type',
         'max_hectares_limit',
@@ -44,6 +45,7 @@ class SubsidyProgram extends Model
         'secondary_total_quantity' => 'decimal:2',
         'secondary_remaining_quantity' => 'decimal:2',
         'secondary_reorder_level' => 'decimal:2',
+        'target_barangays' => 'array',
     ];
 
     public function beneficiaries(): HasMany
