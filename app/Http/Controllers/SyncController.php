@@ -121,6 +121,19 @@ class SyncController extends Controller
                 // Per-item validation failures must not roll back siblings or
                 // return HTTP 500 — the client needs `results` on 200 to mark
                 // failed rows and drop synced ones. Unexpected crashes still 500.
+                // Geo-tags first so newly created farm_plots exist before crop logs.
+                if ($request->has('geo_tags')) {
+                    foreach ((array) $request->input('geo_tags', []) as $item) {
+                        $results['geo_tags'][] = $this->syncGeoTag($item, $technicianId, $deviceId);
+                    }
+                }
+
+                if ($request->has('geo_tag_refusals')) {
+                    foreach ((array) $request->input('geo_tag_refusals', []) as $item) {
+                        $results['geo_tag_refusals'][] = $this->syncGeoTagRefusal($item, $technicianId, $deviceId);
+                    }
+                }
+
                 if ($request->has('planting_logs')) {
                     foreach ((array) $request->input('planting_logs', []) as $item) {
                         $results['planting_logs'][] = $this->syncPlantingLog($item, $technicianId, $deviceId);
@@ -142,18 +155,6 @@ class SyncController extends Controller
                 if ($request->has('field_distributions')) {
                     foreach ((array) $request->input('field_distributions', []) as $item) {
                         $results['field_distributions'][] = $this->syncFieldDistribution($item, $technicianId, $deviceId);
-                    }
-                }
-
-                if ($request->has('geo_tags')) {
-                    foreach ((array) $request->input('geo_tags', []) as $item) {
-                        $results['geo_tags'][] = $this->syncGeoTag($item, $technicianId, $deviceId);
-                    }
-                }
-
-                if ($request->has('geo_tag_refusals')) {
-                    foreach ((array) $request->input('geo_tag_refusals', []) as $item) {
-                        $results['geo_tag_refusals'][] = $this->syncGeoTagRefusal($item, $technicianId, $deviceId);
                     }
                 }
 
@@ -389,6 +390,9 @@ class SyncController extends Controller
         $clientId = $item['client_id'] ?? ($item['id'] ?? null);
 
         $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null);
+        if (! $farmerId) {
+            return $this->itemResult($clientId, 'failed', 'Could not match this farmer from the queued id/RSBSA.');
+        }
 
         $validator = Validator::make([
             ...$item,
@@ -407,10 +411,7 @@ class SyncController extends Controller
             return $this->itemResult($clientId, 'failed', $validator->errors()->first());
         }
 
-        $plotId = $this->nullableUuid($item['farm_plot_id'] ?? null);
-        if ($plotId && ! FarmPlot::whereKey($plotId)->exists()) {
-            return $this->itemResult($clientId, 'failed', 'Selected farm plot was not found.');
-        }
+        $plotId = $this->usablePlotId($item['farm_plot_id'] ?? null);
 
         $areaError = $this->plotAreaExceedsCap($plotId, (float) $item['area_planted']);
         if ($areaError) {
@@ -450,6 +451,9 @@ class SyncController extends Controller
     {
         $clientId = $item['client_id'] ?? ($item['id'] ?? null);
         $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null);
+        if (! $farmerId) {
+            return $this->itemResult($clientId, 'failed', 'Could not match this farmer from the queued id/RSBSA.');
+        }
 
         $validator = Validator::make([
             ...$item,
@@ -467,10 +471,7 @@ class SyncController extends Controller
             return $this->itemResult($clientId, 'failed', $validator->errors()->first());
         }
 
-        $plotId = $this->nullableUuid($item['farm_plot_id'] ?? null);
-        if ($plotId && ! FarmPlot::whereKey($plotId)->exists()) {
-            return $this->itemResult($clientId, 'failed', 'Selected farm plot was not found.');
-        }
+        $plotId = $this->usablePlotId($item['farm_plot_id'] ?? null);
 
         $areaError = $this->plotAreaExceedsCap($plotId, (float) $item['area_harvested']);
         if ($areaError) {
@@ -510,6 +511,9 @@ class SyncController extends Controller
     {
         $clientId = $item['client_id'] ?? ($item['id'] ?? null);
         $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null);
+        if (! $farmerId) {
+            return $this->itemResult($clientId, 'failed', 'Could not match this farmer from the queued id/RSBSA.');
+        }
 
         $validator = Validator::make([
             ...$item,
@@ -526,10 +530,7 @@ class SyncController extends Controller
             return $this->itemResult($clientId, 'failed', $validator->errors()->first());
         }
 
-        $plotId = $this->nullableUuid($item['farm_plot_id'] ?? null);
-        if ($plotId && ! FarmPlot::whereKey($plotId)->exists()) {
-            return $this->itemResult($clientId, 'failed', 'Selected farm plot was not found.');
-        }
+        $plotId = $this->usablePlotId($item['farm_plot_id'] ?? null);
 
         $areaError = $this->plotAreaExceedsCap($plotId, (float) $item['area_ha']);
         if ($areaError) {
@@ -1280,20 +1281,36 @@ class SyncController extends Controller
     }
 
     /**
-     * Accept UUID farmer_id or resolve via RSBSA number.
+     * Accept UUID farmer_id or resolve via RSBSA number (case-insensitive).
      */
-    private function resolveFarmerId(?string $farmerId, ?string $rsbsaNo = null): ?string
+    private function resolveFarmerId(mixed $farmerId, mixed $rsbsaNo = null): ?string
     {
-        if ($farmerId && Str::isUuid($farmerId) && Farmer::whereKey($farmerId)->exists()) {
-            return $farmerId;
+        $id = is_string($farmerId) ? trim($farmerId) : '';
+        $rsbsa = is_string($rsbsaNo) ? trim($rsbsaNo) : '';
+
+        if ($id !== '' && Str::isUuid($id) && Farmer::whereKey($id)->exists()) {
+            return $id;
         }
 
-        $lookup = $rsbsaNo ?: $farmerId;
-        if ($lookup) {
-            return Farmer::where('rsbsa_no', $lookup)->value('id');
+        $lookup = $rsbsa !== '' ? $rsbsa : $id;
+        if ($lookup === '') {
+            return null;
         }
 
-        return null;
+        return Farmer::query()
+            ->whereRaw('LOWER(rsbsa_no) = ?', [Str::lower($lookup)])
+            ->value('id');
+    }
+
+    /** Keep a plot FK only when the plot still exists (not missing / not soft-deleted). */
+    private function usablePlotId(mixed $farmPlotId): ?string
+    {
+        $plotId = $this->nullableUuid($farmPlotId);
+        if (! $plotId) {
+            return null;
+        }
+
+        return FarmPlot::whereKey($plotId)->exists() ? $plotId : null;
     }
 
     /**
