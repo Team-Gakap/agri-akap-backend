@@ -9,6 +9,7 @@ use App\Http\Requests\ClaimSubsidyRequest;
 use App\Traits\DecodesBase64Image;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -235,7 +236,7 @@ class DistributionController extends Controller
                     'photo_proof_path' => $photoPath,
                     'status' => 'claimed',
                     'device_id' => $validated['device_id'] ?? null,
-                    'claimed_at' => $validated['claimed_at'] ?? now(),
+                    'claimed_at' => $this->parseClaimedAt($validated['claimed_at'] ?? null),
                 ]);
 
                 return $this->claimResult(200, 'synced', [
@@ -269,5 +270,19 @@ class DistributionController extends Controller
     private function claimResult(int $http, string $outcome, array $body): array
     {
         return ['http' => $http, 'outcome' => $outcome, 'body' => $body];
+    }
+
+    /** Dexie queues ISO-8601 (`...Z`); MySQL timestamp needs a Carbon instance. */
+    private function parseClaimedAt(mixed $value): Carbon
+    {
+        if (! is_string($value) || trim($value) === '') {
+            return now();
+        }
+
+        try {
+            return Carbon::parse($value);
+        } catch (\Throwable) {
+            return now();
+        }
     }
 }
