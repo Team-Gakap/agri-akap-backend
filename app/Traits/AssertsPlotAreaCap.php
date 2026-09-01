@@ -25,6 +25,9 @@ trait AssertsPlotAreaCap
         }
 
         $cap = (float) $plot->size_ha;
+        if ($cap <= 0) {
+            return null;
+        }
         if ($area > $cap + 0.0001) {
             return response()->json([
                 'status' => 'error',
@@ -43,10 +46,13 @@ trait AssertsPlotAreaCap
 
         $plot = FarmPlot::find($farmPlotId);
         if (! $plot) {
-            return 'Selected farm plot was not found.';
+            return null;
         }
 
         $cap = (float) $plot->size_ha;
+        if ($cap <= 0) {
+            return null;
+        }
         if ($area > $cap + 0.0001) {
             return "Area cannot exceed the farm plot size ({$cap} ha).";
         }

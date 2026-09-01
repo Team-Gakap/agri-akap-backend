@@ -80,11 +80,31 @@ class SyncController extends Controller
         ];
 
         foreach ((array) $request->input('distributions', []) as $item) {
-            $results['distributions'][] = $this->syncDistribution($item, $technicianId, $deviceId);
+            try {
+                $results['distributions'][] = $this->syncDistribution($item, $technicianId, $deviceId);
+            } catch (\Throwable $e) {
+                Log::error('Distribution sync failed: '.$e->getMessage());
+                $clientId = $item['client_id'] ?? ($item['id'] ?? null);
+                $results['distributions'][] = $this->itemResult(
+                    is_string($clientId) ? $clientId : null,
+                    'failed',
+                    'Server error while saving distribution.',
+                );
+            }
         }
 
         foreach ((array) $request->input('assessments', []) as $item) {
-            $results['assessments'][] = $this->syncAssessment($item, $technicianId, $deviceId);
+            try {
+                $results['assessments'][] = $this->syncAssessment($item, $technicianId, $deviceId);
+            } catch (\Throwable $e) {
+                Log::error('Assessment sync failed: '.$e->getMessage());
+                $clientId = $item['client_id'] ?? ($item['id'] ?? null);
+                $results['assessments'][] = $this->itemResult(
+                    is_string($clientId) ? $clientId : null,
+                    'failed',
+                    'Server error while saving assessment.',
+                );
+            }
         }
 
         $hasOfflineBatch = $request->has('planting_logs')
@@ -387,34 +407,41 @@ class SyncController extends Controller
             return $this->itemResult($clientId, 'failed', $validator->errors()->first());
         }
 
-        $plotId = $item['farm_plot_id'] ?? null;
-        if ($plotId) {
-            $plot = FarmPlot::find($plotId);
-            $cap = $plot ? (float) $plot->size_ha : null;
-            if ($cap !== null && (float) $item['area_planted'] > $cap + 0.0001) {
-                return $this->itemResult($clientId, 'failed', 'Area planted cannot exceed the farm plot size ('.$cap.' ha).');
-            }
+        $plotId = $this->nullableUuid($item['farm_plot_id'] ?? null);
+        if ($plotId && ! FarmPlot::whereKey($plotId)->exists()) {
+            return $this->itemResult($clientId, 'failed', 'Selected farm plot was not found.');
+        }
+
+        $areaError = $this->plotAreaExceedsCap($plotId, (float) $item['area_planted']);
+        if ($areaError) {
+            return $this->itemResult($clientId, 'failed', $areaError);
         }
 
         if ($clientId && PlantingLog::where('client_id', $clientId)->exists()) {
             return $this->itemResult($clientId, 'duplicate', 'Planting log already synced.');
         }
 
-        $log = PlantingLog::create([
-            'client_id' => $clientId,
-            'farmer_id' => $farmerId,
-            'farm_plot_id' => $item['farm_plot_id'] ?? null,
-            'technician_id' => $technicianId,
-            'crop_type' => $item['crop_type'],
-            'variety' => $item['variety'],
-            'area_planted' => $item['area_planted'],
-            'date_planted' => $item['date_planted'],
-            'status' => $item['status'] ?? 'Active',
-            'water_source' => $item['water_source'] ?? null,
-            'latitude' => $item['latitude'] ?? null,
-            'longitude' => $item['longitude'] ?? null,
-            'device_id' => $item['device_id'] ?? $deviceId,
-        ]);
+        try {
+            $log = PlantingLog::create([
+                'client_id' => $clientId,
+                'farmer_id' => $farmerId,
+                'farm_plot_id' => $plotId,
+                'technician_id' => $technicianId,
+                'crop_type' => $item['crop_type'],
+                'variety' => $item['variety'],
+                'area_planted' => $item['area_planted'],
+                'date_planted' => $item['date_planted'],
+                'status' => $item['status'] ?? 'Active',
+                'water_source' => $item['water_source'] ?? null,
+                'latitude' => $item['latitude'] ?? null,
+                'longitude' => $item['longitude'] ?? null,
+                'device_id' => $item['device_id'] ?? $deviceId,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Planting log sync failed: '.$e->getMessage());
+
+            return $this->itemResult($clientId, 'failed', 'Server error while saving planting log.');
+        }
 
         return $this->itemResult($clientId ?? $log->id, 'synced', 'Planting log saved.');
     }
@@ -440,7 +467,11 @@ class SyncController extends Controller
             return $this->itemResult($clientId, 'failed', $validator->errors()->first());
         }
 
-        $plotId = $item['farm_plot_id'] ?? null;
+        $plotId = $this->nullableUuid($item['farm_plot_id'] ?? null);
+        if ($plotId && ! FarmPlot::whereKey($plotId)->exists()) {
+            return $this->itemResult($clientId, 'failed', 'Selected farm plot was not found.');
+        }
+
         $areaError = $this->plotAreaExceedsCap($plotId, (float) $item['area_harvested']);
         if ($areaError) {
             return $this->itemResult($clientId, 'failed', $areaError);
@@ -452,19 +483,25 @@ class SyncController extends Controller
 
         $farmer = Farmer::find($farmerId);
 
-        $log = HarvestLog::create([
-            'client_id' => $clientId,
-            'farmer_id' => $farmerId,
-            'farm_plot_id' => $plotId,
-            'technician_id' => $technicianId,
-            'crop_type' => $item['crop_type'],
-            'variety' => $item['variety'],
-            'area_harvested' => $item['area_harvested'],
-            'total_yield' => $item['total_yield'],
-            'yield_unit' => 'Metric Tons',
-            'date_harvested' => $item['date_harvested'],
-            'farm_location' => $item['farm_location'] ?? $farmer?->permanent_brgy,
-        ]);
+        try {
+            $log = HarvestLog::create([
+                'client_id' => $clientId,
+                'farmer_id' => $farmerId,
+                'farm_plot_id' => $plotId,
+                'technician_id' => $technicianId,
+                'crop_type' => $item['crop_type'],
+                'variety' => $item['variety'],
+                'area_harvested' => $item['area_harvested'],
+                'total_yield' => $item['total_yield'],
+                'yield_unit' => 'Metric Tons',
+                'date_harvested' => $item['date_harvested'],
+                'farm_location' => $item['farm_location'] ?? $farmer?->permanent_brgy,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Harvest log sync failed: '.$e->getMessage());
+
+            return $this->itemResult($clientId, 'failed', 'Server error while saving harvest log.');
+        }
 
         return $this->itemResult($clientId ?? $log->id, 'synced', 'Harvest log saved.');
     }
@@ -489,7 +526,11 @@ class SyncController extends Controller
             return $this->itemResult($clientId, 'failed', $validator->errors()->first());
         }
 
-        $plotId = $item['farm_plot_id'] ?? null;
+        $plotId = $this->nullableUuid($item['farm_plot_id'] ?? null);
+        if ($plotId && ! FarmPlot::whereKey($plotId)->exists()) {
+            return $this->itemResult($clientId, 'failed', 'Selected farm plot was not found.');
+        }
+
         $areaError = $this->plotAreaExceedsCap($plotId, (float) $item['area_ha']);
         if ($areaError) {
             return $this->itemResult($clientId, 'failed', $areaError);
@@ -501,18 +542,24 @@ class SyncController extends Controller
 
         $farmer = Farmer::find($farmerId);
 
-        $log = StandingCropLog::create([
-            'client_id' => $clientId,
-            'farmer_id' => $farmerId,
-            'farm_plot_id' => $plotId,
-            'technician_id' => $technicianId,
-            'crop_type' => $item['crop_type'],
-            'variety' => $item['variety'],
-            'area_ha' => $item['area_ha'],
-            'growth_stage' => $item['growth_stage'] ?? 'Vegetative',
-            'est_harvest_date' => $item['est_harvest_date'],
-            'farm_location' => $item['farm_location'] ?? $farmer?->permanent_brgy,
-        ]);
+        try {
+            $log = StandingCropLog::create([
+                'client_id' => $clientId,
+                'farmer_id' => $farmerId,
+                'farm_plot_id' => $plotId,
+                'technician_id' => $technicianId,
+                'crop_type' => $item['crop_type'],
+                'variety' => $item['variety'],
+                'area_ha' => $item['area_ha'],
+                'growth_stage' => $item['growth_stage'] ?? 'Vegetative',
+                'est_harvest_date' => $item['est_harvest_date'],
+                'farm_location' => $item['farm_location'] ?? $farmer?->permanent_brgy,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Standing crop log sync failed: '.$e->getMessage());
+
+            return $this->itemResult($clientId, 'failed', 'Server error while saving standing crop log.');
+        }
 
         return $this->itemResult($clientId ?? $log->id, 'synced', 'Standing crop log saved.');
     }
@@ -553,23 +600,29 @@ class SyncController extends Controller
                 return $this->itemResult($clientId, 'failed', 'Pest photo could not be decoded.');
             }
 
-            $existing->update([
-                'technician_id' => $technicianId,
-                'pest_name' => $item['pest_name'] ?? $existing->pest_name,
-                'incidence' => (int) $item['incidence'],
-                'severity' => $item['severity'],
-                'advisory' => $item['advisory'] ?? $existing->advisory,
-                'is_outbreak' => array_key_exists('is_outbreak', $item)
-                    ? (bool) $item['is_outbreak']
-                    : $existing->is_outbreak,
-                'latitude' => $lat,
-                'longitude' => $lng,
-                'photo_path' => $photoPath,
-                'report_ref' => $item['report_id'] ?? $existing->report_ref,
-                'item_distributed' => $item['item_distributed'] ?? $existing->item_distributed,
-                'quantity' => isset($item['quantity']) ? (string) $item['quantity'] : $existing->quantity,
-                'device_id' => $item['device_id'] ?? $deviceId,
-            ]);
+            try {
+                $existing->update([
+                    'technician_id' => $technicianId,
+                    'pest_name' => $item['pest_name'] ?? $existing->pest_name,
+                    'incidence' => (int) $item['incidence'],
+                    'severity' => $item['severity'],
+                    'advisory' => $item['advisory'] ?? $existing->advisory,
+                    'is_outbreak' => array_key_exists('is_outbreak', $item)
+                        ? (bool) $item['is_outbreak']
+                        : $existing->is_outbreak,
+                    'latitude' => $lat,
+                    'longitude' => $lng,
+                    'photo_path' => $photoPath,
+                    'report_ref' => $item['report_id'] ?? $existing->report_ref,
+                    'item_distributed' => $item['item_distributed'] ?? $existing->item_distributed,
+                    'quantity' => isset($item['quantity']) ? (string) $item['quantity'] : $existing->quantity,
+                    'device_id' => $item['device_id'] ?? $deviceId,
+                ]);
+            } catch (\Throwable $e) {
+                Log::error('Pest report update failed: '.$e->getMessage());
+
+                return $this->itemResult($clientId, 'failed', 'Server error while saving pest report.');
+            }
 
             return $this->itemResult($clientId ?? $existing->id, 'synced', 'Pest report updated.');
         }
@@ -587,24 +640,30 @@ class SyncController extends Controller
             return $this->itemResult($clientId, 'duplicate', 'Pest report already synced.');
         }
 
-        $row = PestMonitoring::create([
-            'client_id' => $clientId,
-            'farmer_id' => $farmerId,
-            'technician_id' => $technicianId,
-            'crop' => $item['crop'] ?? null,
-            'pest_name' => $item['pest_name'] ?? null,
-            'incidence' => (int) $item['incidence'],
-            'severity' => $item['severity'],
-            'advisory' => $item['advisory'] ?? null,
-            'is_outbreak' => (bool) ($item['is_outbreak'] ?? false),
-            'latitude' => $lat,
-            'longitude' => $lng,
-            'photo_path' => $photoPath,
-            'report_ref' => $item['report_id'] ?? null,
-            'item_distributed' => $item['item_distributed'] ?? null,
-            'quantity' => isset($item['quantity']) ? (string) $item['quantity'] : null,
-            'device_id' => $item['device_id'] ?? $deviceId,
-        ]);
+        try {
+            $row = PestMonitoring::create([
+                'client_id' => $clientId,
+                'farmer_id' => $farmerId,
+                'technician_id' => $technicianId,
+                'crop' => $item['crop'] ?? null,
+                'pest_name' => $item['pest_name'] ?? null,
+                'incidence' => (int) $item['incidence'],
+                'severity' => $item['severity'],
+                'advisory' => $item['advisory'] ?? null,
+                'is_outbreak' => (bool) ($item['is_outbreak'] ?? false),
+                'latitude' => $lat,
+                'longitude' => $lng,
+                'photo_path' => $photoPath,
+                'report_ref' => $item['report_id'] ?? null,
+                'item_distributed' => $item['item_distributed'] ?? null,
+                'quantity' => isset($item['quantity']) ? (string) $item['quantity'] : null,
+                'device_id' => $item['device_id'] ?? $deviceId,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Pest report sync failed: '.$e->getMessage());
+
+            return $this->itemResult($clientId, 'failed', 'Server error while saving pest report.');
+        }
 
         return $this->itemResult($clientId ?? $row->id, 'synced', 'Pest report saved.');
     }
@@ -629,20 +688,26 @@ class SyncController extends Controller
             return $this->itemResult($clientId, 'duplicate', 'Field distribution already synced.');
         }
 
-        DB::table('field_distribution_logs')->insert([
-            'id' => (string) Str::uuid(),
-            'client_id' => $clientId,
-            'farmer_id' => $farmerId,
-            'technician_id' => $technicianId,
-            'rsbsa_id' => $rsbsa,
-            'item_dispensed' => $item['item_dispensed'],
-            'quantity' => isset($item['quantity']) ? (string) $item['quantity'] : null,
-            'dispensed_at' => $item['timestamp'] ?? now(),
-            'program_id' => $item['program_id'] ?? null,
-            'device_id' => $item['device_id'] ?? $deviceId,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        try {
+            DB::table('field_distribution_logs')->insert([
+                'id' => (string) Str::uuid(),
+                'client_id' => $clientId,
+                'farmer_id' => $farmerId,
+                'technician_id' => $technicianId,
+                'rsbsa_id' => $rsbsa,
+                'item_dispensed' => $item['item_dispensed'],
+                'quantity' => isset($item['quantity']) ? (string) $item['quantity'] : null,
+                'dispensed_at' => $item['timestamp'] ?? now(),
+                'program_id' => $item['program_id'] ?? null,
+                'device_id' => $item['device_id'] ?? $deviceId,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Field distribution sync failed: '.$e->getMessage());
+
+            return $this->itemResult($clientId, 'failed', 'Server error while saving field distribution.');
+        }
 
         return $this->itemResult($clientId, 'synced', 'Field distribution saved.');
     }
@@ -676,12 +741,19 @@ class SyncController extends Controller
             $plot->size_ha = $totalArea;
             $plot->total_parcel_area_ha = $totalArea;
         }
-        $plot->save();
 
-        DB::update(
-            'UPDATE farm_plots SET coordinates = POINT(?, ?) WHERE id = ?',
-            [$lng, $lat, $plot->id]
-        );
+        try {
+            $plot->save();
+
+            DB::update(
+                'UPDATE farm_plots SET coordinates = POINT(?, ?) WHERE id = ?',
+                [$lng, $lat, $plot->id]
+            );
+        } catch (\Throwable $e) {
+            Log::error('Farm profile sync failed: '.$e->getMessage());
+
+            return $this->itemResult($clientId, 'failed', 'Server error while saving farm profile.');
+        }
 
         return $this->itemResult($clientId, 'synced', 'Farm plot profile updated.');
     }
@@ -787,18 +859,22 @@ class SyncController extends Controller
         }
 
         $photoPath = null;
-        if (! empty($item['photo_base64'])) {
-            $photoPath = $this->storeBase64Image($item['photo_base64'], 'geo-tags');
-        }
-
         $farmerSignaturePath = null;
-        if (! empty($item['farmer_signature_base64'])) {
-            $farmerSignaturePath = $this->storeBase64Image($item['farmer_signature_base64'], 'geo-tags/signatures');
-        }
-
         $aewSignaturePath = null;
-        if (! empty($item['aew_signature_base64'])) {
-            $aewSignaturePath = $this->storeBase64Image($item['aew_signature_base64'], 'geo-tags/signatures');
+        try {
+            if (! empty($item['photo_base64'])) {
+                $photoPath = $this->storeBase64Image($item['photo_base64'], 'geo-tags');
+            }
+            if (! empty($item['farmer_signature_base64'])) {
+                $farmerSignaturePath = $this->storeBase64Image($item['farmer_signature_base64'], 'geo-tags/signatures');
+            }
+            if (! empty($item['aew_signature_base64'])) {
+                $aewSignaturePath = $this->storeBase64Image($item['aew_signature_base64'], 'geo-tags/signatures');
+            }
+        } catch (\Throwable $e) {
+            Log::error('Geo-tag media store failed: '.$e->getMessage());
+
+            return $this->itemResult($clientId, 'failed', 'Server error while saving geo-tag photo.');
         }
 
         $hasDiscrepancy = (bool) ($item['has_discrepancy'] ?? false);
@@ -1262,6 +1338,17 @@ class SyncController extends Controller
         }
 
         return round($base * ($pct / 100), 4);
+    }
+
+    private function nullableUuid(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+
+        return $trimmed === '' ? null : $trimmed;
     }
 
     private function itemResult(?string $clientId, string $outcome, string $message): array
