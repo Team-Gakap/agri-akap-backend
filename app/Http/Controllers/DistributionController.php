@@ -178,7 +178,7 @@ class DistributionController extends Controller
                         'status' => 'error',
                         'message' => 'FRAUD ALERT: This farmer has already claimed their subsidy for this program.',
                         'data' => [
-                            'claimed_at' => $existingClaim->created_at->format('M d, Y h:i A'),
+                            'claimed_at' => optional($existingClaim->created_at)->format('M d, Y h:i A'),
                         ],
                     ]);
                 }
@@ -254,13 +254,14 @@ class DistributionController extends Controller
             });
 
             return $result;
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             Log::error('Distribution claim failed: ' . $e->getMessage());
 
             return $this->claimResult(500, 'failed', [
                 'status' => 'error',
-                'message' => 'A critical error occurred while processing the claim.',
-                'error' => $e->getMessage(),
+                'message' => $e->getMessage() !== ''
+                    ? $e->getMessage()
+                    : 'A critical error occurred while processing the claim.',
             ]);
         }
     }

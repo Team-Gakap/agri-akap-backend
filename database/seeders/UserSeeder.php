@@ -36,9 +36,9 @@ class UserSeeder extends Seeder
 
         // 2. Create a Default Field Technician for Mobile App testing
         User::updateOrCreate(
-            ['email' => 'tech@mao.com'],
+            ['email' => 'john@mao.com'],
             [
-                'name' => 'John Field Technician',
+                'name' => 'John',
                 'password' => Hash::make('password123'),
                 'role' => 'technician',
                 'is_active' => true,
@@ -52,7 +52,7 @@ class UserSeeder extends Seeder
                 'name' => 'Barangay Official',
                 'password' => Hash::make('password123'),
                 'role' => 'barangay_official',
-                'assigned_barangay' => 'San Fabian',
+                'assigned_barangay' => 'Silauan Norte (Poblacion)',
                 'is_active' => true,
             ]
         );

@@ -10,7 +10,9 @@ use App\Models\GeoTagRefusal;
 use App\Models\HarvestLog;
 use App\Models\PestMonitoring;
 use App\Models\PlantingLog;
+use App\Models\Program;
 use App\Models\StandingCropLog;
+use App\Models\SubsidyProgram;
 use App\Services\FarmAreaBudgetService;
 use App\Services\PolygonIntegrityService;
 use App\Traits\AssertsPlotAreaCap;
@@ -88,7 +90,7 @@ class SyncController extends Controller
                 $results['distributions'][] = $this->itemResult(
                     is_string($clientId) ? $clientId : null,
                     'failed',
-                    'Server error while saving distribution.',
+                    $e->getMessage() !== '' ? $e->getMessage() : 'Server error while saving distribution.',
                 );
             }
         }
@@ -191,10 +193,31 @@ class SyncController extends Controller
     {
         $clientId = $item['client_id'] ?? ($item['id'] ?? null);
 
-        // Subsidy releases carry their own program table (tbl_subsidy_beneficiaries)
-        // and re-verification rules distinct from the legacy `programs` claim flow.
-        if (($item['source'] ?? 'program') === 'subsidy') {
+        $farmerId = $this->resolveFarmerId(
+            $item['farmer_id'] ?? null,
+            $item['rsbsa_no'] ?? null,
+            $item['farmer_name'] ?? null,
+        );
+        if ($farmerId) {
+            $item['farmer_id'] = $farmerId;
+        } else {
+            unset($item['farmer_id']);
+        }
+
+        $source = $item['source'] ?? 'program';
+        $programId = is_string($item['program_id'] ?? null) ? $item['program_id'] : null;
+        if ($source !== 'subsidy' && $programId) {
+            if (! Program::whereKey($programId)->exists() && SubsidyProgram::whereKey($programId)->exists()) {
+                $source = 'subsidy';
+            }
+        }
+
+        if ($source === 'subsidy') {
             return $this->syncSubsidyClaim($item, $clientId, $technicianId);
+        }
+
+        if (! $farmerId) {
+            return $this->itemResult($clientId, 'failed', 'Could not match this farmer from the queued id/RSBSA.');
         }
 
         $validator = Validator::make($item, [
@@ -219,14 +242,14 @@ class SyncController extends Controller
 
         $result = $this->distributions->executeClaim($payload, $technicianId);
 
-        return $this->itemResult($clientId, $result['outcome'], $result['body']['message'] ?? '');
+        return $this->itemResult($clientId, $result['outcome'] ?? 'failed', $result['body']['message'] ?? 'Claim could not be saved.');
     }
 
     /** Re-verifies eligibility/stock via SubsidyController::executeClaim() before accepting an offline claim. */
     private function syncSubsidyClaim(array $item, ?string $clientId, string $technicianId): array
     {
         $validator = Validator::make($item, [
-            'program_id' => 'required|uuid|exists:subsidy_programs,id',
+            'program_id' => 'required|uuid|exists:tbl_subsidy_programs,id',
             'farmer_id' => 'nullable|uuid|exists:farmers,id',
             'rsbsa_no' => 'nullable|string|max:64',
             'beneficiary_id' => 'nullable|uuid',
@@ -239,11 +262,15 @@ class SyncController extends Controller
         try {
             $result = $this->subsidies->executeClaim($item['program_id'], $item, $technicianId);
 
-            return $this->itemResult($clientId, $result['outcome'], $result['message']);
+            return $this->itemResult($clientId, $result['outcome'] ?? 'failed', $result['message'] ?? 'Subsidy claim could not be saved.');
         } catch (\Throwable $e) {
             Log::error('Offline subsidy claim sync failed: '.$e->getMessage());
 
-            return $this->itemResult($clientId, 'failed', 'Server error while releasing subsidy.');
+            return $this->itemResult(
+                $clientId,
+                'failed',
+                $e->getMessage() !== '' ? $e->getMessage() : 'Server error while releasing subsidy.',
+            );
         }
     }
 
@@ -389,7 +416,7 @@ class SyncController extends Controller
     {
         $clientId = $item['client_id'] ?? ($item['id'] ?? null);
 
-        $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null);
+        $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null, $item['farmer_name'] ?? null);
         if (! $farmerId) {
             return $this->itemResult($clientId, 'failed', 'Could not match this farmer from the queued id/RSBSA.');
         }
@@ -450,7 +477,7 @@ class SyncController extends Controller
     private function syncHarvestLog(array $item, string $technicianId, ?string $deviceId): array
     {
         $clientId = $item['client_id'] ?? ($item['id'] ?? null);
-        $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null);
+        $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null, $item['farmer_name'] ?? null);
         if (! $farmerId) {
             return $this->itemResult($clientId, 'failed', 'Could not match this farmer from the queued id/RSBSA.');
         }
@@ -510,7 +537,7 @@ class SyncController extends Controller
     private function syncStandingCropLog(array $item, string $technicianId, ?string $deviceId): array
     {
         $clientId = $item['client_id'] ?? ($item['id'] ?? null);
-        $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null);
+        $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null, $item['farmer_name'] ?? null);
         if (! $farmerId) {
             return $this->itemResult($clientId, 'failed', 'Could not match this farmer from the queued id/RSBSA.');
         }
@@ -568,7 +595,7 @@ class SyncController extends Controller
     private function syncPestReport(array $item, string $technicianId, ?string $deviceId): array
     {
         $clientId = $item['client_id'] ?? ($item['id'] ?? null);
-        $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null);
+        $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null, $item['farmer_name'] ?? null);
         $serverId = $item['server_id'] ?? null;
 
         $validator = Validator::make($item, [
@@ -716,7 +743,7 @@ class SyncController extends Controller
     private function syncFarmProfile(array $item, ?string $deviceId): array
     {
         $clientId = $item['client_id'] ?? ($item['id'] ?? null);
-        $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null);
+        $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null, $item['farmer_name'] ?? null);
 
         if (! $farmerId) {
             return $this->itemResult($clientId, 'failed', 'farmer_id is required to update farm plots.');
@@ -854,7 +881,7 @@ class SyncController extends Controller
             }
         }
 
-        $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null);
+        $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null, $item['farmer_name'] ?? null);
         if (! $farmerId && ! empty($item['farm_plot_id'])) {
             $farmerId = FarmPlot::whereKey($item['farm_plot_id'])->value('farmer_id');
         }
@@ -989,7 +1016,7 @@ class SyncController extends Controller
             return $this->itemResult($clientId, 'failed', $validator->errors()->first());
         }
 
-        $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null);
+        $farmerId = $this->resolveFarmerId($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null, $item['farmer_name'] ?? null);
 
         try {
             $refusal = GeoTagRefusal::create([
@@ -1281,9 +1308,9 @@ class SyncController extends Controller
     }
 
     /**
-     * Accept UUID farmer_id or resolve via RSBSA number (case-insensitive).
+     * Accept UUID farmer_id, RSBSA number, or a unique "Surname, First" display name.
      */
-    private function resolveFarmerId(mixed $farmerId, mixed $rsbsaNo = null): ?string
+    private function resolveFarmerId(mixed $farmerId, mixed $rsbsaNo = null, mixed $farmerName = null): ?string
     {
         $id = is_string($farmerId) ? trim($farmerId) : '';
         $rsbsa = is_string($rsbsaNo) ? trim($rsbsaNo) : '';
@@ -1293,13 +1320,52 @@ class SyncController extends Controller
         }
 
         $lookup = $rsbsa !== '' ? $rsbsa : $id;
-        if ($lookup === '') {
+        if ($lookup !== '') {
+            $fromRsbsa = Farmer::query()
+                ->whereRaw('LOWER(rsbsa_no) = ?', [Str::lower($lookup)])
+                ->value('id');
+            if ($fromRsbsa) {
+                return $fromRsbsa;
+            }
+        }
+
+        $name = is_string($farmerName) ? trim(preg_replace('/\s+/', ' ', $farmerName) ?? '') : '';
+        if ($name === '') {
             return null;
         }
 
-        return Farmer::query()
-            ->whereRaw('LOWER(rsbsa_no) = ?', [Str::lower($lookup)])
-            ->value('id');
+        $parts = array_map('trim', explode(',', $name, 2));
+        if (count($parts) < 2 || $parts[0] === '' || $parts[1] === '') {
+            return null;
+        }
+
+        $surname = $parts[0];
+        $firstToken = explode(' ', $parts[1])[0] ?? '';
+        if ($firstToken === '') {
+            return null;
+        }
+
+        $exact = Farmer::query()
+            ->whereRaw('LOWER(surname) = ?', [Str::lower($surname)])
+            ->whereRaw('LOWER(first_name) = ?', [Str::lower($firstToken)])
+            ->limit(2)
+            ->pluck('id');
+        if ($exact->count() === 1) {
+            return $exact->first();
+        }
+
+        if ($exact->count() === 0) {
+            $prefix = Farmer::query()
+                ->whereRaw('LOWER(surname) = ?', [Str::lower($surname)])
+                ->whereRaw('LOWER(first_name) LIKE ?', [Str::lower($firstToken).'%'])
+                ->limit(2)
+                ->pluck('id');
+            if ($prefix->count() === 1) {
+                return $prefix->first();
+            }
+        }
+
+        return null;
     }
 
     /** Keep a plot FK only when the plot still exists (not missing / not soft-deleted). */
