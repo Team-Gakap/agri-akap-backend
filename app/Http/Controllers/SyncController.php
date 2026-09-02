@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\DamageAssessment;
 use App\Support\CalamityTypes;
 use App\Models\FarmPlot;
 use App\Models\Farmer;
