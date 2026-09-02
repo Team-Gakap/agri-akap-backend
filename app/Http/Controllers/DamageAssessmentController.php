@@ -6,14 +6,17 @@ use App\Models\DamageAssessment;
 use App\Models\FarmPlot;
 use App\Models\Farmer;
 use App\Traits\DecodesBase64Image;
+use App\Traits\LogsReportAudit;
 use App\Traits\ResolvesEncodingBarangay;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use App\Support\CalamityTypes;
 
 class DamageAssessmentController extends Controller
 {
     use DecodesBase64Image;
+    use LogsReportAudit;
     use ResolvesEncodingBarangay;
 
     /**
@@ -134,7 +137,7 @@ class DamageAssessmentController extends Controller
             'id' => 'nullable|uuid',
             'farm_plot_id' => 'required|exists:farm_plots,id',
             'farmer_id' => 'nullable|exists:farmers,id',
-            'calamity_type' => ['required', Rule::in(['Typhoon', 'Flood', 'Drought', 'Pest Outbreak', 'Hail', 'Other'])],
+            'calamity_type' => ['required', CalamityTypes::rule()],
             'calamity_name' => 'nullable|string|max:255',
             'crop_stage' => ['nullable', Rule::in(['Seedling', 'Vegetative', 'Reproductive', 'Maturity', 'Harvested'])],
             'variety' => 'nullable|string|max:128',
@@ -374,15 +377,69 @@ class DamageAssessmentController extends Controller
         ], 200);
     }
 
+    public function update(Request $request, string $id): JsonResponse
+    {
+        $assessment = DamageAssessment::with('farmer')->findOrFail($id);
+        $isPending = ($assessment->status ?? 'Pending') === 'Pending';
+        $denied = $this->assertBarangayCanModifyPendingRecord($request, $assessment->farmer, $isPending);
+        if ($denied) {
+            return $denied;
+        }
+
+        $validated = $request->validate([
+            'calamity_type' => ['sometimes', 'required', CalamityTypes::rule()],
+            'calamity_name' => 'nullable|string|max:255',
+            'crop_stage' => ['nullable', Rule::in(['Seedling', 'Vegetative', 'Reproductive', 'Maturity', 'Harvested'])],
+            'variety' => 'nullable|string|max:128',
+            'area_destroyed_ha' => 'nullable|numeric|min:0',
+            'area_planted_ha' => 'nullable|numeric|min:0',
+            'date_of_calamity' => 'sometimes|required|date',
+            'damage_percentage' => 'sometimes|required|numeric|min:0|max:100',
+        ]);
+
+        if (isset($validated['area_destroyed_ha']) || isset($validated['damage_percentage'])) {
+            $destroyedHa = $this->resolveDestroyedArea(
+                $assessment->farm_plot_id,
+                isset($validated['area_destroyed_ha']) ? (float) $validated['area_destroyed_ha'] : (float) ($assessment->area_destroyed_ha ?? 0),
+                isset($validated['area_planted_ha']) ? (float) $validated['area_planted_ha'] : (float) ($assessment->area_planted_ha ?? 0),
+                (float) ($validated['damage_percentage'] ?? $assessment->damage_percentage ?? 0),
+            );
+            $areaError = $this->assertDestroyedAreaWithinPlot(
+                $assessment->farm_plot_id,
+                $destroyedHa,
+                isset($validated['area_planted_ha']) ? (float) $validated['area_planted_ha'] : (float) ($assessment->area_planted_ha ?? 0),
+            );
+            if ($areaError) {
+                return $areaError;
+            }
+            $validated['area_destroyed_ha'] = $destroyedHa;
+        }
+
+        $before = $assessment->only(array_keys($validated));
+        $assessment->update($validated);
+        $this->logReportAudit('damage_assessment.updated', $assessment, [
+            'before' => $before,
+            'after' => $assessment->fresh()->only(array_keys($validated)),
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Calamity assessment updated.',
+            'data' => $assessment->fresh()->load('farmer', 'farmPlot'),
+        ]);
+    }
+
     public function destroy(Request $request, string $id): JsonResponse
     {
         $assessment = DamageAssessment::with('farmer')->findOrFail($id);
-        $denied = $this->assertCanDeleteEncodedRecord($request, $assessment->farmer);
+        $isPending = ($assessment->status ?? 'Pending') === 'Pending';
+        $denied = $this->assertBarangayCanModifyPendingRecord($request, $assessment->farmer, $isPending);
         if ($denied) {
             return $denied;
         }
 
         $assessment->delete();
+        $this->logReportAudit('damage_assessment.deleted', $assessment);
 
         return response()->json([
             'status' => 'success',

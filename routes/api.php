@@ -156,6 +156,10 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:admin,technician');
     Route::patch('/subsidies/{id}/beneficiaries/{beneficiaryId}/claim', [SubsidyController::class, 'claimBeneficiary'])
         ->middleware('role:admin,technician');
+    Route::patch('/subsidies/beneficiaries/{beneficiaryId}', [SubsidyController::class, 'updateBeneficiaryClaim'])
+        ->middleware('role:admin');
+    Route::delete('/subsidies/beneficiaries/{beneficiaryId}', [SubsidyController::class, 'voidBeneficiaryClaim'])
+        ->middleware('role:admin');
 
     // Distribution / Claiming (field dispense + admin fallback)
     Route::post('/distributions/verify', [DistributionController::class, 'verify'])
@@ -251,6 +255,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/damage-assessments', [DamageAssessmentController::class, 'store'])
         ->middleware('role:barangay_official,technician,admin');
     Route::get('/damage-assessments/{id}', [DamageAssessmentController::class, 'show']);
+    Route::patch('/damage-assessments/{id}', [DamageAssessmentController::class, 'update'])
+        ->middleware('role:admin,barangay_official');
     Route::patch('/damage-assessments/{id}/field-validate', [DamageAssessmentController::class, 'fieldValidate'])
         ->middleware('role:technician,admin');
     Route::patch('/damage-assessments/{id}/verify', [DamageAssessmentController::class, 'verify'])
@@ -264,16 +270,22 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/planting-logs', [PlantingLogController::class, 'index']);
     Route::post('/planting-logs', [PlantingLogController::class, 'store'])
         ->middleware('role:barangay_official,technician,admin');
+    Route::patch('/planting-logs/{id}', [PlantingLogController::class, 'update'])
+        ->middleware('role:admin,barangay_official');
     Route::delete('/planting-logs/{id}', [PlantingLogController::class, 'destroy'])
         ->middleware('role:barangay_official,technician,admin');
     Route::get('/standing-crop-logs', [StandingCropLogController::class, 'index']);
     Route::post('/standing-crop-logs', [StandingCropLogController::class, 'store'])
         ->middleware('role:barangay_official,technician,admin');
+    Route::patch('/standing-crop-logs/{id}', [StandingCropLogController::class, 'update'])
+        ->middleware('role:admin,barangay_official');
     Route::delete('/standing-crop-logs/{id}', [StandingCropLogController::class, 'destroy'])
         ->middleware('role:barangay_official,technician,admin');
     Route::get('/harvest-logs', [HarvestLogController::class, 'index']);
     Route::post('/harvest-logs', [HarvestLogController::class, 'store'])
         ->middleware('role:barangay_official,technician,admin');
+    Route::patch('/harvest-logs/{id}', [HarvestLogController::class, 'update'])
+        ->middleware('role:admin,barangay_official');
     Route::delete('/harvest-logs/{id}', [HarvestLogController::class, 'destroy'])
         ->middleware('role:barangay_official,technician,admin');
     Route::get('/pest-guidelines', [PestMonitoringController::class, 'guidelines']);
@@ -281,6 +293,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/pest-monitoring/{id}', [PestMonitoringController::class, 'show']);
     Route::post('/pest-monitoring', [PestMonitoringController::class, 'store'])
         ->middleware('role:barangay_official,technician,admin');
+    Route::patch('/pest-monitoring/{id}', [PestMonitoringController::class, 'update'])
+        ->middleware('role:admin,barangay_official');
     Route::patch('/pest-monitoring/{id}/field-validate', [PestMonitoringController::class, 'fieldValidate'])
         ->middleware('role:technician,admin');
     Route::delete('/pest-monitoring/{id}', [PestMonitoringController::class, 'destroy'])

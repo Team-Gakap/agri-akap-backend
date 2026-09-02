@@ -6,6 +6,7 @@ use App\Models\Farmer;
 use App\Models\FarmPlot;
 use App\Models\HarvestLog;
 use App\Traits\AssertsPlotAreaCap;
+use App\Traits\LogsReportAudit;
 use App\Traits\ResolvesEncodingBarangay;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -14,6 +15,7 @@ use Illuminate\Validation\Rule;
 class HarvestLogController extends Controller
 {
     use AssertsPlotAreaCap;
+    use LogsReportAudit;
     use ResolvesEncodingBarangay;
     public function index(Request $request): JsonResponse
     {
@@ -129,6 +131,50 @@ class HarvestLogController extends Controller
         ], 201);
     }
 
+    public function update(Request $request, string $id): JsonResponse
+    {
+        $log = HarvestLog::with('farmer')->findOrFail($id);
+        $denied = $this->assertCanDeleteEncodedRecord($request, $log->farmer);
+        if ($denied) {
+            return $denied;
+        }
+
+        $validated = $request->validate([
+            'farm_plot_id' => ['nullable', 'uuid', 'exists:farm_plots,id'],
+            'crop_type' => ['sometimes', 'required', 'string', 'max:64'],
+            'variety' => ['sometimes', 'required', 'string', 'max:128'],
+            'area_harvested' => ['sometimes', 'required', 'numeric', 'min:0'],
+            'total_yield' => ['sometimes', 'required', 'numeric', 'min:0'],
+            'yield_unit' => ['nullable', Rule::in(['Metric Tons'])],
+            'date_harvested' => ['sometimes', 'required', 'date'],
+            'farm_location' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        if (isset($validated['area_harvested'])) {
+            $areaError = $this->assertAreaWithinPlot(
+                $validated['farm_plot_id'] ?? $log->farm_plot_id,
+                (float) $validated['area_harvested'],
+                'Area harvested',
+            );
+            if ($areaError) {
+                return $areaError;
+            }
+        }
+
+        $before = $log->only(array_keys($validated));
+        $log->update($validated);
+        $this->logReportAudit('harvest_log.updated', $log, [
+            'before' => $before,
+            'after' => $log->fresh()->only(array_keys($validated)),
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Harvest record updated.',
+            'data' => $log->fresh()->load('farmer', 'farmPlot'),
+        ]);
+    }
+
     public function destroy(Request $request, string $id): JsonResponse
     {
         $log = HarvestLog::with('farmer')->findOrFail($id);
@@ -138,6 +184,7 @@ class HarvestLogController extends Controller
         }
 
         $log->delete();
+        $this->logReportAudit('harvest_log.deleted', $log);
 
         return response()->json([
             'status' => 'success',

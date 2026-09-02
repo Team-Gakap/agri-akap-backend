@@ -101,4 +101,25 @@ trait ResolvesEncodingBarangay
 
         return null;
     }
+
+    /**
+     * Barangay officials may only modify pending workflow records; admins unrestricted.
+     */
+    protected function assertBarangayCanModifyPendingRecord(Request $request, ?Farmer $farmer, bool $isPending): ?JsonResponse
+    {
+        $denied = $this->assertCanDeleteEncodedRecord($request, $farmer);
+        if ($denied) {
+            return $denied;
+        }
+
+        $user = $request->user();
+        if ($user->role === 'barangay_official' && ! $isPending) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Only pending records can be edited or removed from the barangay portal.',
+            ], 403);
+        }
+
+        return null;
+    }
 }

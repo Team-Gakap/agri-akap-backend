@@ -6,6 +6,7 @@ use App\Models\Farmer;
 use App\Models\FarmPlot;
 use App\Models\StandingCropLog;
 use App\Traits\AssertsPlotAreaCap;
+use App\Traits\LogsReportAudit;
 use App\Traits\ResolvesEncodingBarangay;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -13,6 +14,7 @@ use Illuminate\Http\Request;
 class StandingCropLogController extends Controller
 {
     use AssertsPlotAreaCap;
+    use LogsReportAudit;
     use ResolvesEncodingBarangay;
 
     public function index(Request $request): JsonResponse
@@ -137,6 +139,49 @@ class StandingCropLogController extends Controller
         ], 201);
     }
 
+    public function update(Request $request, string $id): JsonResponse
+    {
+        $log = StandingCropLog::with('farmer')->findOrFail($id);
+        $denied = $this->assertCanDeleteEncodedRecord($request, $log->farmer);
+        if ($denied) {
+            return $denied;
+        }
+
+        $validated = $request->validate([
+            'farm_plot_id' => ['nullable', 'uuid', 'exists:farm_plots,id'],
+            'crop_type' => ['sometimes', 'required', 'string', 'max:64'],
+            'variety' => ['sometimes', 'required', 'string', 'max:128'],
+            'area_ha' => ['sometimes', 'required', 'numeric', 'min:0'],
+            'growth_stage' => ['nullable', 'string', 'max:64'],
+            'est_harvest_date' => ['sometimes', 'required', 'date'],
+            'farm_location' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        if (isset($validated['area_ha'])) {
+            $areaError = $this->assertAreaWithinPlot(
+                $validated['farm_plot_id'] ?? $log->farm_plot_id,
+                (float) $validated['area_ha'],
+                'Standing crop area',
+            );
+            if ($areaError) {
+                return $areaError;
+            }
+        }
+
+        $before = $log->only(array_keys($validated));
+        $log->update($validated);
+        $this->logReportAudit('standing_crop_log.updated', $log, [
+            'before' => $before,
+            'after' => $log->fresh()->only(array_keys($validated)),
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Standing crop record updated.',
+            'data' => $log->fresh()->load('farmer', 'farmPlot'),
+        ]);
+    }
+
     public function destroy(Request $request, string $id): JsonResponse
     {
         $log = StandingCropLog::with('farmer')->findOrFail($id);
@@ -146,6 +191,7 @@ class StandingCropLogController extends Controller
         }
 
         $log->delete();
+        $this->logReportAudit('standing_crop_log.deleted', $log);
 
         return response()->json([
             'status' => 'success',

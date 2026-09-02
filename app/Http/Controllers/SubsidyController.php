@@ -3,10 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Models\Farmer;
+use App\Models\SubsidyBeneficiary;
 use App\Models\SubsidyProgram;
 use App\Support\OfficialBarangays;
 use App\Support\SubsidyCatalog;
 use App\Traits\DecodesBase64Image;
+use App\Traits\LogsReportAudit;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -17,6 +19,7 @@ use Illuminate\Validation\Rule;
 class SubsidyController extends Controller
 {
     use DecodesBase64Image;
+    use LogsReportAudit;
     /**
      * List subsidy programs with beneficiary counts.
      * Technicians only receive Active campaigns for field release.
@@ -472,6 +475,80 @@ class SubsidyController extends Controller
             'data' => [
                 'program' => $result['program'],
             ],
+        ]);
+    }
+
+    /**
+     * Update a claimed beneficiary record (admin report edit).
+     */
+    public function updateBeneficiaryClaim(Request $request, string $beneficiaryId): JsonResponse
+    {
+        $validated = $request->validate([
+            'claimed_at' => ['nullable', 'date'],
+        ]);
+
+        $beneficiary = SubsidyBeneficiary::where('status', 'Claimed')->findOrFail($beneficiaryId);
+        $before = $beneficiary->only(['claimed_at']);
+        if (array_key_exists('claimed_at', $validated) && $validated['claimed_at']) {
+            $beneficiary->claimed_at = Carbon::parse($validated['claimed_at']);
+            $beneficiary->save();
+        }
+        $this->logReportAudit('subsidy_beneficiary.updated', $beneficiary, [
+            'before' => $before,
+            'after' => $beneficiary->fresh()->only(['claimed_at']),
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Claim record updated.',
+            'data' => $beneficiary->fresh(),
+        ]);
+    }
+
+    /**
+     * Void a claimed beneficiary and restock program inventory.
+     */
+    public function voidBeneficiaryClaim(Request $request, string $beneficiaryId): JsonResponse
+    {
+        $result = DB::transaction(function () use ($beneficiaryId) {
+            $beneficiary = SubsidyBeneficiary::where('status', 'Claimed')->lockForUpdate()->find($beneficiaryId);
+            if (! $beneficiary) {
+                return ['error' => 'Claimed beneficiary not found.', 'code' => 404];
+            }
+
+            $program = SubsidyProgram::where('id', $beneficiary->program_id)->lockForUpdate()->firstOrFail();
+            $allocation = $this->cashCappedAllocation($program, (int) $beneficiary->calculated_allocation);
+            $allocationSecondary = $beneficiary->calculated_allocation_secondary !== null
+                ? (int) $beneficiary->calculated_allocation_secondary
+                : null;
+
+            $program->remaining_quantity += $allocation;
+            if ($allocationSecondary !== null && $program->secondary_unit) {
+                $program->secondary_remaining_quantity = (float) ($program->secondary_remaining_quantity ?? 0) + $allocationSecondary;
+            }
+            $program->save();
+
+            $beneficiary->delete();
+
+            return ['beneficiary' => $beneficiary, 'program' => $program->fresh()];
+        });
+
+        if (isset($result['error'])) {
+            return response()->json([
+                'status' => 'error',
+                'message' => $result['error'],
+            ], $result['code']);
+        }
+
+        $this->logReportAudit('subsidy_beneficiary.deleted', $result['beneficiary'], [
+            'program_id' => $result['beneficiary']->program_id,
+            'restocked' => true,
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Claim voided and stock restored.',
+            'data' => ['program' => $result['program']],
         ]);
     }
 

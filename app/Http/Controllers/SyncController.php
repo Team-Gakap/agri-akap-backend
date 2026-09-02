@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\DamageAssessment;
+use App\Support\CalamityTypes;
 use App\Models\FarmPlot;
 use App\Models\Farmer;
 use App\Models\GeoTag;
@@ -287,7 +287,7 @@ class SyncController extends Controller
 
         $validator = Validator::make($item, [
             'farm_plot_id' => 'required|uuid|exists:farm_plots,id',
-            'calamity_type' => ['required', Rule::in(['Typhoon', 'Flood', 'Drought', 'Pest Outbreak', 'Hail', 'Other'])],
+            'calamity_type' => ['required', CalamityTypes::rule()],
             'calamity_name' => 'nullable|string|max:255',
             'crop_stage' => ['nullable', Rule::in(['Seedling', 'Vegetative', 'Reproductive', 'Maturity', 'Harvested'])],
             'variety' => 'nullable|string|max:128',

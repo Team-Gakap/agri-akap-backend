@@ -6,6 +6,7 @@ use App\Models\Farmer;
 use App\Models\FarmPlot;
 use App\Models\PlantingLog;
 use App\Traits\AssertsPlotAreaCap;
+use App\Traits\LogsReportAudit;
 use App\Traits\ResolvesEncodingBarangay;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -13,6 +14,7 @@ use Illuminate\Http\Request;
 class PlantingLogController extends Controller
 {
     use AssertsPlotAreaCap;
+    use LogsReportAudit;
     use ResolvesEncodingBarangay;
     public function index(Request $request): JsonResponse
     {
@@ -145,6 +147,51 @@ class PlantingLogController extends Controller
         ], 201);
     }
 
+    public function update(Request $request, string $id): JsonResponse
+    {
+        $log = PlantingLog::with('farmer')->findOrFail($id);
+        $denied = $this->assertCanDeleteEncodedRecord($request, $log->farmer);
+        if ($denied) {
+            return $denied;
+        }
+
+        $validated = $request->validate([
+            'farm_plot_id' => ['nullable', 'uuid', 'exists:farm_plots,id'],
+            'crop_type' => ['sometimes', 'required', 'string', 'max:64'],
+            'variety' => ['sometimes', 'required', 'string', 'max:128'],
+            'area_planted' => ['sometimes', 'required', 'numeric', 'min:0'],
+            'date_planted' => ['sometimes', 'required', 'date'],
+            'status' => ['nullable', 'string', 'max:64'],
+            'water_source' => ['nullable', 'string', 'max:64'],
+            'farm_location' => ['nullable', 'string', 'max:255'],
+            'remarks' => ['nullable', 'string', 'max:500'],
+        ]);
+
+        if (isset($validated['area_planted'])) {
+            $areaError = $this->assertAreaWithinPlot(
+                $validated['farm_plot_id'] ?? $log->farm_plot_id,
+                (float) $validated['area_planted'],
+                'Area planted',
+            );
+            if ($areaError) {
+                return $areaError;
+            }
+        }
+
+        $before = $log->only(array_keys($validated));
+        $log->update($validated);
+        $this->logReportAudit('planting_log.updated', $log, [
+            'before' => $before,
+            'after' => $log->fresh()->only(array_keys($validated)),
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Planting log updated.',
+            'data' => $log->fresh()->load('farmer', 'farmPlot'),
+        ]);
+    }
+
     public function destroy(Request $request, string $id): JsonResponse
     {
         $log = PlantingLog::with('farmer')->findOrFail($id);
@@ -154,6 +201,7 @@ class PlantingLogController extends Controller
         }
 
         $log->delete();
+        $this->logReportAudit('planting_log.deleted', $log);
 
         return response()->json([
             'status' => 'success',

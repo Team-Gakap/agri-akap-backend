@@ -85,6 +85,7 @@ class ReportsController extends Controller
             $names = $this->splitFarmerName($row->surname ?? '', $row->first_name ?? '', $row->middle_name ?? '');
 
             return [
+                'id'            => $row->id,
                 'rsbsa_no'      => $row->farmer_rsbsa_no,
                 'surname'       => $names['surname'],
                 'first_name'    => $names['first_name'],
@@ -215,6 +216,7 @@ class ReportsController extends Controller
             );
 
             return [
+                'id'           => $log->id,
                 'rsbsa_no'     => $farmer?->rsbsa_no ?? '',
                 'surname'      => $names['surname'],
                 'first_name'   => $names['first_name'],
@@ -239,6 +241,7 @@ class ReportsController extends Controller
                 ->join('farmers', 'farmers.id', '=', 'harvest_logs.farmer_id')
                 ->leftJoin('farm_plots', 'farm_plots.id', '=', 'harvest_logs.farm_plot_id')
                 ->select([
+                    'harvest_logs.id',
                     'farmers.rsbsa_no',
                     'farmers.surname',
                     'farmers.first_name',
@@ -251,6 +254,7 @@ class ReportsController extends Controller
                     DB::raw('COALESCE(harvest_logs.total_yield, 0) AS total_yield'),
                     'harvest_logs.date_harvested',
                 ])
+                ->whereNull('harvest_logs.deleted_at')
                 ->orderBy('harvest_logs.date_harvested', 'desc');
 
             if (! empty($f['barangay'])) {
@@ -277,6 +281,7 @@ class ReportsController extends Controller
                 );
 
                 return [
+                'id'             => $row->id,
                 'rsbsa_no'       => $row->rsbsa_no,
                 'surname'        => $names['surname'],
                 'first_name'     => $names['first_name'],
@@ -395,6 +400,7 @@ class ReportsController extends Controller
             $areaAffected = $planted > 0 ? round($planted * ($pct / 100), 4) : 0.0;
 
             return [
+                'id'            => $row->id,
                 'date_reported' => $reportDate,
                 'barangay'      => $farmer?->permanent_brgy ?? $row->farmPlot?->location_brgy ?? '',
                 'surname'       => $names['surname'],
@@ -480,6 +486,7 @@ class ReportsController extends Controller
             }
 
             return [
+                'id'             => $row->id,
                 'date_reported'  => optional($row->date_of_calamity)->format('Y-m-d'),
                 'barangay'       => $brgy,
                 'surname'        => $names['surname'],
@@ -490,6 +497,7 @@ class ReportsController extends Controller
                 'crop'           => $row->farmPlot?->commodity ?? '',
                 'calamity_type'  => $row->calamity_type ?? $row->calamity_name ?? '',
                 'area_affected'  => $areaAffected,
+                'damage_percentage' => (float) ($row->damage_percentage ?? 0),
                 'damage_value'   => (float) ($row->estimated_value_lost ?? 0),
                 'status'         => $effectiveStatus,
                 'photo_url'      => public_storage_url($row->photo_evidence_path),

@@ -7,6 +7,7 @@ use App\Models\FarmPlot;
 use App\Models\PestMonitoring;
 use App\Traits\AssertsPlotAreaCap;
 use App\Traits\DecodesBase64Image;
+use App\Traits\LogsReportAudit;
 use App\Traits\ResolvesEncodingBarangay;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -15,6 +16,7 @@ class PestMonitoringController extends Controller
 {
     use AssertsPlotAreaCap;
     use DecodesBase64Image;
+    use LogsReportAudit;
     use ResolvesEncodingBarangay;
 
     public function guidelines(): JsonResponse
@@ -213,6 +215,62 @@ class PestMonitoringController extends Controller
         ], 201);
     }
 
+    public function update(Request $request, string $id): JsonResponse
+    {
+        $row = PestMonitoring::with('farmer')->findOrFail($id);
+        $isPending = ! $row->latitude || ! $row->photo_path;
+        $denied = $this->assertBarangayCanModifyPendingRecord($request, $row->farmer, $isPending);
+        if ($denied) {
+            return $denied;
+        }
+
+        $validated = $request->validate([
+            'farm_plot_id' => ['nullable', 'uuid', 'exists:farm_plots,id'],
+            'crop' => ['sometimes', 'required', 'string', 'max:64'],
+            'crop_stage' => ['nullable', 'string', 'max:64'],
+            'variety' => ['nullable', 'string', 'max:128'],
+            'area_planted' => ['sometimes', 'required', 'numeric', 'min:0'],
+            'days_after_planting' => ['sometimes', 'required', 'integer', 'min:0', 'max:400'],
+            'area_damage_pct' => ['sometimes', 'required', 'numeric', 'min:0', 'max:100'],
+            'damage_by' => ['sometimes', 'required', 'string', 'max:255'],
+            'date_of_inspection' => ['sometimes', 'required', 'date'],
+            'farm_location' => ['nullable', 'string', 'max:255'],
+            'is_outbreak' => ['nullable', 'boolean'],
+        ]);
+
+        if (isset($validated['area_planted'])) {
+            $areaError = $this->assertAreaWithinPlot(
+                $validated['farm_plot_id'] ?? $row->farm_plot_id,
+                (float) $validated['area_planted'],
+                'Area planted',
+            );
+            if ($areaError) {
+                return $areaError;
+            }
+        }
+
+        if (isset($validated['area_damage_pct'])) {
+            $pct = (float) $validated['area_damage_pct'];
+            $validated['incidence'] = (int) round($pct);
+            $validated['severity'] = $pct >= 60 ? 'High' : ($pct >= 30 ? 'Moderate' : 'Low');
+            $validated['pest_name'] = $validated['damage_by'] ?? $row->pest_name;
+            unset($validated['damage_by']);
+        }
+
+        $before = $row->only(array_keys($validated));
+        $row->update($validated);
+        $this->logReportAudit('pest_monitoring.updated', $row, [
+            'before' => $before,
+            'after' => $row->fresh()->only(array_keys($validated)),
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Pest inspection updated.',
+            'data' => $row->fresh()->load('farmer', 'farmPlot'),
+        ]);
+    }
+
     public function fieldValidate(Request $request, string $id): JsonResponse
     {
         $validated = $request->validate([
@@ -267,12 +325,14 @@ class PestMonitoringController extends Controller
     public function destroy(Request $request, string $id): JsonResponse
     {
         $row = PestMonitoring::with('farmer')->findOrFail($id);
-        $denied = $this->assertCanDeleteEncodedRecord($request, $row->farmer);
+        $isPending = ! $row->latitude || ! $row->photo_path;
+        $denied = $this->assertBarangayCanModifyPendingRecord($request, $row->farmer, $isPending);
         if ($denied) {
             return $denied;
         }
 
         $row->delete();
+        $this->logReportAudit('pest_monitoring.deleted', $row);
 
         return response()->json([
             'status' => 'success',
