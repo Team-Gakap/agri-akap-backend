@@ -16,6 +16,7 @@ use App\Models\PlantingLog;
 use App\Models\Program;
 use App\Models\ReportWorkflow;
 use App\Models\StandingCropLog;
+use App\Models\SubsidyBeneficiary;
 use App\Models\WeatherCache;
 use App\Services\CropStageService;
 use App\Services\ReportAggregationService;
@@ -119,7 +120,7 @@ class DashboardController extends Controller
 
         $activeSubsidies = 0;
         if (Schema::hasTable('tbl_subsidy_beneficiaries')) {
-            $activeSubsidies += DB::table('tbl_subsidy_beneficiaries')
+            $activeQuery = DB::table('tbl_subsidy_beneficiaries')
                 ->where('status', 'Claimed')
                 ->where(function ($q) {
                     $q->where('claimed_at', '>=', Carbon::now()->subDays(90))
@@ -127,8 +128,9 @@ class DashboardController extends Controller
                             $inner->whereNull('claimed_at')
                                 ->where('updated_at', '>=', Carbon::now()->subDays(90));
                         });
-                })
-                ->count();
+                });
+            SubsidyBeneficiary::applyNotDeleted($activeQuery);
+            $activeSubsidies += $activeQuery->count();
         }
         if (Schema::hasTable('distributions')) {
             $activeSubsidies += Distribution::query()
@@ -144,9 +146,10 @@ class DashboardController extends Controller
 
         $pendingSubsidyReleases = 0;
         if (Schema::hasTable('tbl_subsidy_beneficiaries')) {
-            $pendingSubsidyReleases += DB::table('tbl_subsidy_beneficiaries')
-                ->where('status', 'Pending')
-                ->count();
+            $pendingQuery = DB::table('tbl_subsidy_beneficiaries')
+                ->where('status', 'Pending');
+            SubsidyBeneficiary::applyNotDeleted($pendingQuery);
+            $pendingSubsidyReleases += $pendingQuery->count();
         }
         if (Schema::hasTable('distributions')) {
             $pendingSubsidyReleases += Distribution::query()->where('status', 'pending_sync')->count();
@@ -275,23 +278,20 @@ class DashboardController extends Controller
         $topEnrolled = 0;
 
         if ($hasPrograms) {
-            $rows = DB::table('tbl_subsidy_beneficiaries')
+            $rowsQuery = DB::table('tbl_subsidy_beneficiaries')
                 ->join(
                     'tbl_subsidy_programs',
                     'tbl_subsidy_programs.id',
                     '=',
                     'tbl_subsidy_beneficiaries.program_id'
                 )
-                ->when(
-                    Schema::hasColumn('tbl_subsidy_programs', 'status'),
-                    fn ($q) => $q->where('tbl_subsidy_programs.status', 'Active')
-                )
                 ->selectRaw('tbl_subsidy_programs.id as program_id')
                 ->selectRaw('tbl_subsidy_programs.program_name as program_name')
                 ->selectRaw('COUNT(*) as enrolled')
                 ->selectRaw("SUM(CASE WHEN tbl_subsidy_beneficiaries.status = 'Claimed' THEN 1 ELSE 0 END) as claimed")
-                ->groupBy('tbl_subsidy_programs.id', 'tbl_subsidy_programs.program_name')
-                ->get();
+                ->groupBy('tbl_subsidy_programs.id', 'tbl_subsidy_programs.program_name');
+            SubsidyBeneficiary::applyNotDeleted($rowsQuery);
+            $rows = $rowsQuery->get();
 
             foreach ($rows as $row) {
                 $programEnrolled = (int) ($row->enrolled ?? 0);
@@ -317,8 +317,12 @@ class DashboardController extends Controller
                 }
             }
         } else {
-            $enrolled = (int) DB::table('tbl_subsidy_beneficiaries')->count();
-            $claimed = (int) DB::table('tbl_subsidy_beneficiaries')->where('status', 'Claimed')->count();
+            $enrolledQuery = DB::table('tbl_subsidy_beneficiaries');
+            SubsidyBeneficiary::applyNotDeleted($enrolledQuery);
+            $enrolled = (int) $enrolledQuery->count();
+            $claimedQuery = DB::table('tbl_subsidy_beneficiaries')->where('status', 'Claimed');
+            SubsidyBeneficiary::applyNotDeleted($claimedQuery);
+            $claimed = (int) $claimedQuery->count();
         }
 
         $uptake = $enrolled > 0 ? round(($claimed / $enrolled) * 100, 1) : 0.0;
@@ -626,6 +630,7 @@ class DashboardController extends Controller
         $query = DB::table('tbl_subsidy_beneficiaries')
             ->join('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
             ->whereNull('farmers.deleted_at');
+        SubsidyBeneficiary::applyNotDeleted($query);
 
         if (Schema::hasTable('tbl_subsidy_programs')) {
             $query->join(
@@ -644,14 +649,15 @@ class DashboardController extends Controller
             ->get();
 
         if ($rows->isEmpty() && Schema::hasTable('tbl_subsidy_programs')) {
-            $rows = DB::table('tbl_subsidy_beneficiaries')
+            $fallback = DB::table('tbl_subsidy_beneficiaries')
                 ->join('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
                 ->whereNull('farmers.deleted_at')
                 ->selectRaw("COALESCE(NULLIF(farmers.permanent_brgy, ''), 'Unspecified') as barangay")
                 ->selectRaw('COALESCE(SUM(tbl_subsidy_beneficiaries.calculated_allocation), 0) as allocated')
                 ->selectRaw("COALESCE(SUM(CASE WHEN tbl_subsidy_beneficiaries.status = 'Claimed' THEN tbl_subsidy_beneficiaries.calculated_allocation ELSE 0 END), 0) as claimed")
-                ->groupByRaw('1')
-                ->get();
+                ->groupByRaw('1');
+            SubsidyBeneficiary::applyNotDeleted($fallback);
+            $rows = $fallback->get();
         }
 
         return $rows
@@ -1160,24 +1166,22 @@ class DashboardController extends Controller
         }
 
         $damagePoints = [];
+        $unmappedCalamityCount = 0;
         if ($wantDamage) {
-            $damagePoints = DamageAssessment::with([
+            $damageQuery = DamageAssessment::with([
                 'farmer:id,first_name,surname,permanent_brgy',
                 'farmPlot:id,commodity,location_brgy,latitude,longitude',
             ])
-                ->where(function ($q) {
-                    $q->where(function ($geo) {
-                        $geo->whereNotNull('latitude')->whereNotNull('longitude');
-                    })->orWhereHas('farmPlot', fn ($fp) => $fp->whereNotNull('latitude')->whereNotNull('longitude'));
-                })
                 ->when($barangay, function ($q) use ($barangay) {
                     $q->where(function ($sub) use ($barangay) {
                         $sub->whereHas('farmPlot', fn ($fp) => $fp->where('location_brgy', $barangay))
                             ->orWhereHas('farmer', fn ($f) => $f->where('permanent_brgy', $barangay));
                     });
                 })
-                ->when($commodity, fn ($q) => $q->whereHas('farmPlot', fn ($fp) => $fp->where('commodity', $commodity)))
-                ->get()
+                ->when($commodity, fn ($q) => $q->whereHas('farmPlot', fn ($fp) => $fp->where('commodity', $commodity)));
+
+            $allDamage = $damageQuery->get();
+            $damagePoints = $allDamage
                 ->map(function ($a) {
                     $lat = $a->latitude ?? optional($a->farmPlot)->latitude;
                     $lng = $a->longitude ?? optional($a->farmPlot)->longitude;
@@ -1199,6 +1203,7 @@ class DashboardController extends Controller
                 })
                 ->filter()
                 ->values();
+            $unmappedCalamityCount = max(0, $allDamage->count() - $damagePoints->count());
         }
 
         $pestOutbreaks = collect();
@@ -1326,6 +1331,7 @@ class DashboardController extends Controller
                 'farm_plots' => $farmPlots,
                 'plot_totals' => $this->mapPlotTotals($barangay, $commodity, $farmPlots),
                 'damage_points' => $damagePoints,
+                'unmapped_calamity_count' => $unmappedCalamityCount,
                 'pest_outbreaks' => $pestOutbreaks->values(),
                 'flood_risk_points' => $floodRiskPoints,
                 'barangay_climate' => $barangayClimate,
@@ -1863,12 +1869,14 @@ class DashboardController extends Controller
             });
 
         if (Schema::hasColumn('tbl_subsidy_beneficiaries', 'claimed_by')) {
-            DB::table('tbl_subsidy_beneficiaries')
+            $techClaims = DB::table('tbl_subsidy_beneficiaries')
                 ->leftJoin('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
                 ->leftJoin('tbl_subsidy_programs', 'tbl_subsidy_programs.id', '=', 'tbl_subsidy_beneficiaries.program_id')
                 ->where('tbl_subsidy_beneficiaries.claimed_by', $techId)
                 ->orderByDesc('tbl_subsidy_beneficiaries.claimed_at')
-                ->limit(10)
+                ->limit(10);
+            SubsidyBeneficiary::applyNotDeleted($techClaims);
+            $techClaims
                 ->get([
                     'tbl_subsidy_beneficiaries.id',
                     'tbl_subsidy_beneficiaries.claimed_at',

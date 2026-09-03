@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\Schema;
 
 class SubsidyBeneficiary extends Model
 {
@@ -39,5 +40,14 @@ class SubsidyBeneficiary extends Model
     public function farmer(): BelongsTo
     {
         return $this->belongsTo(Farmer::class, 'farmer_rsbsa_no', 'rsbsa_no');
+    }
+
+    public static function applyNotDeleted($query, string $column = 'tbl_subsidy_beneficiaries.deleted_at')
+    {
+        if (Schema::hasColumn('tbl_subsidy_beneficiaries', 'deleted_at')) {
+            $query->whereNull($column);
+        }
+
+        return $query;
     }
 }

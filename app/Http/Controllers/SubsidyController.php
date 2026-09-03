@@ -335,9 +335,10 @@ class SubsidyController extends Controller
             return $inserted;
         });
 
-        $masterlistCount = DB::table('tbl_subsidy_beneficiaries')
-            ->where('program_id', $program->id)
-            ->count();
+        $masterlistCountQuery = DB::table('tbl_subsidy_beneficiaries')
+            ->where('program_id', $program->id);
+        SubsidyBeneficiary::applyNotDeleted($masterlistCountQuery);
+        $masterlistCount = $masterlistCountQuery->count();
 
         $message = "{$generatedCount} new beneficiaries added to the masterlist.";
         if ($generatedCount === 0 && count($rows) === 0) {
@@ -373,7 +374,9 @@ class SubsidyController extends Controller
             ->leftJoinSub($plotArea, 'plots', fn ($join) => $join->on('plots.farmer_id', '=', 'farmers.id'))
             ->leftJoinSub($plantArea, 'planted', fn ($join) => $join->on('planted.farmer_id', '=', 'farmers.id'))
             ->where('beneficiaries.program_id', $program->id)
-            ->whereNull('farmers.deleted_at')
+            ->whereNull('farmers.deleted_at');
+        SubsidyBeneficiary::applyNotDeleted($masterlist, 'beneficiaries.deleted_at');
+        $masterlist = $masterlist
             ->orderBy('farmers.surname')
             ->orderBy('farmers.first_name')
             ->select([
@@ -419,10 +422,11 @@ class SubsidyController extends Controller
                 return ['error' => 'This subsidy program is not active. Claims are frozen.', 'code' => 400];
             }
 
-            $beneficiary = DB::table('tbl_subsidy_beneficiaries')
+            $beneficiaryQuery = DB::table('tbl_subsidy_beneficiaries')
                 ->where('id', $beneficiaryId)
-                ->where('program_id', $id)
-                ->first();
+                ->where('program_id', $id);
+            SubsidyBeneficiary::applyNotDeleted($beneficiaryQuery);
+            $beneficiary = $beneficiaryQuery->first();
 
             if (!$beneficiary) {
                 return ['error' => 'Beneficiary not found on this program.', 'code' => 404];
@@ -529,9 +533,14 @@ class SubsidyController extends Controller
             }
             $program->save();
 
-            $beneficiary->delete();
+            $beneficiary->update([
+                'status' => 'Pending',
+                'claimed_at' => null,
+                'claimed_by' => null,
+                'photo_proof_path' => null,
+            ]);
 
-            return ['beneficiary' => $beneficiary, 'program' => $program->fresh()];
+            return ['beneficiary' => $beneficiary->fresh(), 'program' => $program->fresh()];
         });
 
         if (isset($result['error'])) {
@@ -597,10 +606,11 @@ class SubsidyController extends Controller
             ], 400);
         }
 
-        $beneficiary = DB::table('tbl_subsidy_beneficiaries')
+        $beneficiaryQuery = DB::table('tbl_subsidy_beneficiaries')
             ->where('program_id', $program->id)
-            ->where('farmer_rsbsa_no', $farmer->rsbsa_no)
-            ->first();
+            ->where('farmer_rsbsa_no', $farmer->rsbsa_no);
+        SubsidyBeneficiary::applyNotDeleted($beneficiaryQuery);
+        $beneficiary = $beneficiaryQuery->first();
 
         if (! $beneficiary) {
             return response()->json([
@@ -736,6 +746,7 @@ class SubsidyController extends Controller
 
             $beneficiaryQuery = DB::table('tbl_subsidy_beneficiaries')
                 ->where('program_id', $programId);
+            SubsidyBeneficiary::applyNotDeleted($beneficiaryQuery);
 
             if (! empty($item['beneficiary_id'])) {
                 $beneficiaryQuery->where('id', $item['beneficiary_id']);

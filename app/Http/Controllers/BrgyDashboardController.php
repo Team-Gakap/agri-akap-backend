@@ -170,16 +170,20 @@ class BrgyDashboardController extends Controller
     }
 
     /**
-     * Last 6 months of harvest yield vs crop damage (hectares affected).
+     * Last 12 months of harvest yield vs crop damage (hectares affected).
+     * Harvest is scoped like the ledger: farmer barangay, farm_location, or plot barangay.
+     * Yield older than the window still lands in the current month so the bar matches the ledger total.
      *
      * @return array<int, array{month: string, key: string, harvest: float, damage: float}>
      */
     private function monthlyYieldDamage(string $barangay): array
     {
-        $start = Carbon::now(WeatherService::TIMEZONE)->startOfMonth()->subMonths(5);
+        $now = Carbon::now(WeatherService::TIMEZONE)->startOfMonth();
+        $start = $now->copy()->subMonths(11);
+        $currentKey = $now->format('Y-m');
         $buckets = [];
 
-        for ($i = 0; $i < 6; $i++) {
+        for ($i = 0; $i < 12; $i++) {
             $cursor = $start->copy()->addMonths($i);
             $key = $cursor->format('Y-m');
             $buckets[$key] = [
@@ -192,12 +196,18 @@ class BrgyDashboardController extends Controller
 
         if (Schema::hasTable('harvest_logs')) {
             HarvestLog::query()
-                ->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay))
-                ->whereDate('date_harvested', '>=', $start->toDateString())
+                ->where(function ($q) use ($barangay) {
+                    $q->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay))
+                        ->orWhere('farm_location', $barangay)
+                        ->orWhereHas('farmPlot', fn ($plot) => $plot->where('location_brgy', $barangay));
+                })
                 ->get(['date_harvested', 'total_yield', 'yield_unit'])
-                ->each(function (HarvestLog $row) use (&$buckets) {
+                ->each(function (HarvestLog $row) use (&$buckets, $currentKey) {
                     $key = optional($row->date_harvested)?->format('Y-m');
-                    if ($key && isset($buckets[$key])) {
+                    if (! $key || ! isset($buckets[$key])) {
+                        $key = $currentKey;
+                    }
+                    if (isset($buckets[$key])) {
                         $buckets[$key]['harvest'] += $this->yieldToMetricTons(
                             (float) $row->total_yield,
                             (string) ($row->yield_unit ?? '')

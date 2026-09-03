@@ -37,7 +37,7 @@ class ReportsController extends Controller
         $query = SubsidyBeneficiary::query()
             ->where('tbl_subsidy_beneficiaries.status', 'Claimed')
             ->join('tbl_subsidy_programs', 'tbl_subsidy_programs.id', '=', 'tbl_subsidy_beneficiaries.program_id')
-            ->join('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
+            ->leftJoin('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
             ->select([
                 'tbl_subsidy_beneficiaries.id',
                 'tbl_subsidy_beneficiaries.farmer_rsbsa_no',
@@ -57,12 +57,17 @@ class ReportsController extends Controller
                 'farmers.permanent_brgy',
             ])
             ->orderBy('tbl_subsidy_beneficiaries.claimed_at', 'desc');
+        SubsidyBeneficiary::applyNotDeleted($query);
 
         if ($request->filled('program_id')) {
             $query->where('tbl_subsidy_beneficiaries.program_id', $request->program_id);
         }
         if ($request->filled('crop_type')) {
-            $query->where('tbl_subsidy_programs.target_crop', $request->crop_type);
+            $crop = (string) $request->crop_type;
+            $query->where(function ($q) use ($crop) {
+                $q->where('tbl_subsidy_programs.target_crop', $crop)
+                    ->orWhereRaw('LOWER(tbl_subsidy_programs.target_crop) = ?', ['both']);
+            });
         }
         if ($request->filled('seed_class')) {
             $query->where('tbl_subsidy_programs.seed_class', $request->seed_class);
