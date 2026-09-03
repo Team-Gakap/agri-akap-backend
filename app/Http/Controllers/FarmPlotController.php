@@ -6,6 +6,7 @@ use App\Models\FarmPlot;
 use App\Models\Farmer;
 use App\Services\FarmAreaBudgetService;
 use App\Services\PolygonIntegrityService;
+use App\Traits\LogsReportAudit;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -13,6 +14,8 @@ use Illuminate\Support\Str;
 
 class FarmPlotController extends Controller
 {
+    use LogsReportAudit;
+
     /** Collision radius in meters — blocks double-claim of the same parcel (centroid-only path). */
     private const COLLISION_RADIUS_METERS = 15;
 
@@ -213,6 +216,11 @@ class FarmPlotController extends Controller
             return FarmPlot::with('farmer:id,first_name,surname,rsbsa_no,permanent_brgy')->findOrFail($id);
         });
 
+        $this->logReportAudit('farm_plot.created', $plot, [
+            'after' => $plot->only(['farmer_id', 'location_brgy', 'commodity', 'size_ha', 'geotag_status']),
+            'record_code' => $plot->farmer?->rsbsa_no,
+        ]);
+
         return response()->json([
             'status'  => 'success',
             'message' => 'Farm plot geotagged successfully.',
@@ -355,6 +363,10 @@ class FarmPlotController extends Controller
             $validated['geotag_status'] = 'mapped';
         }
 
+        $before = $plot->only([
+            'location_brgy', 'commodity', 'size_ha', 'ownership_type', 'geotag_status',
+            'latitude', 'longitude', 'landowner_name',
+        ]);
         $plot->fill($validated);
         $plot->save();
 
@@ -364,6 +376,12 @@ class FarmPlotController extends Controller
                 [$lng, $lat, $plot->id],
             );
         }
+
+        $this->logReportAudit('farm_plot.updated', $plot, [
+            'before' => $before,
+            'after' => $plot->fresh()->only(array_keys($before)),
+            'record_code' => $plot->farmer?->rsbsa_no,
+        ]);
 
         return response()->json([
             'status' => 'success',
@@ -377,8 +395,14 @@ class FarmPlotController extends Controller
      */
     public function destroy(string $id): JsonResponse
     {
-        $plot = FarmPlot::findOrFail($id);
+        $plot = FarmPlot::with('farmer')->findOrFail($id);
+        $snapshot = $plot->only(['farmer_id', 'location_brgy', 'commodity', 'size_ha']);
         $plot->delete();
+
+        $this->logReportAudit('farm_plot.deleted', $plot, [
+            'before' => $snapshot,
+            'record_code' => $plot->farmer?->rsbsa_no,
+        ]);
 
         return response()->json([
             'status' => 'success',

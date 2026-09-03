@@ -7,6 +7,7 @@ use App\Models\SubsidyBeneficiary;
 use App\Models\SubsidyProgram;
 use App\Support\OfficialBarangays;
 use App\Support\SubsidyCatalog;
+use App\Support\AuditRemarks;
 use App\Traits\DecodesBase64Image;
 use App\Traits\LogsReportAudit;
 use Illuminate\Http\JsonResponse;
@@ -131,6 +132,10 @@ class SubsidyController extends Controller
             'secondary_reorder_level' => $isDualUnit ? ($validated['secondary_reorder_level'] ?? null) : null,
         ]);
 
+        $this->logReportAudit('subsidy_program.created', $program, [
+            'after' => $program->only(['program_name', 'target_crop', 'item_type', 'items_per_hectare', 'status', 'total_quantity']),
+        ]);
+
         return response()->json([
             'status' => 'success',
             'message' => 'Subsidy program created.',
@@ -149,6 +154,9 @@ class SubsidyController extends Controller
             'quantity_added' => 'required|numeric|min:0.01|max:1000000',
             'secondary_quantity_added' => 'nullable|numeric|min:0.01|max:1000000',
         ]);
+
+        $remarks = AuditRemarks::require($request, 'A justification is required before logging a warehouse delivery.');
+        $before = SubsidyProgram::query()->findOrFail($id)->only(['total_quantity', 'remaining_quantity', 'secondary_total_quantity', 'secondary_remaining_quantity']);
 
         $program = DB::transaction(function () use ($id, $validated) {
             $program = SubsidyProgram::where('id', $id)->lockForUpdate()->firstOrFail();
@@ -169,6 +177,13 @@ class SubsidyController extends Controller
         if (! empty($validated['secondary_quantity_added']) && $program->secondary_unit) {
             $message .= " Plus {$validated['secondary_quantity_added']} {$program->secondary_unit}.";
         }
+
+        $this->logReportAudit('subsidy_program.restocked', $program, [
+            'before' => $before,
+            'after' => $program->only(['total_quantity', 'remaining_quantity', 'secondary_total_quantity', 'secondary_remaining_quantity']),
+            'remarks' => $remarks,
+            'quantity_added' => $validated['quantity_added'],
+        ]);
 
         return response()->json([
             'status' => 'success',
@@ -191,6 +206,8 @@ class SubsidyController extends Controller
         ]);
 
         $program = SubsidyProgram::query()->findOrFail($id);
+        $remarks = AuditRemarks::require($request, 'A justification is required before changing subsidy stock settings.');
+        $before = $program->only(['unit_of_measurement', 'reorder_level', 'secondary_reorder_level']);
 
         $updates = ['reorder_level' => $validated['reorder_level'] ?? null];
 
@@ -203,6 +220,12 @@ class SubsidyController extends Controller
         }
 
         $program->update($updates);
+
+        $this->logReportAudit('subsidy_program.config_updated', $program, [
+            'before' => $before,
+            'after' => $program->fresh()->only(array_keys($before)),
+            'remarks' => $remarks,
+        ]);
 
         return response()->json([
             'status' => 'success',
@@ -222,7 +245,13 @@ class SubsidyController extends Controller
         ]);
 
         $program = SubsidyProgram::query()->findOrFail($id);
+        $before = $program->only(['status']);
         $program->update(['status' => $validated['status']]);
+
+        $this->logReportAudit('subsidy_program.status_updated', $program, [
+            'before' => $before,
+            'after' => $program->only(['status']),
+        ]);
 
         return response()->json([
             'status' => 'success',
@@ -346,6 +375,15 @@ class SubsidyController extends Controller
                 ? "No eligible farmers found. {$skippedNoRsbsa} matching farmer(s) were skipped because they have no RSBSA number."
                 : 'No eligible farmers found. Matching farmers need an RSBSA number plus a Rice/Corn farm plot or an active planting log.';
         }
+
+        $this->logReportAudit('subsidy_program.masterlist_generated', $program, [
+            'after' => [
+                'eligible_count' => count($rows),
+                'generated_count' => $generatedCount,
+                'skipped_no_rsbsa' => $skippedNoRsbsa,
+                'masterlist_count' => $masterlistCount,
+            ],
+        ]);
 
         return response()->json([
             'status' => 'success',
@@ -474,6 +512,11 @@ class SubsidyController extends Controller
             ], $result['code']);
         }
 
+        $this->logReportAudit('subsidy_beneficiary.claimed', SubsidyBeneficiary::find($beneficiaryId), [
+            'after' => ['status' => 'Claimed', 'program_id' => $id],
+            'record_code' => $beneficiaryId,
+        ]);
+
         return response()->json([
             'status' => 'success',
             'message' => 'Beneficiary marked as Claimed. Stock updated.',
@@ -515,6 +558,7 @@ class SubsidyController extends Controller
      */
     public function voidBeneficiaryClaim(Request $request, string $beneficiaryId): JsonResponse
     {
+        $remarks = AuditRemarks::require($request, 'A justification is required before voiding a subsidy claim.');
         $result = DB::transaction(function () use ($beneficiaryId) {
             $beneficiary = SubsidyBeneficiary::where('status', 'Claimed')->lockForUpdate()->find($beneficiaryId);
             if (! $beneficiary) {
@@ -550,9 +594,10 @@ class SubsidyController extends Controller
             ], $result['code']);
         }
 
-        $this->logReportAudit('subsidy_beneficiary.deleted', $result['beneficiary'], [
+        $this->logReportAudit('subsidy_beneficiary.voided', $result['beneficiary'], [
             'program_id' => $result['beneficiary']->program_id,
             'restocked' => true,
+            'remarks' => $remarks,
         ]);
 
         return response()->json([
@@ -811,6 +856,16 @@ class SubsidyController extends Controller
             ? trim($result['farmer']->surname.', '.$result['farmer']->first_name)
             : ($result['beneficiary']->farmer_rsbsa_no ?? 'Farmer');
 
+        $beneficiaryModel = SubsidyBeneficiary::find($result['beneficiary']->id ?? null);
+        $this->logReportAudit('subsidy_beneficiary.claimed', $beneficiaryModel, [
+            'after' => [
+                'status' => 'Claimed',
+                'program_id' => $programId,
+                'farmer_rsbsa_no' => $result['beneficiary']->farmer_rsbsa_no ?? null,
+            ],
+            'record_code' => $result['beneficiary']->farmer_rsbsa_no ?? ($result['beneficiary']->id ?? null),
+        ]);
+
         return [
             'outcome' => 'synced',
             'message' => 'Subsidy released and stock updated.',
@@ -966,8 +1021,10 @@ class SubsidyController extends Controller
 
     /**
      * When target_barangays is set, limit masterlist generation to those barangays.
+     *
+     * @param  \Illuminate\Database\Query\Builder  $query
      */
-    private function applyBarangayScope($query, SubsidyProgram $program): void
+    private function applyBarangayScope(\Illuminate\Database\Query\Builder $query, SubsidyProgram $program): void
     {
         $barangays = $program->target_barangays;
         if (is_array($barangays) && count($barangays) > 0) {
@@ -975,7 +1032,11 @@ class SubsidyController extends Controller
         }
     }
 
-    private function applyCropFilter($query, string $column, string $targetCrop)
+    /**
+     * @param  \Illuminate\Database\Query\Builder  $query
+     * @return \Illuminate\Database\Query\Builder
+     */
+    private function applyCropFilter(\Illuminate\Database\Query\Builder $query, string $column, string $targetCrop)
     {
         $crop = strtolower(trim($targetCrop));
 

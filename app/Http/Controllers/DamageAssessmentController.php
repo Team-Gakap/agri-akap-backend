@@ -12,6 +12,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use App\Support\CalamityTypes;
+use App\Support\AuditRemarks;
 
 class DamageAssessmentController extends Controller
 {
@@ -234,6 +235,10 @@ class DamageAssessmentController extends Controller
             'verified_at' => null,
         ]);
 
+        $this->logReportAudit('damage_assessment.created', $assessment, [
+            'after' => $assessment->only(['farmer_id', 'calamity_type', 'status', 'damage_percentage', 'area_destroyed_ha']),
+        ]);
+
         return response()->json([
             'status' => 'success',
             'message' => $isLedgerEncoder
@@ -266,6 +271,12 @@ class DamageAssessmentController extends Controller
             'verified_by' => $request->user()->id,
             'verified_at' => now(),
             'remarks' => $validated['remarks'] ?? $assessment->remarks,
+        ]);
+
+        $this->logReportAudit('damage_assessment.verified', $assessment, [
+            'before' => ['status' => 'Pending'],
+            'after' => ['status' => 'Verified'],
+            'remarks' => $validated['remarks'] ?? null,
         ]);
 
         return response()->json([
@@ -337,6 +348,10 @@ class DamageAssessmentController extends Controller
             'verified_at' => now(),
         ]);
 
+        $this->logReportAudit('damage_assessment.field_validated', $assessment, [
+            'after' => ['status' => 'Verified', 'latitude' => $validated['latitude'], 'longitude' => $validated['longitude']],
+        ]);
+
         return response()->json([
             'status' => 'success',
             'message' => 'Field validation saved. Assessment added to the MAO rehabilitation masterlist.',
@@ -352,7 +367,9 @@ class DamageAssessmentController extends Controller
         $validated = $request->validate([
             'decision' => ['required', Rule::in(['Approved', 'Rejected'])],
             'remarks' => 'nullable|string|max:1000',
+            'audit_remarks' => 'nullable|string|max:1000',
         ]);
+        $remarks = AuditRemarks::require($request, 'A justification is required before approving or rejecting a calamity assessment.');
 
         $assessment = DamageAssessment::findOrFail($id);
 
@@ -363,11 +380,21 @@ class DamageAssessmentController extends Controller
             ], 409);
         }
 
+        $before = $assessment->only(['status', 'remarks']);
         $assessment->update([
             'status' => $validated['decision'],
             'approved_by' => $request->user()->id,
             'approved_at' => now(),
             'remarks' => $validated['remarks'] ?? $assessment->remarks,
+        ]);
+
+        $action = $validated['decision'] === 'Approved'
+            ? 'damage_assessment.approved'
+            : 'damage_assessment.rejected';
+        $this->logReportAudit($action, $assessment, [
+            'before' => $before,
+            'after' => $assessment->fresh()->only(['status', 'remarks']),
+            'remarks' => $remarks,
         ]);
 
         return response()->json([

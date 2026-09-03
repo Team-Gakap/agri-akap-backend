@@ -7,6 +7,7 @@ use App\Models\Farmer;
 use App\Models\Program;
 use App\Http\Requests\ClaimSubsidyRequest;
 use App\Traits\DecodesBase64Image;
+use App\Traits\LogsReportAudit;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -16,6 +17,7 @@ use Illuminate\Support\Facades\Log;
 class DistributionController extends Controller
 {
     use DecodesBase64Image;
+    use LogsReportAudit;
 
     /**
      * Verify eligibility, calculate allocation, and process the subsidy claim.
@@ -237,6 +239,15 @@ class DistributionController extends Controller
                     'status' => 'claimed',
                     'device_id' => $validated['device_id'] ?? null,
                     'claimed_at' => $this->parseClaimedAt($validated['claimed_at'] ?? null),
+                ]);
+
+                $this->logReportAudit('distribution.claimed', $distribution, [
+                    'after' => [
+                        'program_id' => $program->id,
+                        'farmer_id' => $farmer->id,
+                        'quantity_claimed' => $quantityToDispense,
+                    ],
+                    'record_code' => $farmer->rsbsa_no,
                 ]);
 
                 return $this->claimResult(200, 'synced', [

@@ -124,6 +124,11 @@ class HarvestLogController extends Controller
             'farm_location' => $validated['farm_location'] ?? $encodingBarangay ?? $farmer->permanent_brgy,
         ]);
 
+        $this->logReportAudit('harvest_log.created', $log, [
+            'after' => $log->only(['farmer_id', 'crop_type', 'variety', 'area_harvested', 'total_yield', 'date_harvested']),
+            'record_code' => $farmer->rsbsa_no,
+        ]);
+
         return response()->json([
             'status' => 'success',
             'message' => 'Harvest record saved.',

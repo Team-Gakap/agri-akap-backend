@@ -16,6 +16,7 @@ use App\Models\StandingCropLog;
 use App\Models\SubsidyProgram;
 use App\Services\FarmAreaBudgetService;
 use App\Services\PolygonIntegrityService;
+use App\Services\SystemAuditLogger;
 use App\Traits\AssertsPlotAreaCap;
 use App\Traits\DecodesBase64Image;
 use Illuminate\Http\JsonResponse;
@@ -181,6 +182,33 @@ class SyncController extends Controller
                     'results' => $results,
                 ], 500);
             }
+        }
+
+        $summary = [];
+        foreach ($results as $key => $items) {
+            $synced = 0;
+            $failed = 0;
+            $duplicate = 0;
+            foreach ($items as $item) {
+                $outcome = $item['outcome'] ?? '';
+                if ($outcome === 'synced') {
+                    $synced++;
+                } elseif ($outcome === 'failed') {
+                    $failed++;
+                } elseif ($outcome === 'duplicate') {
+                    $duplicate++;
+                }
+            }
+            if ($synced + $failed + $duplicate > 0) {
+                $summary[$key] = compact('synced', 'failed', 'duplicate');
+            }
+        }
+
+        if ($summary !== []) {
+            app(SystemAuditLogger::class)->record('sync.bulk.completed', $request->user(), null, [
+                'device_id' => $deviceId,
+                'summary' => $summary,
+            ], $request);
         }
 
         return response()->json([

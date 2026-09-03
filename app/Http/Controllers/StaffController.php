@@ -6,6 +6,7 @@ use App\Http\Requests\StoreStaffRequest;
 use App\Http\Requests\UpdateStaffRequest;
 use App\Models\User;
 use App\Services\SystemAuditLogger;
+use App\Support\AuditRemarks;
 use App\Support\StaffAccess;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -154,6 +155,7 @@ class StaffController extends Controller
             if (StaffAccess::isLastActiveSuperAdmin($user)) {
                 return $this->unprocessable('The last SuperAdmin account cannot be deactivated.');
             }
+            AuditRemarks::require($request, 'A justification is required before deactivating a staff account.');
         }
 
         if ($user->isSuperAdmin()) {
@@ -196,6 +198,7 @@ class StaffController extends Controller
         $this->audit->record($action, $actor, $user, [
             'before' => $before,
             'after' => $user->only(['name', 'email', 'role', 'assigned_barangay', 'is_active', 'enforce_mfa']),
+            'remarks' => AuditRemarks::optional($request),
         ], $request);
 
         return response()->json([
@@ -214,6 +217,8 @@ class StaffController extends Controller
             return $this->forbidden('You cannot reset this account password.');
         }
 
+        $remarks = AuditRemarks::require($request, 'A justification is required before resetting a staff password.');
+
         $temporary = $this->temporarySecret();
         $user->forceFill([
             'password' => $temporary,
@@ -226,6 +231,7 @@ class StaffController extends Controller
 
         $this->audit->record('password.reset', $actor, $user, [
             'email' => $user->email,
+            'remarks' => $remarks,
         ], $request);
 
         return response()->json([

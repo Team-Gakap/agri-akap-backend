@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Farmer;
 use App\Models\SmsBroadcast;
 use App\Services\SmsService;
+use App\Traits\LogsReportAudit;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
@@ -13,6 +14,8 @@ use Illuminate\Support\Collection;
 
 class BroadcastController extends Controller
 {
+    use LogsReportAudit;
+
     public function __construct(private SmsService $sms)
     {
     }
@@ -98,6 +101,16 @@ class BroadcastController extends Controller
             'trigger_type' => SmsBroadcast::TRIGGER_MANUAL,
             'recipient_count' => $recipientCount,
             'status' => $status,
+        ]);
+
+        $this->logReportAudit('broadcast.sent', $broadcast, [
+            'after' => [
+                'recipient_count' => $recipientCount,
+                'message_body' => $template,
+                'target_barangay' => $barangayLabel,
+                'target_commodity' => $commodity !== '' ? $commodity : 'All',
+                'status' => $status,
+            ],
         ]);
 
         return response()->json([

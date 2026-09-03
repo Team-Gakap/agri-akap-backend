@@ -8,6 +8,7 @@ use App\Models\FarmPlot;
 use App\Models\PestOutbreak;
 use App\Models\SmsBroadcast;
 use App\Services\SmsService;
+use App\Traits\LogsReportAudit;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
@@ -15,6 +16,8 @@ use Illuminate\Validation\Rule;
 
 class IntelligenceController extends Controller
 {
+    use LogsReportAudit;
+
     public function __construct(private SmsService $sms)
     {
     }
@@ -321,6 +324,16 @@ class IntelligenceController extends Controller
             'message_body' => $message,
             'recipient_count' => $recipientCount,
             'status' => $status,
+        ]);
+
+        $this->logReportAudit('pest.advisory.sent', $broadcast, [
+            'after' => [
+                'recipient_count' => $recipientCount,
+                'message_body' => $message,
+                'target_barangay' => $brgy,
+                'target_commodity' => $commodity,
+                'pest_outbreak_id' => $pest->id,
+            ],
         ]);
 
         return response()->json([

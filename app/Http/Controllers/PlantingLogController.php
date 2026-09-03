@@ -140,6 +140,11 @@ class PlantingLogController extends Controller
             'remarks' => $validated['remarks'] ?? null,
         ]);
 
+        $this->logReportAudit('planting_log.created', $log, [
+            'after' => $log->only(['farmer_id', 'crop_type', 'variety', 'area_planted', 'date_planted']),
+            'record_code' => $farmer->rsbsa_no,
+        ]);
+
         return response()->json([
             'status' => 'success',
             'message' => 'Planting log saved.',

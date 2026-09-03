@@ -19,9 +19,16 @@ class StaffGovernanceTest extends TestCase
         $this->getJson('/api/system/audit-logs')->assertOk();
     }
 
-    public function test_admin_cannot_read_system_audit_logs(): void
+    public function test_admin_can_read_system_audit_logs(): void
     {
         Sanctum::actingAs(User::factory()->admin()->create());
+
+        $this->getJson('/api/system/audit-logs')->assertOk();
+    }
+
+    public function test_technician_cannot_read_system_audit_logs(): void
+    {
+        Sanctum::actingAs(User::factory()->technician()->create());
 
         $this->getJson('/api/system/audit-logs')->assertForbidden();
     }
@@ -68,7 +75,9 @@ class StaffGovernanceTest extends TestCase
         $this->assertSame(1, $tech->tokens()->count());
 
         Sanctum::actingAs($admin);
-        $reset = $this->postJson("/api/staff/{$tech->id}/reset-password")->assertOk();
+        $reset = $this->postJson("/api/staff/{$tech->id}/reset-password", [
+            'audit_remarks' => 'Technician forgot password after field phone replacement.',
+        ])->assertOk();
         $this->assertNotEmpty($reset->json('data.temporary_password'));
         $this->assertSame(0, $tech->tokens()->count());
     }

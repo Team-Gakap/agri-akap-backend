@@ -73,6 +73,10 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:admin');
 
     Route::get('/system/audit-logs', [SystemAuditLogController::class, 'index'])
+        ->middleware('role:admin');
+    Route::get('/system/audit-logs/export', [SystemAuditLogController::class, 'export'])
+        ->middleware('role:admin');
+    Route::get('/system/audit-logs/integrity', [SystemAuditLogController::class, 'integrity'])
         ->middleware('role:super_admin');
     Route::get('/system/sms-settings', [SmsSettingsController::class, 'show'])
         ->middleware('role:super_admin');

@@ -208,6 +208,11 @@ class PestMonitoringController extends Controller
             'longitude' => $validated['longitude'] ?? null,
         ]);
 
+        $this->logReportAudit('pest_monitoring.created', $row, [
+            'after' => $row->only(['farmer_id', 'crop', 'pest_name', 'area_damage_pct', 'date_of_inspection', 'severity']),
+            'record_code' => $farmer->rsbsa_no,
+        ]);
+
         return response()->json([
             'status' => 'success',
             'message' => 'Pest inspection saved.',

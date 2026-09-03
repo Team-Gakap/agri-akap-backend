@@ -6,6 +6,8 @@ use App\Models\DamageAssessment;
 use App\Models\Distribution;
 use App\Models\Farmer;
 use App\Models\Program;
+use App\Support\AuditRemarks;
+use App\Services\SystemAuditLogger;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -34,6 +36,18 @@ class ReportExportController extends Controller
             'accomplishment' => $this->accomplishment($filters),
             default => abort(404, 'Unknown report type.'),
         };
+
+        if (in_array($type, ['farmers', 'distributions'], true)) {
+            $remarks = AuditRemarks::require($request, 'A justification is required before exporting farmer or subsidy data.');
+        } else {
+            $remarks = AuditRemarks::optional($request);
+        }
+
+        app(SystemAuditLogger::class)->record('export.'.$type, $request->user(), null, [
+            'filters' => $filters,
+            'row_count' => is_countable($rows) ? count($rows) : null,
+            'remarks' => $remarks,
+        ], $request);
 
         $filename = "agri-akap-{$type}-" . now()->format('Ymd-His') . '.csv';
 

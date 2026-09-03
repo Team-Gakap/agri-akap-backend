@@ -14,6 +14,7 @@ use App\Services\WeatherAlertService;
 use App\Services\WeatherHistoricalService;
 use App\Services\WeatherHourlyService;
 use App\Services\WeatherService;
+use App\Traits\LogsReportAudit;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -21,6 +22,8 @@ use Illuminate\Support\Facades\Http;
 
 class WeatherController extends Controller
 {
+    use LogsReportAudit;
+
     public function __construct(
         private WeatherAlertService $weatherAlerts,
         private PagasaRadarService $pagasaRadar,
@@ -65,9 +68,9 @@ class WeatherController extends Controller
 
         $coords = Barangay::query()->where('name', $barangay)->first();
 
-        $todayRow = $rows->first(fn (WeatherCache $row) => $row->forecast_date->toDateString() === $today);
+        $todayRow = $rows->first(fn (WeatherCache $row) => Carbon::parse($row->forecast_date)->toDateString() === $today);
         $forecast = $rows
-            ->filter(fn (WeatherCache $row) => $row->forecast_date->toDateString() > $today)
+            ->filter(fn (WeatherCache $row) => Carbon::parse($row->forecast_date)->toDateString() > $today)
             ->values()
             ->take(3)
             ->map(fn (WeatherCache $row) => $this->transform($row))
@@ -383,7 +386,7 @@ class WeatherController extends Controller
     /**
      * Manually dispatch hyper-local weather warnings now (Admin trigger).
      */
-    public function sendAdvisory(): JsonResponse
+    public function sendAdvisory(Request $request): JsonResponse
     {
         $result = $this->weatherAlerts->evaluateAndSend(
             force: true,
@@ -397,6 +400,13 @@ class WeatherController extends Controller
                 'data' => $result,
             ], 422);
         }
+
+        $this->logReportAudit('weather.advisory.sent', null, [
+            'after' => [
+                'alerts_sent' => $result['alerts_sent'] ?? null,
+                'recipient_count' => $result['recipient_count'] ?? null,
+            ],
+        ]);
 
         $mockNote = $result['mocked'] ? ' (mocked in local — no SMS charge)' : '';
 
@@ -414,7 +424,7 @@ class WeatherController extends Controller
         return [
             'id' => $row->id,
             'barangay_name' => $row->barangay_name,
-            'forecast_date' => $row->forecast_date->toDateString(),
+            'forecast_date' => Carbon::parse($row->forecast_date)->toDateString(),
             'temperature_min' => $row->temperature_min !== null ? (float) $row->temperature_min : null,
             'temperature_max' => $row->temperature_max !== null ? (float) $row->temperature_max : null,
             'precipitation_probability' => $row->precipitation_probability,
@@ -448,7 +458,7 @@ class WeatherController extends Controller
         return [
             'id' => $row->id,
             'barangay_name' => $row->barangay_name,
-            'date' => $row->date->toDateString(),
+            'date' => Carbon::parse($row->date)->toDateString(),
             'precipitation_sum' => $row->precipitation_sum !== null ? (float) $row->precipitation_sum : null,
             'temperature_max' => $row->temperature_max !== null ? (float) $row->temperature_max : null,
             'et0_fao_evapotranspiration' => $row->et0_fao_evapotranspiration !== null

@@ -5,12 +5,15 @@ namespace App\Http\Controllers;
 use App\Models\Distribution;
 use App\Models\Program;
 use App\Http\Requests\StoreProgramRequest;
+use App\Support\AuditRemarks;
+use App\Traits\LogsReportAudit;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class ProgramController extends Controller
 {
+    use LogsReportAudit;
     /**
      * Display current active and past assistance programs.
      */
@@ -40,6 +43,10 @@ class ProgramController extends Controller
         $validatedData['is_active'] = true;
 
         $program = Program::create($validatedData);
+
+        $this->logReportAudit('program.created', $program, [
+            'after' => $program->only(['name', 'type', 'total_quantity', 'remaining_quantity', 'is_active']),
+        ]);
 
         return response()->json([
             'status' => 'success',
@@ -72,7 +79,7 @@ class ProgramController extends Controller
     /**
      * Deactivate a program (admin only). Does not delete — preserves audit trail.
      */
-    public function deactivate(string $id): JsonResponse
+    public function deactivate(Request $request, string $id): JsonResponse
     {
         $program = Program::findOrFail($id);
 
@@ -84,6 +91,10 @@ class ProgramController extends Controller
         }
 
         $program->update(['is_active' => false]);
+        $this->logReportAudit('program.deactivated', $program, [
+            'before' => ['is_active' => true],
+            'after' => ['is_active' => false],
+        ]);
 
         return response()->json([
             'status' => 'success',
@@ -101,6 +112,8 @@ class ProgramController extends Controller
         $validated = $request->validate([
             'quantity_added' => 'required|integer|min:1',
         ]);
+        $remarks = AuditRemarks::require($request, 'A justification is required before restocking a program.');
+        $before = Program::query()->findOrFail($id)->only(['total_quantity', 'remaining_quantity']);
 
         $program = DB::transaction(function () use ($id, $validated) {
             $program = Program::where('id', $id)->lockForUpdate()->firstOrFail();
@@ -110,6 +123,13 @@ class ProgramController extends Controller
 
             return $program;
         });
+
+        $this->logReportAudit('program.restocked', $program, [
+            'before' => $before,
+            'after' => $program->only(['total_quantity', 'remaining_quantity']),
+            'remarks' => $remarks,
+            'quantity_added' => $validated['quantity_added'],
+        ]);
 
         return response()->json([
             'status' => 'success',
@@ -131,9 +151,17 @@ class ProgramController extends Controller
         ]);
 
         $program = Program::findOrFail($id);
+        $remarks = AuditRemarks::require($request, 'A justification is required before changing program stock settings.');
+        $before = $program->only(['reorder_level', 'target_barangays']);
         $program->update([
             'reorder_level' => $validated['reorder_level'] ?? null,
             'target_barangays' => $validated['target_barangays'] ?? null,
+        ]);
+
+        $this->logReportAudit('program.config_updated', $program, [
+            'before' => $before,
+            'after' => $program->fresh()->only(['reorder_level', 'target_barangays']),
+            'remarks' => $remarks,
         ]);
 
         return response()->json([

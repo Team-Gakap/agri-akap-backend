@@ -10,9 +10,11 @@ use App\Http\Requests\UpdateFarmerRequest;
 use App\Services\CropStageService;
 use App\Services\FarmAreaBudgetService;
 use App\Services\SmsService;
+use App\Support\AuditRemarks;
 use App\Support\OfficialBarangays;
 use App\Support\OfficialLocations;
 use App\Traits\DecodesBase64Image;
+use App\Traits\LogsReportAudit;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -23,6 +25,7 @@ use Maatwebsite\Excel\Facades\Excel;
 class FarmerController extends Controller
 {
     use DecodesBase64Image;
+    use LogsReportAudit;
 
     public function __construct(
         private SmsService $sms,
@@ -185,10 +188,19 @@ class FarmerController extends Controller
         $request->validate([
             'excel_file' => 'required|file|mimes:xlsx,xls,csv|max:10240',
         ]);
+        $remarks = AuditRemarks::require($request, 'A justification is required before importing the RSBSA masterlist.');
 
         try {
             $import = new FarmersImport;
             Excel::import($import, $request->file('excel_file'));
+
+            $this->logReportAudit('farmer.imported', null, [
+                'created' => $import->created,
+                'updated' => $import->updated,
+                'skipped' => $import->skipped,
+                'filename' => $request->file('excel_file')?->getClientOriginalName(),
+                'remarks' => $remarks,
+            ]);
 
             return response()->json([
                 'status' => 'success',
@@ -465,6 +477,11 @@ class FarmerController extends Controller
 
             DB::commit();
 
+            $this->logReportAudit('farmer.registered', $farmer, [
+                'after' => $farmer->only(['rsbsa_no', 'surname', 'first_name', 'permanent_brgy', 'mobile_number', 'verification_status']),
+                'plots' => count($plots),
+            ]);
+
             return response()->json([
                 'status' => 'success',
                 'message' => 'Farmer and corresponding parcel logs enrolled successfully.',
@@ -518,6 +535,7 @@ class FarmerController extends Controller
         ]);
 
         $farmer = Farmer::findOrFail($farmerId);
+        $before = $farmer->only(['verification_status', 'rts_reason']);
 
         $farmer->update([
             'verification_status' => 'rts',
@@ -526,6 +544,12 @@ class FarmerController extends Controller
 
         // Fire SMS notification to farmer about the document issue.
         $this->sendRtsNotification($farmer, $validated['reason']);
+
+        $this->logReportAudit('farmer.returned_for_correction', $farmer, [
+            'before' => $before,
+            'after' => $farmer->only(['verification_status', 'rts_reason']),
+            'remarks' => $validated['reason'],
+        ]);
 
         return response()->json([
             'status' => 'success',
@@ -564,6 +588,10 @@ class FarmerController extends Controller
     {
         $farmer = Farmer::findOrFail($id);
         $validated = $request->validated();
+        $before = $farmer->only([
+            'surname', 'first_name', 'middle_name', 'mobile_number', 'permanent_brgy',
+            'permanent_street', 'livelihood_type', 'total_farm_area_ha', 'civil_status',
+        ]);
 
         DB::beginTransaction();
         try {
@@ -584,6 +612,7 @@ class FarmerController extends Controller
                     $plotId = $plotData['id'] ?? null;
                     $plotData = $this->enrollmentPlotAttributes($plotData);
                     if ($plotId) {
+                        /** @var \App\Models\FarmPlot|null $plot */
                         $plot = $farmer->farmPlots()->where('id', $plotId)->first();
                         if ($plot) {
                             $plot->update($plotData);
@@ -613,6 +642,11 @@ class FarmerController extends Controller
         $farmer->setAttribute('area_mismatch', $budget['area_mismatch']);
         $this->decorateFarmer($farmer, $budget['mapped_area_ha']);
 
+        $this->logReportAudit('farmer.updated', $farmer, [
+            'before' => $before,
+            'after' => $farmer->only(array_keys($before)),
+        ]);
+
         return response()->json([
             'status' => 'success',
             'message' => 'Farmer record updated.',
@@ -623,10 +657,18 @@ class FarmerController extends Controller
     /**
      * Soft-delete / archive a farmer (admin).
      */
-    public function destroy(string $id): JsonResponse
+    public function destroy(Request $request, string $id): JsonResponse
     {
+        $remarks = AuditRemarks::require($request, 'A justification is required before archiving a farmer record.');
         $farmer = Farmer::findOrFail($id);
+        $snapshot = $farmer->only(['rsbsa_no', 'surname', 'first_name', 'permanent_brgy', 'verification_status']);
         $farmer->delete();
+
+        $this->logReportAudit('farmer.archived', $farmer, [
+            'before' => $snapshot,
+            'after' => ['deleted_at' => now()->toIso8601String()],
+            'remarks' => $remarks,
+        ]);
 
         return response()->json([
             'status' => 'success',
@@ -638,13 +680,21 @@ class FarmerController extends Controller
     /**
      * Mark a farmer as document-verified (admin).
      */
-    public function verify(string $id): JsonResponse
+    public function verify(Request $request, string $id): JsonResponse
     {
+        $remarks = AuditRemarks::require($request, 'A justification is required before verifying a farmer.');
         $farmer = Farmer::findOrFail($id);
+        $before = $farmer->only(['verification_status', 'rts_reason', 'verified_at']);
         $farmer->update([
             'verification_status' => 'approved',
             'rts_reason' => null,
             'verified_at' => now(),
+        ]);
+
+        $this->logReportAudit('farmer.verified', $farmer, [
+            'before' => $before,
+            'after' => $farmer->fresh()->only(['verification_status', 'rts_reason', 'verified_at']),
+            'remarks' => $remarks,
         ]);
 
         return response()->json([
@@ -673,6 +723,10 @@ class FarmerController extends Controller
 
         $result = $this->sms->send($farmer->mobile_number, $validated['message']);
 
+        $this->logReportAudit('farmer.notified', $farmer, [
+            'after' => ['message_body' => $validated['message'], 'success' => $result['success'] ?? false],
+        ]);
+
         return response()->json([
             'status' => $result['success'] ? 'success' : 'error',
             'message' => $result['success']
@@ -692,7 +746,7 @@ class FarmerController extends Controller
             max(0.0, (float) ($farmer->total_farm_area_ha ?? 0) - $mapped)
         );
 
-        $birth = $farmer->birthdate;
+        $birth = $farmer->birthdate ? \Illuminate\Support\Carbon::parse($farmer->birthdate) : null;
         $farmer->setAttribute('is_senior', $birth ? $birth->age >= 60 : false);
 
         if ($farmer->relationLoaded('farmPlots')) {

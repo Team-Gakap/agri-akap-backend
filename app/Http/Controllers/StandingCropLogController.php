@@ -132,6 +132,11 @@ class StandingCropLogController extends Controller
             'farm_location' => $validated['farm_location'] ?? $farmer->permanent_brgy,
         ]);
 
+        $this->logReportAudit('standing_crop_log.created', $log, [
+            'after' => $log->only(['farmer_id', 'crop_type', 'variety', 'area_ha', 'est_harvest_date']),
+            'record_code' => $farmer->rsbsa_no,
+        ]);
+
         return response()->json([
             'status' => 'success',
             'message' => 'Standing crop saved.',
