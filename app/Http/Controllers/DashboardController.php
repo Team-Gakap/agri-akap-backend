@@ -114,7 +114,9 @@ class DashboardController extends Controller
         $totalFarmers = Farmer::query()->count();
         $gender = $this->overviewFarmerGender();
         $hectares = $this->overviewPlotHectares();
+        $planted = $this->overviewActivePlantedHectares();
         $totalHectares = $hectares['rice'] + $hectares['corn'] + $hectares['other'];
+        $totalPlanted = $planted['rice'] + $planted['corn'] + $planted['other'];
         $subsidy = $this->overviewSubsidyProgress();
         $threats = $this->overviewThreatIndex();
 
@@ -160,9 +162,14 @@ class DashboardController extends Controller
             'farmers_male' => $gender['male'],
             'farmers_female' => $gender['female'],
             'rsbsa_verified' => $gender['rsbsa_verified'],
-            'total_hectares' => round($totalHectares, 2),
-            'rice_hectares' => round($hectares['rice'], 2),
-            'corn_hectares' => round($hectares['corn'], 2),
+            'total_hectares' => round($totalPlanted, 2),
+            'rice_hectares' => round($planted['rice'], 2),
+            'corn_hectares' => round($planted['corn'], 2),
+            'active_planted_ha' => round($totalPlanted, 2),
+            'active_rice_ha' => round($planted['rice'], 2),
+            'active_corn_ha' => round($planted['corn'], 2),
+            'registered_land_ha' => round($totalHectares, 2),
+            'tilled_percent' => $totalHectares > 0 ? round($totalPlanted / $totalHectares * 100) : 0,
             'subsidy_claimed' => $subsidy['beneficiaries_claimed'],
             'subsidy_allocated' => $subsidy['beneficiaries_enrolled'],
             'subsidy_percent' => $subsidy['uptake_percent'],
@@ -486,6 +493,33 @@ class DashboardController extends Controller
             ->each(function ($row) use (&$out) {
                 $key = $this->commodityBucket((string) $row->commodity);
                 $out[$key] += (float) $row->total_area_ha;
+            });
+
+        return $out;
+    }
+
+    /**
+     * Active planted area from planting_logs, grouped by commodity.
+     *
+     * @return array{rice: float, corn: float, other: float}
+     */
+    private function overviewActivePlantedHectares(): array
+    {
+        $out = ['rice' => 0.0, 'corn' => 0.0, 'other' => 0.0];
+
+        if (! Schema::hasTable('planting_logs')) {
+            return $out;
+        }
+
+        DB::table('planting_logs')
+            ->where('status', 'Active')
+            ->selectRaw("COALESCE(NULLIF(crop_type, ''), 'Other') as crop")
+            ->selectRaw('SUM(area_planted) as total')
+            ->groupByRaw('1')
+            ->get()
+            ->each(function ($row) use (&$out) {
+                $key = $this->commodityBucket((string) $row->crop);
+                $out[$key] += (float) $row->total;
             });
 
         return $out;
@@ -962,9 +996,78 @@ class DashboardController extends Controller
             return ($rank[$a['severity'] ?? 'warning'] ?? 2) <=> ($rank[$b['severity'] ?? 'warning'] ?? 2);
         });
 
+        $groups = $this->groupAlerts($alerts);
+
         return [
             'alerts' => array_values($alerts),
+            'groups' => array_values($groups),
         ];
+    }
+
+    /**
+     * Group flat alerts by type + threat_label (+ crop) for the Prescriptive Action Center.
+     *
+     * @param  array<int, array<string, mixed>>  $alerts
+     * @return array<string, array<string, mixed>>
+     */
+    private function groupAlerts(array $alerts): array
+    {
+        $categoryMap = [
+            'pest_outbreak' => 'outbreak',
+            'weather_alert' => 'agro_climate',
+            'harvest_readiness' => 'agro_climate',
+        ];
+        $severityRank = ['critical' => 0, 'warning' => 1];
+        $groups = [];
+
+        foreach ($alerts as $alert) {
+            $key = ($alert['type'] ?? '') . '|' . ($alert['threat_label'] ?? '') . '|' . ($alert['crop'] ?? '');
+            if (! isset($groups[$key])) {
+                $groups[$key] = [
+                    'id' => md5($key),
+                    'type' => $alert['type'] ?? 'advisory',
+                    'threat_label' => $alert['threat_label'] ?? 'Advisory',
+                    'crop' => $alert['crop'] ?? null,
+                    'severity' => $alert['severity'] ?? 'warning',
+                    'category' => $categoryMap[$alert['type'] ?? ''] ?? 'other',
+                    'barangays' => [],
+                    'recommendation' => $alert['recommendation'] ?? '',
+                ];
+            }
+
+            if (! empty($alert['barangay']) && ! in_array($alert['barangay'], $groups[$key]['barangays'], true)) {
+                $groups[$key]['barangays'][] = $alert['barangay'];
+            }
+
+            $existing = $severityRank[$groups[$key]['severity']] ?? 2;
+            $incoming = $severityRank[$alert['severity'] ?? 'warning'] ?? 2;
+            if ($incoming < $existing) {
+                $groups[$key]['severity'] = $alert['severity'];
+            }
+        }
+
+        foreach ($groups as &$g) {
+            $g['count'] = count($g['barangays']);
+            $brgyList = $g['count'] > 0
+                ? implode(', ', $g['barangays'])
+                : 'LGU-wide';
+            $g['group_sms_message'] = sprintf(
+                'MAO Echague Advisory — %s (%s): %s Affected: %s',
+                $g['threat_label'],
+                $g['severity'] === 'critical' ? 'CRITICAL' : 'Warning',
+                $g['recommendation'],
+                $brgyList
+            );
+        }
+        unset($g);
+
+        usort($groups, function ($a, $b) use ($severityRank) {
+            $sa = $severityRank[$a['severity'] ?? 'warning'] ?? 2;
+            $sb = $severityRank[$b['severity'] ?? 'warning'] ?? 2;
+            return $sa <=> $sb;
+        });
+
+        return $groups;
     }
 
     /**

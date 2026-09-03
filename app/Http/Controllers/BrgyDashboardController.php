@@ -74,6 +74,7 @@ class BrgyDashboardController extends Controller
         $pendingFarmers = $totalFarmers - $verifiedFarmers;
 
         $hectares = $this->plotHectares($barangay);
+        $planted = $this->activePlantedHectares($barangay);
         $activeCalamities = $this->pendingCalamities($barangay);
         $activePests = $this->unverifiedPests($barangay);
 
@@ -91,10 +92,17 @@ class BrgyDashboardController extends Controller
                     $q->whereNull('photo_path')->orWhere('photo_path', '');
                 })
                 ->count(),
-            'total_hectares' => round($hectares['rice'] + $hectares['corn'] + $hectares['other'], 2),
-            'rice_hectares' => round($hectares['rice'], 2),
-            'corn_hectares' => round($hectares['corn'], 2),
-            'active_hectares' => round($hectares['rice'] + $hectares['corn'] + $hectares['other'], 2),
+            'total_hectares' => round($planted['rice'] + $planted['corn'] + $planted['other'], 2),
+            'rice_hectares' => round($planted['rice'], 2),
+            'corn_hectares' => round($planted['corn'], 2),
+            'active_hectares' => round($planted['rice'] + $planted['corn'] + $planted['other'], 2),
+            'active_planted_ha' => round($planted['rice'] + $planted['corn'] + $planted['other'], 2),
+            'active_rice_ha' => round($planted['rice'], 2),
+            'active_corn_ha' => round($planted['corn'], 2),
+            'registered_land_ha' => round($hectares['rice'] + $hectares['corn'] + $hectares['other'], 2),
+            'tilled_percent' => ($hectares['rice'] + $hectares['corn'] + $hectares['other']) > 0
+                ? round(($planted['rice'] + $planted['corn'] + $planted['other']) / ($hectares['rice'] + $hectares['corn'] + $hectares['other']) * 100)
+                : 0,
             'claimed_subsidies' => $claimedSubsidies,
             'unclaimed_subsidies' => $unclaimedSubsidies,
             'pending_subsidies' => $unclaimedSubsidies,
@@ -137,6 +145,41 @@ class BrgyDashboardController extends Controller
                     default => 'other',
                 };
                 $out[$key] += (float) $row->total_area_ha;
+            });
+
+        return $out;
+    }
+
+    /**
+     * Active planted area from planting_logs for this barangay, grouped by crop.
+     *
+     * @return array{rice: float, corn: float, other: float}
+     */
+    private function activePlantedHectares(string $barangay): array
+    {
+        $out = ['rice' => 0.0, 'corn' => 0.0, 'other' => 0.0];
+
+        if (! Schema::hasTable('planting_logs')) {
+            return $out;
+        }
+
+        $farmerIds = Farmer::query()->where('permanent_brgy', $barangay)->pluck('id');
+
+        DB::table('planting_logs')
+            ->where('status', 'Active')
+            ->whereIn('farmer_id', $farmerIds)
+            ->selectRaw("COALESCE(NULLIF(crop_type, ''), 'Other') as crop")
+            ->selectRaw('SUM(area_planted) as total')
+            ->groupByRaw('1')
+            ->get()
+            ->each(function ($row) use (&$out) {
+                $normalized = strtolower(trim((string) $row->crop));
+                $key = match (true) {
+                    str_contains($normalized, 'rice') => 'rice',
+                    str_contains($normalized, 'corn') => 'corn',
+                    default => 'other',
+                };
+                $out[$key] += (float) $row->total;
             });
 
         return $out;

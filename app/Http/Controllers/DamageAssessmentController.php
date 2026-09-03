@@ -442,6 +442,12 @@ class DamageAssessmentController extends Controller
             $validated['area_destroyed_ha'] = $destroyedHa;
         }
 
+        if (array_key_exists('calamity_name', $validated) && empty($validated['calamity_name'])) {
+            $validated['calamity_name'] = $validated['calamity_type']
+                ?? $assessment->calamity_type
+                ?? $assessment->calamity_name;
+        }
+
         $before = $assessment->only(array_keys($validated));
         $assessment->update($validated);
         $this->logReportAudit('damage_assessment.updated', $assessment, [
