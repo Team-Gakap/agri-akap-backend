@@ -408,7 +408,7 @@ class DamageAssessmentController extends Controller
     {
         $assessment = DamageAssessment::with('farmer')->findOrFail($id);
         $isPending = ($assessment->status ?? 'Pending') === 'Pending';
-        $denied = $this->assertBarangayCanModifyPendingRecord($request, $assessment->farmer, $isPending);
+        $denied = $this->assertCanEditPending($request, $assessment->farmer, $isPending);
         if ($denied) {
             return $denied;
         }
@@ -460,7 +460,7 @@ class DamageAssessmentController extends Controller
     {
         $assessment = DamageAssessment::with('farmer')->findOrFail($id);
         $isPending = ($assessment->status ?? 'Pending') === 'Pending';
-        $denied = $this->assertBarangayCanModifyPendingRecord($request, $assessment->farmer, $isPending);
+        $denied = $this->assertCanArchive($request, $assessment->farmer, $isPending);
         if ($denied) {
             return $denied;
         }

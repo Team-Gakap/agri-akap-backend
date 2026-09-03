@@ -224,7 +224,7 @@ class PestMonitoringController extends Controller
     {
         $row = PestMonitoring::with('farmer')->findOrFail($id);
         $isPending = ! $row->latitude || ! $row->photo_path;
-        $denied = $this->assertBarangayCanModifyPendingRecord($request, $row->farmer, $isPending);
+        $denied = $this->assertCanEditPending($request, $row->farmer, $isPending);
         if ($denied) {
             return $denied;
         }
@@ -254,12 +254,15 @@ class PestMonitoringController extends Controller
             }
         }
 
+        if (array_key_exists('damage_by', $validated)) {
+            $validated['pest_name'] = $validated['damage_by'];
+            unset($validated['damage_by']);
+        }
+
         if (isset($validated['area_damage_pct'])) {
             $pct = (float) $validated['area_damage_pct'];
             $validated['incidence'] = (int) round($pct);
             $validated['severity'] = $pct >= 60 ? 'High' : ($pct >= 30 ? 'Moderate' : 'Low');
-            $validated['pest_name'] = $validated['damage_by'] ?? $row->pest_name;
-            unset($validated['damage_by']);
         }
 
         $before = $row->only(array_keys($validated));
@@ -331,7 +334,7 @@ class PestMonitoringController extends Controller
     {
         $row = PestMonitoring::with('farmer')->findOrFail($id);
         $isPending = ! $row->latitude || ! $row->photo_path;
-        $denied = $this->assertBarangayCanModifyPendingRecord($request, $row->farmer, $isPending);
+        $denied = $this->assertCanArchive($request, $row->farmer, $isPending);
         if ($denied) {
             return $denied;
         }

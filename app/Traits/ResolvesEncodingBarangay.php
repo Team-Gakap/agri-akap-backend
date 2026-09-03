@@ -122,4 +122,50 @@ trait ResolvesEncodingBarangay
 
         return null;
     }
+
+    /**
+     * Updates are allowed only while the record is still pending (all roles).
+     */
+    protected function assertCanEditPending(Request $request, ?Farmer $farmer, bool $isPending): ?JsonResponse
+    {
+        $denied = $this->assertCanDeleteEncodedRecord($request, $farmer);
+        if ($denied) {
+            return $denied;
+        }
+
+        if (! $isPending) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validated or finalized records can no longer be edited.',
+            ], 403);
+        }
+
+        return null;
+    }
+
+    /**
+     * Soft-delete / archive: pending for any encoder; non-pending requires municipal admin.
+     */
+    protected function assertCanArchive(Request $request, ?Farmer $farmer, bool $isPending): ?JsonResponse
+    {
+        $denied = $this->assertCanDeleteEncodedRecord($request, $farmer);
+        if ($denied) {
+            return $denied;
+        }
+
+        if ($isPending) {
+            return null;
+        }
+
+        /** @var User $user */
+        $user = $request->user();
+        if (! $user->isMunicipalAdmin()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Only MAO administrators can archive validated or claimed records.',
+            ], 403);
+        }
+
+        return null;
+    }
 }

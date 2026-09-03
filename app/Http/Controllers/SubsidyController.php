@@ -527,30 +527,14 @@ class SubsidyController extends Controller
     }
 
     /**
-     * Update a claimed beneficiary record (admin report edit).
+     * Claimed subsidy rows are immutable; use void + re-claim instead of editing.
      */
     public function updateBeneficiaryClaim(Request $request, string $beneficiaryId): JsonResponse
     {
-        $validated = $request->validate([
-            'claimed_at' => ['nullable', 'date'],
-        ]);
-
-        $beneficiary = SubsidyBeneficiary::where('status', 'Claimed')->findOrFail($beneficiaryId);
-        $before = $beneficiary->only(['claimed_at']);
-        if (array_key_exists('claimed_at', $validated) && $validated['claimed_at']) {
-            $beneficiary->claimed_at = Carbon::parse($validated['claimed_at']);
-            $beneficiary->save();
-        }
-        $this->logReportAudit('subsidy_beneficiary.updated', $beneficiary, [
-            'before' => $before,
-            'after' => $beneficiary->fresh()->only(['claimed_at']),
-        ]);
-
         return response()->json([
-            'status' => 'success',
-            'message' => 'Claim record updated.',
-            'data' => $beneficiary->fresh(),
-        ]);
+            'status' => 'error',
+            'message' => 'Claimed subsidy records cannot be edited. Void the claim if a correction is required.',
+        ], 403);
     }
 
     /**
