@@ -485,7 +485,7 @@ class ReportsController extends Controller
                 $farmer?->middle_name ?? '',
             );
             $brgy   = $farmer?->permanent_brgy ?? $row->farmPlot?->location_brgy ?? '';
-            $effectiveStatus = $this->effectiveDamageStatus($row);
+            $effectiveStatus = $row->status ?? 'Pending';
             $areaAffected = (float) ($row->area_destroyed_ha ?? 0);
             if ($areaAffected <= 0) {
                 $base = (float) ($row->area_planted_ha ?? $row->farmPlot?->size_ha ?? 0);
@@ -516,21 +516,6 @@ class ReportsController extends Controller
             'status' => 'success',
             'data'   => ['rows' => $rows],
         ]);
-    }
-
-    /**
-     * Technician field validation requires geotagged photo evidence.
-     * Legacy barangay-encoded rows may still be marked Verified in DB without it.
-     */
-    private function effectiveDamageStatus(DamageAssessment $row): string
-    {
-        $status = $row->status ?? 'Pending';
-
-        if ($status === 'Verified' && (empty($row->photo_evidence_path) || $row->latitude === null)) {
-            return 'Pending';
-        }
-
-        return $status;
     }
 
     /**

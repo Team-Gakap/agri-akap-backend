@@ -465,8 +465,34 @@ class DamageAssessmentController extends Controller
             return $denied;
         }
 
+        $remarks = $this->remarksForArchive(
+            $request,
+            $isPending,
+            'A justification is required before voiding a verified calamity assessment.',
+        );
+
+        $snapshot = $assessment->only([
+            'status',
+            'calamity_type',
+            'calamity_name',
+            'crop_stage',
+            'variety',
+            'area_destroyed_ha',
+            'area_planted_ha',
+            'date_of_calamity',
+            'damage_percentage',
+            'estimated_value_lost',
+            'photo_evidence_path',
+            'latitude',
+            'longitude',
+        ]);
+
         $assessment->delete();
-        $this->logReportAudit('damage_assessment.deleted', $assessment);
+        $this->logReportAudit('damage_assessment.deleted', $assessment, [
+            'before' => $snapshot,
+            'after' => ['deleted_at' => optional($assessment->deleted_at)->toIso8601String() ?? now()->toIso8601String()],
+            'remarks' => $remarks,
+        ]);
 
         return response()->json([
             'status' => 'success',

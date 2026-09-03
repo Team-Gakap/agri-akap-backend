@@ -549,10 +549,27 @@ class SubsidyController extends Controller
                 return ['error' => 'Claimed beneficiary not found.', 'code' => 404];
             }
 
+            $before = $beneficiary->only([
+                'status',
+                'claimed_at',
+                'claimed_by',
+                'photo_proof_path',
+                'calculated_allocation',
+                'calculated_allocation_secondary',
+            ]);
+            if (isset($before['claimed_at']) && $before['claimed_at'] instanceof \DateTimeInterface) {
+                $before['claimed_at'] = $before['claimed_at']->format(\DateTimeInterface::ATOM);
+            }
+
             $program = SubsidyProgram::where('id', $beneficiary->program_id)->lockForUpdate()->firstOrFail();
             $allocation = $this->cashCappedAllocation($program, (int) $beneficiary->calculated_allocation);
             $allocationSecondary = $beneficiary->calculated_allocation_secondary !== null
                 ? (int) $beneficiary->calculated_allocation_secondary
+                : null;
+
+            $remainingBefore = (float) $program->remaining_quantity;
+            $secondaryBefore = $program->secondary_unit !== null
+                ? (float) ($program->secondary_remaining_quantity ?? 0)
                 : null;
 
             $program->remaining_quantity += $allocation;
@@ -568,7 +585,31 @@ class SubsidyController extends Controller
                 'photo_proof_path' => null,
             ]);
 
-            return ['beneficiary' => $beneficiary->fresh(), 'program' => $program->fresh()];
+            $fresh = $beneficiary->fresh();
+            $after = [
+                'status' => $fresh->status,
+                'claimed_at' => null,
+                'claimed_by' => null,
+                'photo_proof_path' => null,
+                'calculated_allocation' => $fresh->calculated_allocation,
+                'calculated_allocation_secondary' => $fresh->calculated_allocation_secondary,
+                'program_remaining_quantity' => (float) $program->remaining_quantity,
+                'restocked_primary' => $allocation,
+            ];
+            if ($secondaryBefore !== null) {
+                $after['program_secondary_remaining_quantity'] = (float) ($program->secondary_remaining_quantity ?? 0);
+                $after['restocked_secondary'] = $allocationSecondary;
+            }
+
+            return [
+                'beneficiary' => $fresh,
+                'program' => $program->fresh(),
+                'before' => $before + [
+                    'program_remaining_quantity' => $remainingBefore,
+                    'program_secondary_remaining_quantity' => $secondaryBefore,
+                ],
+                'after' => $after,
+            ];
         });
 
         if (isset($result['error'])) {
@@ -581,6 +622,8 @@ class SubsidyController extends Controller
         $this->logReportAudit('subsidy_beneficiary.voided', $result['beneficiary'], [
             'program_id' => $result['beneficiary']->program_id,
             'restocked' => true,
+            'before' => $result['before'],
+            'after' => $result['after'],
             'remarks' => $remarks,
         ]);
 

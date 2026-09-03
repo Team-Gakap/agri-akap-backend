@@ -339,8 +339,36 @@ class PestMonitoringController extends Controller
             return $denied;
         }
 
+        $remarks = $this->remarksForArchive(
+            $request,
+            $isPending,
+            'A justification is required before voiding a validated pest surveillance record.',
+        );
+
+        $snapshot = $row->only([
+            'crop',
+            'crop_stage',
+            'variety',
+            'area_planted',
+            'days_after_planting',
+            'area_damage_pct',
+            'pest_name',
+            'incidence',
+            'severity',
+            'date_of_inspection',
+            'photo_path',
+            'latitude',
+            'longitude',
+            'item_distributed',
+            'quantity',
+        ]);
+
         $row->delete();
-        $this->logReportAudit('pest_monitoring.deleted', $row);
+        $this->logReportAudit('pest_monitoring.deleted', $row, [
+            'before' => $snapshot,
+            'after' => ['deleted_at' => optional($row->deleted_at)->toIso8601String() ?? now()->toIso8601String()],
+            'remarks' => $remarks,
+        ]);
 
         return response()->json([
             'status' => 'success',
