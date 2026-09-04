@@ -16,6 +16,7 @@ use App\Http\Controllers\ReportExportController;
 use App\Http\Controllers\ReportWorkflowController;
 use App\Http\Controllers\SyncController;
 use App\Http\Controllers\WeatherController;
+use App\Http\Controllers\FacebookWeatherCardController;
 use App\Http\Controllers\AnalyticsController;
 use App\Http\Controllers\SubsidyController;
 use App\Http\Controllers\PlantingLogController;
@@ -81,6 +82,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/system/sms-settings', [SmsSettingsController::class, 'show'])
         ->middleware('role:super_admin');
     Route::patch('/system/sms-settings', [SmsSettingsController::class, 'update'])
+        ->middleware('role:super_admin');
+    Route::get('/system/facebook-status', [FacebookWeatherCardController::class, 'status'])
         ->middleware('role:super_admin');
 
     // Farmer Registry
@@ -188,6 +191,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/weather/advisories', [WeatherController::class, 'advisories'])
         ->middleware('role:admin');
     Route::post('/weather/advisories/send', [WeatherController::class, 'sendAdvisory'])
+        ->middleware('role:admin');
+    Route::get('/weather/facebook-card', [FacebookWeatherCardController::class, 'show'])
+        ->middleware('role:admin');
+    Route::get('/weather/facebook-card.png', [FacebookWeatherCardController::class, 'png'])
+        ->middleware('role:admin');
+    Route::post('/weather/facebook-card/post', [FacebookWeatherCardController::class, 'post'])
+        ->middleware('role:admin');
+    Route::get('/weather/facebook-posts', [FacebookWeatherCardController::class, 'history'])
         ->middleware('role:admin');
 
     // Analytics & Reports

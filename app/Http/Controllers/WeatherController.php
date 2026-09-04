@@ -428,6 +428,7 @@ class WeatherController extends Controller
             'temperature_min' => $row->temperature_min !== null ? (float) $row->temperature_min : null,
             'temperature_max' => $row->temperature_max !== null ? (float) $row->temperature_max : null,
             'precipitation_probability' => $row->precipitation_probability,
+            'precipitation_sum' => $row->precipitation_sum !== null ? (float) $row->precipitation_sum : null,
             'soil_moisture' => $row->soil_moisture !== null ? (float) $row->soil_moisture : null,
             'evapotranspiration' => $row->evapotranspiration !== null ? (float) $row->evapotranspiration : null,
             'soil_moisture_28cm' => $row->soil_moisture_28cm !== null ? (float) $row->soil_moisture_28cm : null,

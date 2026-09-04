@@ -8,7 +8,7 @@ final class AuditCatalog
 
     /** @var list<string> */
     public const MODULES = [
-        'auth', 'staff', 'rsbsa', 'plots', 'subsidy', 'calamity', 'sms', 'reports', 'export', 'sync',
+        'auth', 'staff', 'rsbsa', 'plots', 'subsidy', 'calamity', 'sms', 'social', 'reports', 'export', 'sync',
     ];
 
     /** @var list<string> */
@@ -43,9 +43,12 @@ final class AuditCatalog
         if (
             str_starts_with($action, 'sms.')
             || str_starts_with($action, 'broadcast.')
-            || str_contains($action, 'advisory')
+            || (str_contains($action, 'advisory') && ! str_contains($action, 'facebook'))
         ) {
             return 'sms';
+        }
+        if (str_starts_with($action, 'weather.facebook') || str_starts_with($action, 'facebook.')) {
+            return 'social';
         }
         if (str_starts_with($action, 'export.') || str_contains($action, '.exported')) {
             return 'export';

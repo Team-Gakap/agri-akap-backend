@@ -92,4 +92,18 @@ return [
         'base_url' => env('BAGYO_API_BASE_URL', 'https://api.bagyo.io'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Facebook Page (MAO social posts)
+    |--------------------------------------------------------------------------
+    | Long-lived Page access token with pages_manage_posts. Tokens stay in
+    | server env — never collected through the UI (same pattern as SMS keys).
+    */
+    'facebook' => [
+        'page_id' => env('FACEBOOK_PAGE_ID'),
+        'page_access_token' => env('FACEBOOK_PAGE_ACCESS_TOKEN'),
+        'graph_version' => env('FACEBOOK_GRAPH_VERSION', 'v21.0'),
+        'graph_base_url' => env('FACEBOOK_GRAPH_BASE_URL', 'https://graph.facebook.com'),
+    ],
+
 ];

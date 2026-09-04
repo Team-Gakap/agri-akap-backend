@@ -85,7 +85,7 @@ class WeatherService
                     ->get(self::FORECAST_URL, [
                         'latitude' => $lats,
                         'longitude' => $lngs,
-                        'daily' => 'weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max,et0_fao_evapotranspiration,windspeed_10m_max',
+                        'daily' => 'weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,et0_fao_evapotranspiration,windspeed_10m_max',
                         'hourly' => 'soil_moisture_7_to_28cm',
                         'timezone' => self::TIMEZONE,
                         'forecast_days' => 7,
@@ -203,6 +203,9 @@ class WeatherService
                     'temperature_max' => $daily['temperature_2m_max'][$index] ?? null,
                     'precipitation_probability' => isset($daily['precipitation_probability_max'][$index])
                         ? (int) round((float) $daily['precipitation_probability_max'][$index])
+                        : null,
+                    'precipitation_sum' => isset($daily['precipitation_sum'][$index])
+                        ? round((float) $daily['precipitation_sum'][$index], 2)
                         : null,
                     'soil_moisture' => null,
                     'evapotranspiration' => $daily['et0_fao_evapotranspiration'][$index] ?? null,
