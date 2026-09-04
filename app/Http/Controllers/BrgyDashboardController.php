@@ -94,16 +94,16 @@ class BrgyDashboardController extends Controller
                     $q->whereNull('photo_path')->orWhere('photo_path', '');
                 })
                 ->count(),
-            'total_hectares' => round($registeredLandHa, 2),
-            'rice_hectares' => round($plotHa['rice'], 2),
-            'corn_hectares' => round($plotHa['corn'], 2),
+            'total_hectares' => round($registeredLandHa, 4),
+            'rice_hectares' => round($plotHa['rice'], 4),
+            'corn_hectares' => round($plotHa['corn'], 4),
             'active_hectares' => round($totalPlanted, 2),
             'active_planted_ha' => round($totalPlanted, 2),
             'active_rice_ha' => round($planted['rice'], 2),
             'active_corn_ha' => round($planted['corn'], 2),
-            'registered_land_ha' => round($registeredLandHa, 2),
-            'registered_rice_ha' => round($plotHa['rice'], 2),
-            'registered_corn_ha' => round($plotHa['corn'], 2),
+            'registered_land_ha' => round($registeredLandHa, 4),
+            'registered_rice_ha' => round($plotHa['rice'], 4),
+            'registered_corn_ha' => round($plotHa['corn'], 4),
             'tilled_percent' => $registeredLandHa > 0
                 ? round($totalPlanted / $registeredLandHa * 100)
                 : 0,
