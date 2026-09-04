@@ -113,8 +113,10 @@ class DashboardController extends Controller
     {
         $totalFarmers = Farmer::query()->count();
         $gender = $this->overviewFarmerGender();
-        $registeredLandHa = (float) Farmer::query()->sum('total_farm_area_ha');
+        $hectares = $this->overviewPlotHectares();
         $planted = $this->overviewActivePlantedHectares();
+        // Masterlist registered area (registry Area ha), not mapped plot size sum.
+        $totalHectares = (float) Farmer::query()->sum('total_farm_area_ha');
         $totalPlanted = $planted['rice'] + $planted['corn'] + $planted['other'];
         $subsidy = $this->overviewSubsidyProgress();
         $threats = $this->overviewThreatIndex();
@@ -161,16 +163,16 @@ class DashboardController extends Controller
             'farmers_male' => $gender['male'],
             'farmers_female' => $gender['female'],
             'rsbsa_verified' => $gender['rsbsa_verified'],
-            'total_hectares' => round($registeredLandHa, 2),
-            'rice_hectares' => round($planted['rice'], 2),
-            'corn_hectares' => round($planted['corn'], 2),
+            'total_hectares' => round($totalHectares, 2),
+            'rice_hectares' => round($hectares['rice'], 2),
+            'corn_hectares' => round($hectares['corn'], 2),
             'active_planted_ha' => round($totalPlanted, 2),
             'active_rice_ha' => round($planted['rice'], 2),
             'active_corn_ha' => round($planted['corn'], 2),
-            'registered_land_ha' => round($registeredLandHa, 2),
-            'registered_rice_ha' => null,
-            'registered_corn_ha' => null,
-            'tilled_percent' => $registeredLandHa > 0 ? round($totalPlanted / $registeredLandHa * 100) : 0,
+            'registered_land_ha' => round($totalHectares, 2),
+            'registered_rice_ha' => round($hectares['rice'], 2),
+            'registered_corn_ha' => round($hectares['corn'], 2),
+            'tilled_percent' => $totalHectares > 0 ? round($totalPlanted / $totalHectares * 100) : 0,
             'subsidy_claimed' => $subsidy['beneficiaries_claimed'],
             'subsidy_allocated' => $subsidy['beneficiaries_enrolled'],
             'subsidy_percent' => $subsidy['uptake_percent'],

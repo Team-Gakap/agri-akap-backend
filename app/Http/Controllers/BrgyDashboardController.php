@@ -74,6 +74,7 @@ class BrgyDashboardController extends Controller
         $pendingFarmers = $totalFarmers - $verifiedFarmers;
 
         $registeredLandHa = (float) (clone $farmers)->sum('total_farm_area_ha');
+        $plotHa = $this->plotHectares($barangay);
         $planted = $this->activePlantedHectares($barangay);
         $totalPlanted = $planted['rice'] + $planted['corn'] + $planted['other'];
         $activeCalamities = $this->pendingCalamities($barangay);
@@ -94,15 +95,15 @@ class BrgyDashboardController extends Controller
                 })
                 ->count(),
             'total_hectares' => round($registeredLandHa, 2),
-            'rice_hectares' => round($planted['rice'], 2),
-            'corn_hectares' => round($planted['corn'], 2),
+            'rice_hectares' => round($plotHa['rice'], 2),
+            'corn_hectares' => round($plotHa['corn'], 2),
             'active_hectares' => round($totalPlanted, 2),
             'active_planted_ha' => round($totalPlanted, 2),
             'active_rice_ha' => round($planted['rice'], 2),
             'active_corn_ha' => round($planted['corn'], 2),
             'registered_land_ha' => round($registeredLandHa, 2),
-            'registered_rice_ha' => null,
-            'registered_corn_ha' => null,
+            'registered_rice_ha' => round($plotHa['rice'], 2),
+            'registered_corn_ha' => round($plotHa['corn'], 2),
             'tilled_percent' => $registeredLandHa > 0
                 ? round($totalPlanted / $registeredLandHa * 100)
                 : 0,
