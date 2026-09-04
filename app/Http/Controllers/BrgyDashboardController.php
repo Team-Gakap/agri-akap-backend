@@ -92,14 +92,16 @@ class BrgyDashboardController extends Controller
                     $q->whereNull('photo_path')->orWhere('photo_path', '');
                 })
                 ->count(),
-            'total_hectares' => round($planted['rice'] + $planted['corn'] + $planted['other'], 2),
-            'rice_hectares' => round($planted['rice'], 2),
-            'corn_hectares' => round($planted['corn'], 2),
+            'total_hectares' => round($hectares['rice'] + $hectares['corn'] + $hectares['other'], 2),
+            'rice_hectares' => round($hectares['rice'], 2),
+            'corn_hectares' => round($hectares['corn'], 2),
             'active_hectares' => round($planted['rice'] + $planted['corn'] + $planted['other'], 2),
             'active_planted_ha' => round($planted['rice'] + $planted['corn'] + $planted['other'], 2),
             'active_rice_ha' => round($planted['rice'], 2),
             'active_corn_ha' => round($planted['corn'], 2),
             'registered_land_ha' => round($hectares['rice'] + $hectares['corn'] + $hectares['other'], 2),
+            'registered_rice_ha' => round($hectares['rice'], 2),
+            'registered_corn_ha' => round($hectares['corn'], 2),
             'tilled_percent' => ($hectares['rice'] + $hectares['corn'] + $hectares['other']) > 0
                 ? round(($planted['rice'] + $planted['corn'] + $planted['other']) / ($hectares['rice'] + $hectares['corn'] + $hectares['other']) * 100)
                 : 0,
