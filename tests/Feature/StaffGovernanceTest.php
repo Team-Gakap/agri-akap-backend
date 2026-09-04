@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Hash;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -37,11 +38,18 @@ class StaffGovernanceTest extends TestCase
     {
         Sanctum::actingAs(User::factory()->admin()->create());
 
-        $this->postJson('/api/staff', [
+        $created = $this->postJson('/api/staff', [
             'name' => 'Field Tech',
             'email' => 'newtech@mao.com',
             'role' => 'technician',
         ])->assertCreated();
+
+        $this->assertSame(User::TEMPORARY_PASSWORD, $created->json('data.temporary_password'));
+        $this->assertTrue($created->json('data.user.must_change_password'));
+        $this->assertTrue(Hash::check(
+            User::TEMPORARY_PASSWORD,
+            User::query()->where('email', 'newtech@mao.com')->firstOrFail()->password,
+        ));
 
         $this->postJson('/api/staff', [
             'name' => 'Other Admin',
@@ -78,7 +86,8 @@ class StaffGovernanceTest extends TestCase
         $reset = $this->postJson("/api/staff/{$tech->id}/reset-password", [
             'audit_remarks' => 'Technician forgot password after field phone replacement.',
         ])->assertOk();
-        $this->assertNotEmpty($reset->json('data.temporary_password'));
+        $this->assertSame(User::TEMPORARY_PASSWORD, $reset->json('data.temporary_password'));
+        $this->assertTrue($tech->fresh()->must_change_password);
         $this->assertSame(0, $tech->tokens()->count());
     }
 

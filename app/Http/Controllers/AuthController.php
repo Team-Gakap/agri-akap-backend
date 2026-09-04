@@ -6,6 +6,7 @@ use App\Models\User;
 use App\Services\MfaService;
 use App\Services\SystemAuditLogger;
 use App\Services\TurnstileService;
+use App\Support\PasswordRules;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 
@@ -14,8 +15,7 @@ class AuthController extends Controller
     public function __construct(
         private SystemAuditLogger $audit,
         private MfaService $mfa,
-    ) {
-    }
+    ) {}
 
     public function login(Request $request, TurnstileService $turnstile)
     {
@@ -134,8 +134,8 @@ class AuthController extends Controller
     {
         $request->validate([
             'current_password' => 'required|string',
-            'password' => 'required|string|min:8|confirmed|different:current_password',
-        ]);
+            'password' => PasswordRules::required(differentFrom: 'current_password'),
+        ], PasswordRules::messages());
 
         /** @var User $user */
         $user = $request->user();

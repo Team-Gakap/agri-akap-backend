@@ -1,39 +1,44 @@
 <?php
 
+use App\Http\Controllers\AnalyticsController;
 use App\Http\Controllers\AuthController;
-use App\Http\Controllers\MfaController;
-use App\Http\Controllers\FarmerController;
-use App\Http\Controllers\FarmPlotController;
-use App\Http\Controllers\UserController;
-use App\Http\Controllers\ProgramController;
-use App\Http\Controllers\DistributionController;
-use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\BrgyDashboardController;
 use App\Http\Controllers\BroadcastController;
-use App\Http\Controllers\IntelligenceController;
 use App\Http\Controllers\DamageAssessmentController;
-use App\Http\Controllers\ReportExportController;
-use App\Http\Controllers\ReportWorkflowController;
-use App\Http\Controllers\SyncController;
-use App\Http\Controllers\WeatherController;
-use App\Http\Controllers\FacebookWeatherCardController;
-use App\Http\Controllers\AnalyticsController;
-use App\Http\Controllers\SubsidyController;
-use App\Http\Controllers\PlantingLogController;
-use App\Http\Controllers\StandingCropLogController;
-use App\Http\Controllers\HarvestLogController;
-use App\Http\Controllers\PestMonitoringController;
+use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\DistributionController;
 use App\Http\Controllers\ExecutiveReportingController;
-use App\Http\Controllers\ReportsController;
-use App\Http\Controllers\StaffController;
+use App\Http\Controllers\FacebookWeatherCardController;
+use App\Http\Controllers\FarmerController;
+use App\Http\Controllers\FarmPlotController;
+use App\Http\Controllers\HarvestLogController;
+use App\Http\Controllers\IntelligenceController;
+use App\Http\Controllers\MfaController;
+use App\Http\Controllers\PasswordResetController;
+use App\Http\Controllers\PestMonitoringController;
+use App\Http\Controllers\PlantingLogController;
+use App\Http\Controllers\ProgramController;
 use App\Http\Controllers\PsgcController;
-use App\Http\Controllers\SystemAuditLogController;
+use App\Http\Controllers\ReportExportController;
+use App\Http\Controllers\ReportsController;
+use App\Http\Controllers\ReportWorkflowController;
 use App\Http\Controllers\SmsSettingsController;
+use App\Http\Controllers\StaffController;
+use App\Http\Controllers\StandingCropLogController;
+use App\Http\Controllers\SubsidyController;
+use App\Http\Controllers\SyncController;
+use App\Http\Controllers\SystemAuditLogController;
+use App\Http\Controllers\UserController;
+use App\Http\Controllers\WeatherController;
 use Illuminate\Support\Facades\Route;
 
 // ── Public ────────────────────────────────────────────────────────────────────
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/auth/login', [AuthController::class, 'login']);
+Route::post('/auth/forgot-password', [PasswordResetController::class, 'forgot'])
+    ->middleware('throttle:5,1');
+Route::post('/auth/reset-password', [PasswordResetController::class, 'reset'])
+    ->middleware('throttle:5,1');
 
 Route::get('/auth/mfa/setup-qr', [MfaController::class, 'setupQr']);
 Route::post('/auth/mfa/setup', [MfaController::class, 'setup']);
@@ -320,8 +325,8 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:admin');
 
     // MAO Dedicated Report Endpoints (new report module)
-    Route::get('/reports/subsidies',         [ReportsController::class, 'subsidies'])        ->middleware('role:admin,barangay_official');
-    Route::get('/reports/crop-production',   [ReportsController::class, 'cropProduction'])   ->middleware('role:admin,barangay_official');
-    Route::get('/reports/pest-surveillance', [ReportsController::class, 'pestSurveillance']) ->middleware('role:admin,barangay_official');
-    Route::get('/reports/damage-calamity',   [ReportsController::class, 'damageCalamity'])   ->middleware('role:admin,barangay_official');
+    Route::get('/reports/subsidies', [ReportsController::class, 'subsidies'])->middleware('role:admin,barangay_official');
+    Route::get('/reports/crop-production', [ReportsController::class, 'cropProduction'])->middleware('role:admin,barangay_official');
+    Route::get('/reports/pest-surveillance', [ReportsController::class, 'pestSurveillance'])->middleware('role:admin,barangay_official');
+    Route::get('/reports/damage-calamity', [ReportsController::class, 'damageCalamity'])->middleware('role:admin,barangay_official');
 });

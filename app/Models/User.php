@@ -2,15 +2,16 @@
 
 namespace App\Models;
 
+use App\Models\Traits\HasUuid;
+use App\Notifications\ResetPasswordNotification;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
-use Illuminate\Foundation\Auth\User as Authenticatable;
-use Illuminate\Notifications\Notifiable;
-use App\Models\Traits\HasUuid;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 
 #[Fillable([
@@ -22,14 +23,21 @@ use Laravel\Sanctum\HasApiTokens;
 class User extends Authenticatable
 {
     public const ROLE_SUPER_ADMIN = 'super_admin';
+
     public const ROLE_ADMIN = 'admin';
+
     public const ROLE_TECHNICIAN = 'technician';
+
     public const ROLE_BARANGAY_OFFICIAL = 'barangay_official';
+
     public const MAX_LOGIN_ATTEMPTS = 5;
+
     public const LOCKOUT_MINUTES = 15;
 
+    public const TEMPORARY_PASSWORD = 'Echague2026!';
+
     /** @use HasFactory<UserFactory> */
-    use HasFactory, Notifiable, HasUuid, SoftDeletes, HasApiTokens;
+    use HasApiTokens, HasFactory, HasUuid, Notifiable, SoftDeletes;
 
     /** @return array<string, string> */
     protected function casts(): array
@@ -115,5 +123,10 @@ class User extends Authenticatable
     public function processedDistributions(): HasMany
     {
         return $this->hasMany(Distribution::class, 'distributed_by');
+    }
+
+    public function sendPasswordResetNotification(#[\SensitiveParameter] $token): void
+    {
+        $this->notify(new ResetPasswordNotification($token));
     }
 }

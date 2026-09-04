@@ -18,7 +18,11 @@ final class AuditCatalog
 
     public static function inferModule(string $action): string
     {
-        if (str_starts_with($action, 'auth.') || str_starts_with($action, 'mfa.') || $action === 'password.changed') {
+        if (
+            str_starts_with($action, 'auth.')
+            || str_starts_with($action, 'mfa.')
+            || $action === 'password.changed'
+        ) {
             return 'auth';
         }
         if (str_starts_with($action, 'user.') || str_starts_with($action, 'password.') || str_starts_with($action, 'session.')) {
