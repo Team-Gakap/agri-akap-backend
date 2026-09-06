@@ -26,6 +26,7 @@ use App\Http\Controllers\SmsSettingsController;
 use App\Http\Controllers\StaffController;
 use App\Http\Controllers\StandingCropLogController;
 use App\Http\Controllers\SubsidyController;
+use App\Http\Controllers\OfflineFieldCacheController;
 use App\Http\Controllers\SyncController;
 use App\Http\Controllers\SystemAuditLogController;
 use App\Http\Controllers\UserController;
@@ -181,6 +182,8 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Offline Bulk Sync (Dexie → Laravel)
     Route::post('/sync/bulk', [SyncController::class, 'bulkSync']);
+    Route::get('/offline/field-cache', [OfflineFieldCacheController::class, 'show'])
+        ->middleware('role:technician,admin');
 
     // Climate Monitoring (hyper-local Open-Meteo cache + weather SMS advisories)
     Route::get('/weather/current', [WeatherController::class, 'current']);
