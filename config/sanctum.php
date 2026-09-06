@@ -50,8 +50,8 @@ return [
     |
     */
 
-    // Field devices left unattended must re-authenticate after one hour.
-    'expiration' => 60,
+    // Tokens persist until logout or admin revoke (no auto-expiry).
+    'expiration' => null,
 
     /*
     |--------------------------------------------------------------------------
