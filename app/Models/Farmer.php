@@ -41,12 +41,12 @@ class Farmer extends Model
         // Demographics
         'civil_status', 'spouse_first_name', 'spouse_middle_name',
         'spouse_surname', 'spouse_ext_name',
-        'highest_education', 'religion', 'id_type', 'id_number',
+        'highest_education', 'religion', 'id_type', 'id_type_other', 'id_number',
 
         // Vulnerability & Affiliations
         'is_icc_ip', 'icc_ip_name', 'is_pwd', 'is_4ps_beneficiary',
         'association_1', 'association_2', 'association_3', 'livelihood_type',
-        'livelihood_detail',
+        'livelihood_detail', 'other_livelihood_type', 'other_livelihood_detail',
         'total_farm_area_ha',
     ];
 

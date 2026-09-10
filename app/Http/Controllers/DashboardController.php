@@ -160,11 +160,17 @@ class DashboardController extends Controller
             $pendingSubsidyReleases += Distribution::query()->where('status', 'pending_sync')->count();
         }
 
+        $peak = $this->overviewPeakDisbursementDays();
+
         return [
             'total_farmers' => $totalFarmers,
             'farmers_male' => $gender['male'],
             'farmers_female' => $gender['female'],
+            'pwd_male' => $gender['pwd_male'],
+            'pwd_female' => $gender['pwd_female'],
+            'pwd_total' => $gender['pwd_male'] + $gender['pwd_female'],
             'rsbsa_verified' => $gender['rsbsa_verified'],
+            'peak_disbursement' => $peak,
             'total_hectares' => round($totalHectares, 2),
             'rice_hectares' => round($hectares['rice'], 2),
             'corn_hectares' => round($hectares['corn'], 2),
@@ -202,17 +208,24 @@ class DashboardController extends Controller
     }
 
     /**
-     * @return array{male: int, female: int, rsbsa_verified: int}
+     * @return array{male: int, female: int, pwd_male: int, pwd_female: int, rsbsa_verified: int}
      */
     private function overviewFarmerGender(): array
     {
         $male = 0;
         $female = 0;
+        $pwdMale = 0;
+        $pwdFemale = 0;
         $rsbsa = 0;
 
         if (Schema::hasColumn('farmers', 'sex')) {
             $male = Farmer::query()->where('sex', 'Male')->count();
             $female = Farmer::query()->where('sex', 'Female')->count();
+        }
+
+        if (Schema::hasColumn('farmers', 'is_pwd') && Schema::hasColumn('farmers', 'sex')) {
+            $pwdMale = Farmer::query()->where('is_pwd', true)->where('sex', 'Male')->count();
+            $pwdFemale = Farmer::query()->where('is_pwd', true)->where('sex', 'Female')->count();
         }
 
         if (Schema::hasColumn('farmers', 'rsbsa_no')) {
@@ -225,7 +238,83 @@ class DashboardController extends Controller
         return [
             'male' => $male,
             'female' => $female,
+            'pwd_male' => $pwdMale,
+            'pwd_female' => $pwdFemale,
             'rsbsa_verified' => $rsbsa,
+        ];
+    }
+
+    /**
+     * Peak subsidy claim days from distributions.claimed_at (last 90 days).
+     *
+     * @return array{
+     *     window_days: int,
+     *     by_weekday: list<array{day: string, count: int}>,
+     *     peak_weekday: string|null,
+     *     peak_weekday_count: int,
+     *     top_days: list<array{date: string, label: string, count: int}>
+     * }
+     */
+    private function overviewPeakDisbursementDays(): array
+    {
+        $empty = [
+            'window_days' => 90,
+            'by_weekday' => [],
+            'peak_weekday' => null,
+            'peak_weekday_count' => 0,
+            'top_days' => [],
+        ];
+
+        if (! Schema::hasTable('distributions') || ! Schema::hasColumn('distributions', 'claimed_at')) {
+            return $empty;
+        }
+
+        $since = Carbon::now()->subDays(90);
+        $dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+        $rows = Distribution::query()
+            ->whereNotNull('claimed_at')
+            ->where('claimed_at', '>=', $since)
+            ->get(['claimed_at']);
+
+        $weekdayCounts = array_fill(0, 7, 0);
+        $calendarCounts = [];
+
+        foreach ($rows as $row) {
+            $dt = Carbon::parse($row->claimed_at);
+            $weekdayCounts[(int) $dt->dayOfWeek]++;
+            $key = $dt->toDateString();
+            $calendarCounts[$key] = ($calendarCounts[$key] ?? 0) + 1;
+        }
+
+        $byWeekday = [];
+        $peakWeekday = null;
+        $peakCount = 0;
+        foreach ($dayNames as $i => $name) {
+            $count = $weekdayCounts[$i];
+            $byWeekday[] = ['day' => $name, 'count' => $count];
+            if ($count > $peakCount) {
+                $peakCount = $count;
+                $peakWeekday = $name;
+            }
+        }
+
+        arsort($calendarCounts);
+        $topDays = [];
+        foreach (array_slice($calendarCounts, 0, 3, true) as $date => $count) {
+            $topDays[] = [
+                'date' => $date,
+                'label' => Carbon::parse($date)->format('M j, Y'),
+                'count' => $count,
+            ];
+        }
+
+        return [
+            'window_days' => 90,
+            'by_weekday' => $byWeekday,
+            'peak_weekday' => $peakCount > 0 ? $peakWeekday : null,
+            'peak_weekday_count' => $peakCount,
+            'top_days' => $topDays,
         ];
     }
 

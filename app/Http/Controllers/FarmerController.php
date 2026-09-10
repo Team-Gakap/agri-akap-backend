@@ -818,6 +818,24 @@ class FarmerController extends Controller
             $plotData['geotag_deadline']
         );
 
+        $commodity = (string) ($plotData['commodity'] ?? '');
+        if (! str_contains(strtolower($commodity), 'high-value') && ! str_contains(strtolower($commodity), 'high value')) {
+            $plotData['no_of_heads_or_trees'] = null;
+        }
+
+        $parts = array_filter([
+            $plotData['rotational_tiller_first_name'] ?? null,
+            $plotData['rotational_tiller_middle_name'] ?? null,
+            $plotData['rotational_tiller_surname'] ?? null,
+        ], fn ($v) => is_string($v) && trim($v) !== '');
+
+        if ($parts !== []) {
+            $plotData['rotational_tiller_full_name'] = implode(' ', array_map(
+                fn ($v) => trim((string) $v),
+                $parts
+            ));
+        }
+
         return $plotData;
     }
 }

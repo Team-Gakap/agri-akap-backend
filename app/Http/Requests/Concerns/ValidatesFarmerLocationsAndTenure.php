@@ -68,6 +68,36 @@ trait ValidatesFarmerLocationsAndTenure
                     'Select a valid proof of ownership / tenurial document for the chosen tenure status.'
                 );
             }
+
+            if (RsbsaTenurialDocuments::requiresOtherSpecify((string) $document)) {
+                $other = trim((string) ($plot['proof_of_ownership_other'] ?? ''));
+                if ($other === '') {
+                    $validator->errors()->add(
+                        "plots.{$index}.proof_of_ownership_other",
+                        'Please specify the proof of ownership / tenurial document.'
+                    );
+                }
+            }
+
+            if (($plot['ownership_type'] ?? '') === 'Others') {
+                $ownershipOther = trim((string) ($plot['ownership_type_other'] ?? ''));
+                if ($ownershipOther === '') {
+                    $validator->errors()->add(
+                        "plots.{$index}.ownership_type_other",
+                        'Please specify the ownership / tenurial status.'
+                    );
+                }
+            }
+
+            if (($plot['farm_type'] ?? '') === 'Other') {
+                $farmTypeOther = trim((string) ($plot['farm_type_other'] ?? ''));
+                if ($farmTypeOther === '') {
+                    $validator->errors()->add(
+                        "plots.{$index}.farm_type_other",
+                        'Please specify the farm type.'
+                    );
+                }
+            }
         }
     }
 

@@ -57,6 +57,7 @@ class StoreFarmerRequest extends FormRequest
             'highest_education' => 'required|in:Pre-school,Elementary,High School non K-12,Junior High School K-12,Senior High School K-12,College,Vocational,Post-graduate,None',
             'religion' => 'nullable|string|max:100',
             'id_type' => 'nullable|string|max:100',
+            'id_type_other' => 'nullable|required_if:id_type,Others|string|max:150',
             'id_number' => 'nullable|string|max:100',
 
             // ── Vulnerability & Associations ───────────────────────────────
@@ -86,6 +87,8 @@ class StoreFarmerRequest extends FormRequest
             // ── Part 2: Livelihood ─────────────────────────────────────────
             'livelihood_type' => 'required|in:Farmer,Farm Worker,Fisher,Agri-Youth',
             'livelihood_detail' => 'nullable|string|max:100',
+            'other_livelihood_type' => 'nullable|string|max:100',
+            'other_livelihood_detail' => 'nullable|string|max:150',
 
             // ── Part 3: Farm Plots (at least one required) ─────────────────
             'plots' => 'required|array|min:1',
@@ -97,20 +100,27 @@ class StoreFarmerRequest extends FormRequest
             'plots.*.is_ancestral_domain' => 'boolean',
             'plots.*.is_agrarian_reform_beneficiary' => 'boolean',
             'plots.*.ownership_type' => 'required|in:Registered Owner,Tenant,Lessee,Others',
+            'plots.*.ownership_type_other' => 'nullable|required_if:plots.*.ownership_type,Others|string|max:150',
             'plots.*.land_owner_first_name' => 'required_if:plots.*.ownership_type,Tenant,Lessee|nullable|string|max:100',
+            'plots.*.land_owner_middle_name' => 'nullable|string|max:100',
             'plots.*.land_owner_surname' => 'required_if:plots.*.ownership_type,Tenant,Lessee|nullable|string|max:100',
             'plots.*.land_owner_ext_name' => 'nullable|string|max:10',
             'plots.*.land_owner_rsbsa_no' => 'required_if:plots.*.ownership_type,Tenant,Lessee|nullable|string|max:100',
             'plots.*.proof_of_ownership_document' => 'required|string|max:150',
+            'plots.*.proof_of_ownership_other' => 'nullable|string|max:255',
             'plots.*.commodity' => 'required|in:Rice,Corn,High-Value Crops',
             'plots.*.planting_start_month' => 'nullable|string|max:20',
             'plots.*.planting_end_month' => 'nullable|string|max:20',
             'plots.*.size_ha' => 'required|numeric|min:0.01',
             'plots.*.no_of_heads_or_trees' => 'nullable|integer|min:0',
-            'plots.*.farm_type' => 'required|in:Irrigated,Rainfed Upland,Rainfed Lowland,Urban/Peri-Urban',
+            'plots.*.farm_type' => 'required|in:Irrigated,Rainfed Upland,Rainfed Lowland,Urban/Peri-Urban,Other',
+            'plots.*.farm_type_other' => 'nullable|required_if:plots.*.farm_type,Other|string|max:150',
             'plots.*.is_organic' => 'boolean',
             'plots.*.cropping_schedule' => 'nullable|string|max:100',
             'plots.*.rotational_tiller_full_name' => 'nullable|string|max:255',
+            'plots.*.rotational_tiller_surname' => 'nullable|string|max:100',
+            'plots.*.rotational_tiller_first_name' => 'nullable|string|max:100',
+            'plots.*.rotational_tiller_middle_name' => 'nullable|string|max:100',
             'plots.*.remarks' => 'nullable|string|max:500',
         ];
     }
@@ -132,10 +142,11 @@ class StoreFarmerRequest extends FormRequest
             'plots.*.commodity.in' => 'Select a valid commodity (Rice, Corn, High-Value Crops).',
             'plots.*.size_ha.required' => 'Each plot must have a farm size in hectares.',
             'plots.*.ownership_type.in' => 'Select a valid tenurial status (Registered Owner, Tenant, Lessee, Others).',
-            'plots.*.farm_type.in' => 'Select a valid farm type (Irrigated, Rainfed Upland, Rainfed Lowland, Urban/Peri-Urban).',
+            'plots.*.farm_type.in' => 'Select a valid farm type (Irrigated, Rainfed Upland, Rainfed Lowland, Urban/Peri-Urban, or Other).',
             'plots.*.land_owner_first_name.required_if' => 'Landowner first name is required for tenant- or lessee-tilled parcels.',
             'plots.*.land_owner_surname.required_if' => 'Landowner surname is required for tenant- or lessee-tilled parcels.',
             'plots.*.land_owner_rsbsa_no.required_if' => 'Landowner RSBSA number is required for tenant- or lessee-tilled parcels.',
+            'id_type_other.required_if' => 'Please specify the government ID type.',
             'civil_status.in' => 'Select a valid civil status.',
             'highest_education.in' => 'Select a valid education level.',
             'livelihood_type.in' => 'Select a valid livelihood type.',

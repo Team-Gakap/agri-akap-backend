@@ -4,6 +4,8 @@ namespace App\Support;
 
 final class RsbsaTenurialDocuments
 {
+    public const OTHER_DOCUMENT = 'Other';
+
     /** @var array<string, list<string>> */
     private const DOCUMENTS = [
         'registered_owner' => [
@@ -11,6 +13,9 @@ final class RsbsaTenurialDocuments
             'Tax Declaration (agricultural land)',
             'Free Patent / Homestead Patent / Agricultural Sales Patent',
             'Deed of Absolute Sale / Donation / Extrajudicial Settlement',
+            'Special Power of Attorney / Authorization to Till',
+            'Affidavit of Ownership / Absolute Ownership',
+            'Other',
         ],
         'arb' => [
             'Certificate of Land Ownership Award (CLOA) — Individual',
@@ -18,25 +23,34 @@ final class RsbsaTenurialDocuments
             'Certificate of Land Ownership Award (CLOA) — Co-ownership',
             'Emancipation Patent (EP)',
             'Certificate of Land Transfer (CLT)',
+            'Other',
         ],
         'ip_cc' => [
             'Certificate of Ancestral Domain Title (CADT)',
             'Certificate of Ancestral Land Title (CALT)',
             'NCIP Certification (traditional land rights)',
+            'Other',
         ],
         'tenant' => [
             'Notarized Agricultural Leasehold Contract / Tenancy Agreement',
             'Barangay Agrarian Reform Committee (BARC) Certification',
             'Barangay Certificate / Landowner Affidavit',
+            'Affidavit of Tenancy / Actual Tillage',
+            'Other',
         ],
         'lessee' => [
             'Lease Contract / Contract of Lease',
             'Notarized Landowner Consent / Usufruct Agreement',
+            'Special Power of Attorney / Authorization to Till',
+            'Other',
         ],
         'others' => [
             'Barangay Certification of Actual Tillage / Land Occupancy',
             'Affidavit of Heirship / Consent of Co-heirs',
             'Urban/Peri-Urban Agriculture Certification',
+            'Affidavit of Ownership / Absolute Ownership',
+            'Special Power of Attorney / Authorization to Till',
+            'Other',
         ],
     ];
 
@@ -81,5 +95,10 @@ final class RsbsaTenurialDocuments
         }
 
         return in_array(trim($document), self::allowedForPlot($plot), true);
+    }
+
+    public static function requiresOtherSpecify(?string $document): bool
+    {
+        return trim((string) $document) === self::OTHER_DOCUMENT;
     }
 }

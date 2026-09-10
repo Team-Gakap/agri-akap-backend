@@ -19,6 +19,7 @@ use App\Http\Controllers\PestMonitoringController;
 use App\Http\Controllers\PlantingLogController;
 use App\Http\Controllers\ProgramController;
 use App\Http\Controllers\PsgcController;
+use App\Http\Controllers\PublicDashboardController;
 use App\Http\Controllers\ReportExportController;
 use App\Http\Controllers\ReportsController;
 use App\Http\Controllers\ReportWorkflowController;
@@ -49,6 +50,9 @@ Route::post('/auth/mfa/sms/verify', [MfaController::class, 'verifySms']);
 
 // Cheap unauthenticated reachability probe for the mobile app's offline detector.
 Route::get('/ping', fn () => response()->json(['status' => 'ok']));
+
+// Guest-facing municipal KPI summary (aggregates only — no PII).
+Route::get('/public/dashboard-summary', [PublicDashboardController::class, 'summary']);
 
 // ── Authenticated ─────────────────────────────────────────────────────────────
 Route::middleware('auth:sanctum')->group(function () {
