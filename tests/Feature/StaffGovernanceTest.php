@@ -44,10 +44,13 @@ class StaffGovernanceTest extends TestCase
             'role' => 'technician',
         ])->assertCreated();
 
-        $this->assertSame(User::TEMPORARY_PASSWORD, $created->json('data.temporary_password'));
+        $temporary = $created->json('data.temporary_password');
+        $this->assertIsString($temporary);
+        $this->assertNotSame('', $temporary);
+        $this->assertNotSame(User::TEMPORARY_PASSWORD, $temporary);
         $this->assertTrue($created->json('data.user.must_change_password'));
         $this->assertTrue(Hash::check(
-            User::TEMPORARY_PASSWORD,
+            $temporary,
             User::query()->where('email', 'newtech@mao.com')->firstOrFail()->password,
         ));
 
@@ -86,7 +89,11 @@ class StaffGovernanceTest extends TestCase
         $reset = $this->postJson("/api/staff/{$tech->id}/reset-password", [
             'audit_remarks' => 'Technician forgot password after field phone replacement.',
         ])->assertOk();
-        $this->assertSame(User::TEMPORARY_PASSWORD, $reset->json('data.temporary_password'));
+        $temporary = $reset->json('data.temporary_password');
+        $this->assertIsString($temporary);
+        $this->assertNotSame('', $temporary);
+        $this->assertNotSame(User::TEMPORARY_PASSWORD, $temporary);
+        $this->assertTrue(Hash::check($temporary, $tech->fresh()->password));
         $this->assertTrue($tech->fresh()->must_change_password);
         $this->assertSame(0, $tech->tokens()->count());
     }

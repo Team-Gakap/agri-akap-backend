@@ -10,6 +10,7 @@ use App\Support\AuditRemarks;
 use App\Support\StaffAccess;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 
 class StaffController extends Controller
 {
@@ -307,7 +308,7 @@ class StaffController extends Controller
 
     private function temporarySecret(): string
     {
-        return User::TEMPORARY_PASSWORD;
+        return Str::password(12);
     }
 
     private function forbidden(string $message): JsonResponse
