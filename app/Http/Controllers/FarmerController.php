@@ -466,6 +466,7 @@ class FarmerController extends Controller
 
             $plots = $validatedData['plots'] ?? [];
             unset($validatedData['plots']);
+            $validatedData = $this->normalizeAssociations($validatedData);
 
             $validatedData['total_farm_area_ha'] = $this->farmAreaBudget->quotaFromRegistrationPlots($plots);
 
@@ -605,6 +606,7 @@ class FarmerController extends Controller
 
             $plots = $validated['plots'] ?? null;
             unset($validated['plots']);
+            $validated = $this->normalizeAssociations($validated, $farmer);
 
             if (is_array($plots)) {
                 $validated['total_farm_area_ha'] = $this->farmAreaBudget->quotaFromRegistrationPlots($plots);
@@ -836,6 +838,51 @@ class FarmerController extends Controller
             ));
         }
 
+        $landOwnerParts = array_filter([
+            $plotData['land_owner_first_name'] ?? null,
+            $plotData['land_owner_middle_name'] ?? null,
+            $plotData['land_owner_surname'] ?? null,
+            $plotData['land_owner_ext_name'] ?? null,
+        ], fn ($value) => is_string($value) && trim($value) !== '');
+        if ($landOwnerParts !== []) {
+            $plotData['landowner_name'] = implode(' ', array_map(
+                fn ($value) => trim((string) $value),
+                $landOwnerParts
+            ));
+        }
+
         return $plotData;
+    }
+
+    /**
+     * Keep the original three association columns populated for integrations
+     * that have not yet moved to the unbounded associations JSON field.
+     *
+     * @param array<string, mixed> $attributes
+     * @return array<string, mixed>
+     */
+    private function normalizeAssociations(array $attributes, ?Farmer $existing = null): array
+    {
+        $hasLegacyValues = array_key_exists('association_1', $attributes)
+            || array_key_exists('association_2', $attributes)
+            || array_key_exists('association_3', $attributes);
+        $source = array_key_exists('associations', $attributes)
+            ? $attributes['associations']
+            : ($hasLegacyValues ? [
+                $attributes['association_1'] ?? null,
+                $attributes['association_2'] ?? null,
+                $attributes['association_3'] ?? null,
+            ] : ($existing?->associations ?? []));
+
+        $associations = array_values(array_filter((array) $source, fn ($value) =>
+            is_string($value) && trim($value) !== ''
+        ));
+
+        $attributes['associations'] = $associations;
+        foreach ([1, 2, 3] as $index) {
+            $attributes['association_'.$index] = $associations[$index - 1] ?? null;
+        }
+
+        return $attributes;
     }
 }

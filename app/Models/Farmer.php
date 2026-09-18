@@ -45,7 +45,7 @@ class Farmer extends Model
 
         // Vulnerability & Affiliations
         'is_icc_ip', 'icc_ip_name', 'is_pwd', 'is_4ps_beneficiary',
-        'association_1', 'association_2', 'association_3', 'livelihood_type',
+        'association_1', 'association_2', 'association_3', 'associations', 'livelihood_type',
         'livelihood_detail', 'other_livelihood_type', 'other_livelihood_detail',
         'total_farm_area_ha',
     ];
@@ -61,6 +61,7 @@ class Farmer extends Model
         'birthdate' => 'date',
         'verified_at' => 'datetime',
         'total_farm_area_ha' => 'decimal:4',
+        'associations' => 'array',
     ];
 
     protected $appends = ['is_rffa_eligible'];

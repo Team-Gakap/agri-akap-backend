@@ -68,6 +68,8 @@ class StoreFarmerRequest extends FormRequest
             'association_1' => 'nullable|string|max:255',
             'association_2' => 'nullable|string|max:255',
             'association_3' => 'nullable|string|max:255',
+            'associations' => 'nullable|array',
+            'associations.*' => 'nullable|string|max:255',
 
             // ── Addresses (PSGC names; Echague barangays validated in withValidator) ──
             'permanent_house_no' => 'nullable|string|max:50',
@@ -87,8 +89,8 @@ class StoreFarmerRequest extends FormRequest
             // ── Part 2: Livelihood ─────────────────────────────────────────
             'livelihood_type' => 'required|in:Farmer,Farm Worker,Fisher,Agri-Youth',
             'livelihood_detail' => 'nullable|string|max:100',
-            'other_livelihood_type' => 'nullable|string|max:100',
-            'other_livelihood_detail' => 'nullable|string|max:150',
+            'other_livelihood_type' => 'nullable|in:Farmer,Farm Worker,Fisher,Agri-Youth,Other',
+            'other_livelihood_detail' => 'nullable|required_if:other_livelihood_type,Other|string|max:150',
 
             // ── Part 3: Farm Plots (at least one required) ─────────────────
             'plots' => 'required|array|min:1',
@@ -105,7 +107,7 @@ class StoreFarmerRequest extends FormRequest
             'plots.*.land_owner_middle_name' => 'nullable|string|max:100',
             'plots.*.land_owner_surname' => 'required_if:plots.*.ownership_type,Tenant,Lessee|nullable|string|max:100',
             'plots.*.land_owner_ext_name' => 'nullable|string|max:10',
-            'plots.*.land_owner_rsbsa_no' => 'required_if:plots.*.ownership_type,Tenant,Lessee|nullable|string|max:100',
+            'plots.*.land_owner_rsbsa_no' => 'nullable|string|max:100',
             'plots.*.proof_of_ownership_document' => 'required|string|max:150',
             'plots.*.proof_of_ownership_other' => 'nullable|string|max:255',
             'plots.*.commodity' => 'required|in:Rice,Corn,High-Value Crops',
@@ -145,7 +147,6 @@ class StoreFarmerRequest extends FormRequest
             'plots.*.farm_type.in' => 'Select a valid farm type (Irrigated, Rainfed Upland, Rainfed Lowland, Urban/Peri-Urban, or Other).',
             'plots.*.land_owner_first_name.required_if' => 'Landowner first name is required for tenant- or lessee-tilled parcels.',
             'plots.*.land_owner_surname.required_if' => 'Landowner surname is required for tenant- or lessee-tilled parcels.',
-            'plots.*.land_owner_rsbsa_no.required_if' => 'Landowner RSBSA number is required for tenant- or lessee-tilled parcels.',
             'id_type_other.required_if' => 'Please specify the government ID type.',
             'civil_status.in' => 'Select a valid civil status.',
             'highest_education.in' => 'Select a valid education level.',
