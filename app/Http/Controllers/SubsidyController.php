@@ -297,12 +297,12 @@ class SubsidyController extends Controller
             ->whereNull('farmers.deleted_at')
             ->whereNotNull('farmers.rsbsa_no')
             ->where('farmers.rsbsa_no', '!=', '')
-            ->whereRaw('COALESCE(planted.area, plots.area, 0) > 0')
+            ->whereRaw($this->farmAreaSql().' > 0')
             ->select([
                 'farmers.id',
                 'farmers.rsbsa_no',
             ])
-            ->selectRaw('COALESCE(planted.area, plots.area, 0) as farm_area');
+            ->selectRaw($this->farmAreaSql().' as farm_area');
         $this->applyBarangayScope($eligibleFarmersQuery, $program);
         $eligibleFarmers = $eligibleFarmersQuery->get();
 
@@ -354,14 +354,35 @@ class SubsidyController extends Controller
             ->values()
             ->all();
 
-        $generatedCount = DB::transaction(function () use ($rows) {
-            $inserted = 0;
+        $generatedCount = 0;
+        $updatedCount = 0;
 
-            foreach (array_chunk($rows, 500) as $chunk) {
-                $inserted += DB::table('tbl_subsidy_beneficiaries')->insertOrIgnore($chunk);
+        DB::transaction(function () use ($rows, $program, &$generatedCount, &$updatedCount) {
+            foreach ($rows as $row) {
+                $existingQuery = DB::table('tbl_subsidy_beneficiaries')
+                    ->where('program_id', $program->id)
+                    ->where('farmer_rsbsa_no', $row['farmer_rsbsa_no']);
+                SubsidyBeneficiary::applyNotDeleted($existingQuery);
+                $existing = $existingQuery->first();
+
+                if (! $existing) {
+                    DB::table('tbl_subsidy_beneficiaries')->insert($row);
+                    $generatedCount++;
+                    continue;
+                }
+
+                // Recalculate Pending only; Claimed allocations stay historical.
+                if ($existing->status === 'Pending') {
+                    DB::table('tbl_subsidy_beneficiaries')
+                        ->where('id', $existing->id)
+                        ->update([
+                            'calculated_allocation' => $row['calculated_allocation'],
+                            'calculated_allocation_secondary' => $row['calculated_allocation_secondary'],
+                            'updated_at' => $row['updated_at'],
+                        ]);
+                    $updatedCount++;
+                }
             }
-
-            return $inserted;
         });
 
         $masterlistCountQuery = DB::table('tbl_subsidy_beneficiaries')
@@ -370,7 +391,10 @@ class SubsidyController extends Controller
         $masterlistCount = $masterlistCountQuery->count();
 
         $message = "{$generatedCount} new beneficiaries added to the masterlist.";
-        if ($generatedCount === 0 && count($rows) === 0) {
+        if ($updatedCount > 0) {
+            $message .= " {$updatedCount} pending allocation(s) recalculated.";
+        }
+        if ($generatedCount === 0 && $updatedCount === 0 && count($rows) === 0) {
             $message = $skippedNoRsbsa > 0
                 ? "No eligible farmers found. {$skippedNoRsbsa} matching farmer(s) were skipped because they have no RSBSA number."
                 : 'No eligible farmers found. Matching farmers need an RSBSA number plus a Rice/Corn farm plot or an active planting log.';
@@ -380,6 +404,7 @@ class SubsidyController extends Controller
             'after' => [
                 'eligible_count' => count($rows),
                 'generated_count' => $generatedCount,
+                'updated_count' => $updatedCount,
                 'skipped_no_rsbsa' => $skippedNoRsbsa,
                 'masterlist_count' => $masterlistCount,
             ],
@@ -392,6 +417,7 @@ class SubsidyController extends Controller
                 'program_id' => $program->id,
                 'eligible_count' => count($rows),
                 'generated_count' => $generatedCount,
+                'updated_count' => $updatedCount,
                 'skipped_no_rsbsa' => $skippedNoRsbsa,
                 'masterlist_count' => $masterlistCount,
             ],
@@ -428,7 +454,7 @@ class SubsidyController extends Controller
                 'beneficiaries.calculated_allocation_secondary',
                 'beneficiaries.status',
             ])
-            ->selectRaw('ROUND(COALESCE(planted.area, plots.area, 0), 4) as farm_area')
+            ->selectRaw('ROUND('.$this->farmAreaSql().', 4) as farm_area')
             ->get();
 
         return response()->json([
@@ -996,8 +1022,19 @@ class SubsidyController extends Controller
     }
 
     /**
-     * Crop-area subqueries: RSBSA farm plots + active planting logs.
+     * Prefer registered crop-matched plot area; fall back to planted only when
+     * the farmer has no matching plots. Plot-first avoids seasonal Active
+     * planting logs stacking into inflated farm_area / allocations.
+     */
+    private function farmAreaSql(): string
+    {
+        return 'CASE WHEN COALESCE(plots.area, 0) > 0 THEN plots.area ELSE COALESCE(planted.area, 0) END';
+    }
+
+    /**
+     * Crop-area helpers: RSBSA farm plots + active planting logs.
      * `Both` sums rice + corn parcels / planting logs.
+     * Planted fallback uses the latest Active log per plot (not lifetime SUM).
      */
     private function cropAreaForFarmer(string $farmerId, string $targetCrop): float
     {
@@ -1007,13 +1044,36 @@ class SubsidyController extends Controller
         $this->applyCropFilter($plotQuery, 'commodity', $targetCrop);
         $plotHa = (float) ($plotQuery->sum('size_ha') ?? 0);
 
-        $plantQuery = DB::table('planting_logs')
-            ->where('farmer_id', $farmerId)
-            ->where('status', 'Active');
-        $this->applyCropFilter($plantQuery, 'crop_type', $targetCrop);
-        $plantHa = (float) ($plantQuery->sum('area_planted') ?? 0);
+        if ($plotHa > 0) {
+            return $plotHa;
+        }
 
-        return $plantHa > 0 ? $plantHa : $plotHa;
+        return $this->latestPlantedAreaForFarmer($farmerId, $targetCrop);
+    }
+
+    /**
+     * Latest Active planted ha per plot for one farmer (null plot_id = one bucket).
+     */
+    private function latestPlantedAreaForFarmer(string $farmerId, string $targetCrop): float
+    {
+        $ranked = DB::table('planting_logs')
+            ->where('farmer_id', $farmerId)
+            ->where('status', 'Active')
+            ->whereNull('deleted_at');
+        $this->applyCropFilter($ranked, 'crop_type', $targetCrop);
+        $ranked
+            ->select(['farm_plot_id', 'area_planted'])
+            ->selectRaw(
+                "ROW_NUMBER() OVER (
+                    PARTITION BY COALESCE(farm_plot_id, '00000000-0000-0000-0000-000000000000')
+                    ORDER BY date_planted DESC, created_at DESC, id DESC
+                ) as rn"
+            );
+
+        return (float) (DB::query()
+            ->fromSub($ranked, 'latest_plantings')
+            ->where('rn', 1)
+            ->sum('area_planted') ?? 0);
     }
 
     /**
@@ -1025,9 +1085,25 @@ class SubsidyController extends Controller
         $this->applyCropFilter($plotArea, 'commodity', $targetCrop);
         $plotArea->groupBy('farmer_id')->select('farmer_id')->selectRaw('SUM(size_ha) as area');
 
-        $plantArea = DB::table('planting_logs')->where('status', 'Active');
-        $this->applyCropFilter($plantArea, 'crop_type', $targetCrop);
-        $plantArea->groupBy('farmer_id')->select('farmer_id')->selectRaw('SUM(area_planted) as area');
+        $rankedPlantings = DB::table('planting_logs')
+            ->where('status', 'Active')
+            ->whereNull('deleted_at');
+        $this->applyCropFilter($rankedPlantings, 'crop_type', $targetCrop);
+        $rankedPlantings
+            ->select(['farmer_id', 'farm_plot_id', 'area_planted'])
+            ->selectRaw(
+                "ROW_NUMBER() OVER (
+                    PARTITION BY farmer_id, COALESCE(farm_plot_id, '00000000-0000-0000-0000-000000000000')
+                    ORDER BY date_planted DESC, created_at DESC, id DESC
+                ) as rn"
+            );
+
+        $plantArea = DB::query()
+            ->fromSub($rankedPlantings, 'latest_plantings')
+            ->where('rn', 1)
+            ->groupBy('farmer_id')
+            ->select('farmer_id')
+            ->selectRaw('SUM(area_planted) as area');
 
         return [$plotArea, $plantArea];
     }
