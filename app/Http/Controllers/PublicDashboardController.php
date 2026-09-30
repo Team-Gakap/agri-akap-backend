@@ -33,7 +33,7 @@ class PublicDashboardController extends Controller
         $barangayRanking = $this->barangayInclusionRanking($farmers);
         $farmArea = $this->farmAreaByCommodity($filters);
         $distributionData = $this->distributionBreakdown($filters);
-        $subsidy = $distributionData['uptake'];
+        $subsidy = $this->subsidyUptake($filters);
         $peak = $this->peakDisbursementDays();
 
         return response()->json([
