@@ -14,6 +14,7 @@ use App\Http\Controllers\FarmPlotController;
 use App\Http\Controllers\HarvestLogController;
 use App\Http\Controllers\IntelligenceController;
 use App\Http\Controllers\MfaController;
+use App\Http\Controllers\MobileAppController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\PestMonitoringController;
 use App\Http\Controllers\PlantingLogController;
@@ -58,6 +59,13 @@ Route::get('/public/dashboard-summary', [PublicDashboardController::class, 'summ
 
 // ── Authenticated ─────────────────────────────────────────────────────────────
 Route::middleware('auth:sanctum')->group(function () {
+
+    Route::get('/mobile/version', [MobileAppController::class, 'version'])
+        ->middleware('role:technician,admin')
+        ->name('api.mobile.version');
+    Route::get('/mobile/download-apk', [MobileAppController::class, 'download'])
+        ->middleware('role:technician,admin')
+        ->name('api.mobile.download-apk');
 
     // Auth
     Route::post('/logout', [AuthController::class, 'logout']);
