@@ -4,9 +4,11 @@ namespace App\Http\Controllers;
 
 use App\Models\Distribution;
 use App\Models\Farmer;
+use App\Models\FarmPlot;
 use App\Models\SubsidyBeneficiary;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -15,15 +17,28 @@ use Illuminate\Support\Facades\Schema;
  */
 class PublicDashboardController extends Controller
 {
-    public function summary(): JsonResponse
+    public function summary(Request $request): JsonResponse
     {
-        $gender = $this->farmerGenderAndPwd();
-        $subsidy = $this->subsidyUptake();
+        $filters = $request->validate([
+            'barangay' => ['nullable', 'string', 'max:120'],
+            'commodity' => ['nullable', 'in:Rice,Corn'],
+            'year' => ['nullable', 'integer', 'between:2000,' . (Carbon::now()->year + 1)],
+        ]);
+
+        $farmers = $this->filteredFarmers($filters)->get([
+            'id', 'sex', 'birthdate', 'is_pwd', 'permanent_brgy', 'rsbsa_no',
+        ]);
+        $gender = $this->farmerGenderAndPwd($farmers);
+        $demographics = $this->demographicBreakdown($farmers);
+        $barangayRanking = $this->barangayInclusionRanking($farmers);
+        $farmArea = $this->farmAreaByCommodity($filters);
+        $distributionData = $this->distributionBreakdown($filters);
+        $subsidy = $distributionData['uptake'];
         $peak = $this->peakDisbursementDays();
 
         return response()->json([
             'data' => [
-                'total_farmers' => Farmer::query()->count(),
+                'total_farmers' => $farmers->count(),
                 'farmers_male' => $gender['male'],
                 'farmers_female' => $gender['female'],
                 'pwd_male' => $gender['pwd_male'],
@@ -34,6 +49,37 @@ class PublicDashboardController extends Controller
                 'subsidy_beneficiaries_claimed' => $subsidy['beneficiaries_claimed'],
                 'subsidy_beneficiaries_enrolled' => $subsidy['beneficiaries_enrolled'],
                 'peak_disbursement' => $peak,
+                'senior_total' => $gender['senior_total'],
+                'senior_male' => $gender['senior_male'],
+                'senior_female' => $gender['senior_female'],
+                'female_percent' => $gender['female_percent'],
+                'age_distribution' => $demographics,
+                'priority_groups' => $gender['priority_groups'],
+                'claim_breakdown' => $distributionData['claims'],
+                'farm_area_by_commodity' => $farmArea,
+                'barangay_inclusion' => $barangayRanking,
+                'recent_activity' => $distributionData['recent_activity'],
+                'filters' => [
+                    'barangays' => Farmer::query()
+                        ->whereNotNull('permanent_brgy')
+                        ->where('permanent_brgy', '!=', '')
+                        ->distinct()
+                        ->orderBy('permanent_brgy')
+                        ->pluck('permanent_brgy')
+                        ->values(),
+                    'years' => range(2022, Carbon::now()->year),
+                ],
+                'applied_filters' => [
+                    'barangay' => $filters['barangay'] ?? null,
+                    'commodity' => $filters['commodity'] ?? null,
+                    'year' => isset($filters['year']) ? (int) $filters['year'] : null,
+                ],
+                'data_notes' => [
+                    'year' => 'Year filters distribution claims; farmer and land profiles reflect the current registry.',
+                    'gender' => 'Records store sex as Male or Female; gender identity is not collected.',
+                    'priority' => 'Senior and PWD classifications may overlap; the chart uses mutually exclusive groups.',
+                    'gad_budget' => 'GAD budget utilization is not recorded in this dashboard.',
+                ],
                 'municipality' => 'Echague, Isabela',
                 'office' => 'Municipal Agriculture Office',
             ],
@@ -43,29 +89,33 @@ class PublicDashboardController extends Controller
     /**
      * @return array{male: int, female: int, pwd_male: int, pwd_female: int, rsbsa_verified: int}
      */
-    private function farmerGenderAndPwd(): array
+    private function farmerGenderAndPwd($farmers): array
     {
         $male = 0;
         $female = 0;
         $pwdMale = 0;
         $pwdFemale = 0;
+        $seniorMale = 0;
+        $seniorFemale = 0;
+        $pwdSeniors = 0;
         $rsbsa = 0;
 
-        if (Schema::hasColumn('farmers', 'sex')) {
-            $male = Farmer::query()->where('sex', 'Male')->count();
-            $female = Farmer::query()->where('sex', 'Female')->count();
-        }
+        foreach ($farmers as $farmer) {
+            $isSenior = Carbon::parse($farmer->birthdate)->age >= 60;
+            $isPwd = (bool) $farmer->is_pwd;
+            $rsbsa += filled($farmer->rsbsa_no) ? 1 : 0;
 
-        if (Schema::hasColumn('farmers', 'is_pwd') && Schema::hasColumn('farmers', 'sex')) {
-            $pwdMale = Farmer::query()->where('is_pwd', true)->where('sex', 'Male')->count();
-            $pwdFemale = Farmer::query()->where('is_pwd', true)->where('sex', 'Female')->count();
-        }
+            if ($farmer->sex === 'Male') {
+                $male++;
+                $pwdMale += $isPwd ? 1 : 0;
+                $seniorMale += $isSenior ? 1 : 0;
+            } else {
+                $female++;
+                $pwdFemale += $isPwd ? 1 : 0;
+                $seniorFemale += $isSenior ? 1 : 0;
+            }
 
-        if (Schema::hasColumn('farmers', 'rsbsa_no')) {
-            $rsbsa = Farmer::query()
-                ->whereNotNull('rsbsa_no')
-                ->where('rsbsa_no', '!=', '')
-                ->count();
+            $pwdSeniors += $isSenior && $isPwd ? 1 : 0;
         }
 
         return [
@@ -73,24 +123,173 @@ class PublicDashboardController extends Controller
             'female' => $female,
             'pwd_male' => $pwdMale,
             'pwd_female' => $pwdFemale,
+            'senior_male' => $seniorMale,
+            'senior_female' => $seniorFemale,
+            'senior_total' => $seniorMale + $seniorFemale,
+            'female_percent' => $male + $female > 0 ? round(($female / ($male + $female)) * 100, 1) : 0.0,
+            'priority_groups' => [
+                'senior' => $seniorMale + $seniorFemale,
+                'pwd' => $pwdMale + $pwdFemale - $pwdSeniors,
+                'regular' => count($farmers) - ($seniorMale + $seniorFemale) - ($pwdMale + $pwdFemale - $pwdSeniors),
+                'senior_pwd_overlap' => $pwdSeniors,
+            ],
             'rsbsa_verified' => $rsbsa,
+        ];
+    }
+
+    private function filteredFarmers(array $filters)
+    {
+        return Farmer::query()
+            ->when($filters['barangay'] ?? null, fn ($query, $barangay) => $query->where('permanent_brgy', $barangay))
+            ->when($filters['commodity'] ?? null, fn ($query, $commodity) => $query->whereHas(
+                'farmPlots',
+                fn ($plots) => $plots->whereRaw('LOWER(commodity) = ?', [strtolower($commodity)])
+            ));
+    }
+
+    private function demographicBreakdown($farmers): array
+    {
+        $groups = [
+            '18-30' => ['male' => 0, 'female' => 0],
+            '31-45' => ['male' => 0, 'female' => 0],
+            '46-59' => ['male' => 0, 'female' => 0],
+            '60+' => ['male' => 0, 'female' => 0],
+        ];
+
+        foreach ($farmers as $farmer) {
+            $age = Carbon::parse($farmer->birthdate)->age;
+            if ($age < 18) {
+                continue;
+            }
+            $bracket = match (true) {
+                $age <= 30 => '18-30',
+                $age <= 45 => '31-45',
+                $age <= 59 => '46-59',
+                default => '60+',
+            };
+            $sex = $farmer->sex === 'Female' ? 'female' : 'male';
+            $groups[$bracket][$sex]++;
+        }
+
+        return collect($groups)->map(fn ($counts, $label) => ['age_group' => $label] + $counts)->values()->all();
+    }
+
+    private function barangayInclusionRanking($farmers): array
+    {
+        return $farmers
+            ->groupBy(fn ($farmer) => trim((string) $farmer->permanent_brgy) ?: 'Unspecified')
+            ->map(function ($rows, $barangay) {
+                $total = $rows->count();
+                $female = $rows->where('sex', 'Female')->count();
+                $pwd = $rows->where('is_pwd', true)->count();
+
+                return [
+                    'barangay' => $barangay,
+                    'farmers' => $total,
+                    'female_percent' => $total ? round(($female / $total) * 100, 1) : 0,
+                    'pwd_percent' => $total ? round(($pwd / $total) * 100, 1) : 0,
+                ];
+            })
+            ->sortByDesc(fn ($row) => $row['female_percent'] + $row['pwd_percent'])
+            ->take(8)
+            ->values()
+            ->all();
+    }
+
+    private function farmAreaByCommodity(array $filters): array
+    {
+        return FarmPlot::query()
+            ->with('farmer:id,sex')
+            ->whereHas('farmer', fn ($farmers) => $farmers
+                ->when($filters['barangay'] ?? null, fn ($query, $barangay) => $query->where('permanent_brgy', $barangay)))
+            ->when($filters['commodity'] ?? null, fn ($query, $commodity) => $query->whereRaw(
+                'LOWER(commodity) = ?', [strtolower($commodity)]
+            ))
+            ->get(['commodity', 'size_ha', 'farmer_id'])
+            ->filter(fn ($plot) => $plot->farmer)
+            ->groupBy(fn ($plot) => ucfirst(strtolower($plot->commodity)))
+            ->map(fn ($plots, $commodity) => [
+                'commodity' => $commodity,
+                'male_hectares' => round((float) $plots->filter(fn ($plot) => $plot->farmer->sex === 'Male')->sum('size_ha'), 2),
+                'female_hectares' => round((float) $plots->filter(fn ($plot) => $plot->farmer->sex === 'Female')->sum('size_ha'), 2),
+            ])
+            ->values()
+            ->all();
+    }
+
+    private function distributionBreakdown(array $filters): array
+    {
+        $rows = Distribution::query()
+            ->with('farmer:id,sex,birthdate,is_pwd')
+            ->whereHas('farmer', fn ($farmers) => $farmers
+                ->when($filters['barangay'] ?? null, fn ($query, $barangay) => $query->where('permanent_brgy', $barangay))
+                ->when($filters['commodity'] ?? null, fn ($query, $commodity) => $query->whereHas(
+                    'farmPlots',
+                    fn ($plots) => $plots->whereRaw('LOWER(commodity) = ?', [strtolower($commodity)])
+                )))
+            ->when($filters['year'] ?? null, fn ($query, $year) => $query->whereYear('claimed_at', $year))
+            ->get(['id', 'farmer_id', 'status', 'claimed_at']);
+
+        $claims = [
+            'male' => ['claimed' => 0, 'pending' => 0],
+            'female' => ['claimed' => 0, 'pending' => 0],
+            'pwd' => ['claimed' => 0, 'pending' => 0],
+            'senior' => ['claimed' => 0, 'pending' => 0],
+        ];
+        $activity = [];
+        foreach ($rows as $distribution) {
+            if (! $distribution->farmer) {
+                continue;
+            }
+
+            $status = $distribution->status === 'pending_sync' ? 'pending' : 'claimed';
+            $sex = $distribution->farmer->sex === 'Female' ? 'female' : 'male';
+            $claims[$sex][$status]++;
+            $isSenior = Carbon::parse($distribution->farmer->birthdate)->age >= 60;
+            $isPwd = (bool) $distribution->farmer->is_pwd;
+            if ($isSenior) {
+                $claims['senior'][$status]++;
+            } elseif ($isPwd) {
+                $claims['pwd'][$status]++;
+            }
+
+            $date = Carbon::parse($distribution->claimed_at)->toDateString();
+            $activity[$date] ??= ['date' => $date, 'claimed' => 0, 'pending' => 0];
+            $activity[$date][$status]++;
+        }
+
+        krsort($activity);
+        return [
+            'claims' => $claims,
+            'recent_activity' => array_slice(array_values($activity), 0, 8),
         ];
     }
 
     /**
      * @return array{uptake_percent: float, beneficiaries_claimed: int, beneficiaries_enrolled: int}
      */
-    private function subsidyUptake(): array
+    private function subsidyUptake(array $filters): array
     {
         $claimed = 0;
         $enrolled = 0;
 
-        if (Schema::hasTable('tbl_subsidy_beneficiaries')) {
-            $enrolledQuery = DB::table('tbl_subsidy_beneficiaries');
+        if (Schema::hasTable('tbl_subsidy_beneficiaries') && Schema::hasTable('tbl_subsidy_programs')) {
+            $enrolledQuery = DB::table('tbl_subsidy_beneficiaries')
+                ->join('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
+                ->join('tbl_subsidy_programs', 'tbl_subsidy_programs.id', '=', 'tbl_subsidy_beneficiaries.program_id')
+                ->whereNull('farmers.deleted_at')
+                ->when($filters['barangay'] ?? null, fn ($query, $barangay) => $query->where('farmers.permanent_brgy', $barangay))
+                ->when($filters['commodity'] ?? null, fn ($query, $commodity) => $query->where('tbl_subsidy_programs.target_crop', $commodity));
             SubsidyBeneficiary::applyNotDeleted($enrolledQuery);
             $enrolled = (int) $enrolledQuery->count();
 
-            $claimedQuery = DB::table('tbl_subsidy_beneficiaries')->where('status', 'Claimed');
+            $claimedQuery = DB::table('tbl_subsidy_beneficiaries')
+                ->join('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
+                ->join('tbl_subsidy_programs', 'tbl_subsidy_programs.id', '=', 'tbl_subsidy_beneficiaries.program_id')
+                ->whereNull('farmers.deleted_at')
+                ->where('tbl_subsidy_beneficiaries.status', 'Claimed')
+                ->when($filters['barangay'] ?? null, fn ($query, $barangay) => $query->where('farmers.permanent_brgy', $barangay))
+                ->when($filters['commodity'] ?? null, fn ($query, $commodity) => $query->where('tbl_subsidy_programs.target_crop', $commodity));
             SubsidyBeneficiary::applyNotDeleted($claimedQuery);
             $claimed = (int) $claimedQuery->count();
         }
