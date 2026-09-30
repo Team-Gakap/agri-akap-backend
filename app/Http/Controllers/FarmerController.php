@@ -6,6 +6,7 @@ use App\Imports\FarmersImport;
 use App\Models\Farmer;
 use App\Models\PlantingLog;
 use App\Http\Requests\StoreFarmerRequest;
+use App\Http\Requests\StoreManualFarmerRequest;
 use App\Http\Requests\UpdateFarmerRequest;
 use App\Services\CropStageService;
 use App\Services\FarmAreaBudgetService;
@@ -13,6 +14,7 @@ use App\Services\SmsService;
 use App\Support\AuditRemarks;
 use App\Support\OfficialBarangays;
 use App\Support\OfficialLocations;
+use App\Traits\ResolvesEncodingBarangay;
 use App\Traits\DecodesBase64Image;
 use App\Traits\LogsReportAudit;
 use Illuminate\Http\JsonResponse;
@@ -26,6 +28,7 @@ class FarmerController extends Controller
 {
     use DecodesBase64Image;
     use LogsReportAudit;
+    use ResolvesEncodingBarangay;
 
     public function __construct(
         private SmsService $sms,
@@ -497,6 +500,108 @@ class FarmerController extends Controller
                 'error' => app()->isLocal() ? $e->getMessage() : 'Please contact support.',
             ], 500);
         }
+    }
+
+    /**
+     * Provisional profile for a farmer who is not yet in the RSBSA registry.
+     * Creates a real farmers row (is_temporary) plus one unmatched-geotag plot
+     * so planting, damage, and pest ledgers can reference farmer_id as usual.
+     */
+    public function storeManualWalkIn(StoreManualFarmerRequest $request): JsonResponse
+    {
+        $validated = $request->validated();
+        $user = $request->user();
+
+        $barangayResult = $this->resolveEncodingBarangay($request);
+        if ($barangayResult instanceof JsonResponse) {
+            return $barangayResult;
+        }
+
+        $barangay = $barangayResult['barangay'];
+        if (! $barangay) {
+            $barangay = trim((string) ($validated['barangay_name'] ?? ''));
+        }
+        if ($barangay === '') {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Target barangay is required to enlist a walk-in farmer.',
+            ], 422);
+        }
+
+        $defaults = OfficialLocations::catalog()['defaults'];
+        $hectares = round((float) $validated['hectares'], 4);
+
+        DB::beginTransaction();
+
+        try {
+            $farmer = Farmer::create([
+                'surname' => $validated['surname'],
+                'first_name' => $validated['first_name'],
+                'middle_name' => $validated['middle_name'] ?? null,
+                'sex' => $validated['sex'],
+                'birthdate' => $validated['birthdate'],
+                'mobile_number' => $validated['mobile_number'],
+                'permanent_brgy' => $barangay,
+                'permanent_street' => $validated['declared_sitio'] ?? null,
+                'declared_sitio' => $validated['declared_sitio'] ?? null,
+                'permanent_city' => $defaults['city'],
+                'livelihood_type' => 'Farmer',
+                'registration_type' => 'manual_walkin',
+                'is_temporary' => true,
+                'verification_status' => 'pending',
+                'enlisted_by_user_id' => $user->id,
+                'enlistment_remarks' => $validated['enlistment_remarks'] ?? null,
+                'transaction_code' => 'WALKIN-'.Str::uuid(),
+                'qr_code_hash' => (string) Str::uuid(),
+                'total_farm_area_ha' => $hectares,
+                'rsbsa_no' => null,
+            ]);
+
+            $farmer->farmPlots()->create([
+                'location_brgy' => $barangay,
+                'location_city' => $defaults['city'],
+                'location_province' => $defaults['province'],
+                'total_parcel_area_ha' => $hectares,
+                'size_ha' => $hectares,
+                'ownership_type' => 'Others',
+                'proof_of_ownership_document' => 'Pending Manual Verification',
+                'commodity' => $validated['commodity'],
+                'farm_type' => 'Other',
+                'farm_type_other' => 'Pending manual verification',
+                'geotag_status' => 'unmapped',
+                'is_ancestral_domain' => false,
+                'is_agrarian_reform_beneficiary' => false,
+                'is_organic' => false,
+            ]);
+
+            DB::commit();
+        } catch (\Exception $e) {
+            DB::rollBack();
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Could not enlist this walk-in farmer.',
+                'error' => app()->isLocal() ? $e->getMessage() : 'Please contact support.',
+            ], 500);
+        }
+
+        $farmer->load('farmPlots');
+
+        $this->logReportAudit('farmer.manual_walkin_enlisted', $farmer, [
+            'after' => $farmer->only([
+                'surname', 'first_name', 'permanent_brgy', 'mobile_number',
+                'registration_type', 'is_temporary', 'total_farm_area_ha',
+            ]),
+            'commodity' => $validated['commodity'],
+            'hectares' => $hectares,
+            'remarks' => $validated['enlistment_remarks'] ?? null,
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Provisional farmer profile created. Pending RSBSA validation.',
+            'data' => $farmer,
+        ], 201, [], JSON_INVALID_UTF8_SUBSTITUTE);
     }
 
     /**

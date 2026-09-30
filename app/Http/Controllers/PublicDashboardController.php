@@ -21,7 +21,7 @@ class PublicDashboardController extends Controller
     {
         $filters = $request->validate([
             'barangay' => ['nullable', 'string', 'max:120'],
-            'commodity' => ['nullable', 'in:Rice,Corn'],
+            'commodity' => ['nullable', 'string', 'max:64'],
             'year' => ['nullable', 'integer', 'between:2000,' . (Carbon::now()->year + 1)],
         ]);
 

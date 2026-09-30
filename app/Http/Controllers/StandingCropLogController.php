@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Farmer;
 use App\Models\FarmPlot;
 use App\Models\StandingCropLog;
+use App\Support\HvccCatalog;
 use App\Traits\AssertsPlotAreaCap;
 use App\Traits\LogsReportAudit;
 use App\Traits\ResolvesEncodingBarangay;
@@ -31,7 +32,7 @@ class StandingCropLogController extends Controller
         $user = $request->user();
         $query = StandingCropLog::query()
             ->with([
-                'farmer:id,rsbsa_no,surname,first_name,middle_name,ext_name,birthdate,permanent_house_no,permanent_street,permanent_brgy,permanent_city,permanent_province',
+                'farmer:id,rsbsa_no,surname,first_name,middle_name,ext_name,birthdate,permanent_house_no,permanent_street,permanent_brgy,permanent_city,permanent_province,is_temporary,registration_type',
                 'farmPlot:id,location_brgy,commodity,size_ha',
             ])
             ->orderByDesc('est_harvest_date')
@@ -69,6 +70,7 @@ class StandingCropLogController extends Controller
             'farmer_id' => ['required', 'uuid', 'exists:farmers,id'],
             'farm_plot_id' => ['nullable', 'uuid', 'exists:farm_plots,id'],
             'crop_type' => ['required', 'string', 'max:64'],
+            ...HvccCatalog::optionalFieldRules(),
             'variety' => ['required', 'string', 'max:128'],
             'area_ha' => ['required', 'numeric', 'min:0'],
             'growth_stage' => ['nullable', 'string', 'max:64'],
@@ -125,8 +127,11 @@ class StandingCropLogController extends Controller
             'farm_plot_id' => $validated['farm_plot_id'] ?? null,
             'technician_id' => $user->id,
             'crop_type' => $validated['crop_type'],
+            'crop_category' => $validated['crop_category'] ?? null,
+            'hvcc_commodity' => $validated['hvcc_commodity'] ?? null,
             'variety' => $validated['variety'],
             'area_ha' => $validated['area_ha'],
+            'num_hills_trees' => $validated['num_hills_trees'] ?? null,
             'growth_stage' => $validated['growth_stage'] ?? 'Vegetative',
             'est_harvest_date' => $validated['est_harvest_date'],
             'farm_location' => $validated['farm_location'] ?? $farmer->permanent_brgy,

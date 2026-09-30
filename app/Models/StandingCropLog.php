@@ -21,8 +21,11 @@ class StandingCropLog extends Model
         'farm_plot_id',
         'technician_id',
         'crop_type',
+        'crop_category',
+        'hvcc_commodity',
         'variety',
         'area_ha',
+        'num_hills_trees',
         'growth_stage',
         'est_harvest_date',
         'farm_location',
@@ -31,6 +34,7 @@ class StandingCropLog extends Model
     protected $casts = [
         'est_harvest_date' => 'date',
         'area_ha' => 'decimal:4',
+        'num_hills_trees' => 'integer',
     ];
 
     public function farmer(): BelongsTo

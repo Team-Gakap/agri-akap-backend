@@ -110,7 +110,8 @@ class CropStageService
 
         $query = PlantingLog::query()
             ->whereRaw('LOWER(status) = ?', ['active'])
-            ->whereIn('crop_type', ['Rice', 'Corn']);
+            ->whereIn('crop_type', ['Rice', 'Corn'])
+            ->where('crop_type', '!=', 'HVCC');
 
         if ($barangay) {
             $query->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay));

@@ -21,8 +21,11 @@ class PlantingLog extends Model
         'farm_plot_id',
         'technician_id',
         'crop_type',
+        'crop_category',
+        'hvcc_commodity',
         'variety',
         'area_planted',
+        'num_hills_trees',
         'date_planted',
         'status',
         'water_source',
@@ -36,6 +39,7 @@ class PlantingLog extends Model
     protected $casts = [
         'date_planted' => 'date',
         'area_planted' => 'decimal:4',
+        'num_hills_trees' => 'integer',
         'latitude' => 'decimal:7',
         'longitude' => 'decimal:7',
     ];

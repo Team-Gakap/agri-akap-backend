@@ -17,19 +17,30 @@ class SubsidyBeneficiary extends Model
 
     protected $fillable = [
         'program_id',
+        'farmer_id',
         'farmer_rsbsa_no',
+        'is_walkin',
         'calculated_allocation',
         'calculated_allocation_secondary',
         'status',
+        'priority_tier',
+        'selection_mode',
         'claimed_at',
         'claimed_by',
         'photo_proof_path',
+        'override_by_admin_id',
+        'override_timestamp',
+        'override_justification',
+        'override_reason_code',
     ];
 
     protected $casts = [
         'calculated_allocation' => 'decimal:2',
         'calculated_allocation_secondary' => 'decimal:2',
+        'priority_tier' => 'integer',
+        'is_walkin' => 'boolean',
         'claimed_at' => 'datetime',
+        'override_timestamp' => 'datetime',
     ];
 
     public function program(): BelongsTo
@@ -39,7 +50,17 @@ class SubsidyBeneficiary extends Model
 
     public function farmer(): BelongsTo
     {
+        return $this->belongsTo(Farmer::class, 'farmer_id');
+    }
+
+    public function farmerByRsbsa(): BelongsTo
+    {
         return $this->belongsTo(Farmer::class, 'farmer_rsbsa_no', 'rsbsa_no');
+    }
+
+    public function overrideAdmin(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'override_by_admin_id');
     }
 
     public static function applyNotDeleted($query, string $column = 'tbl_subsidy_beneficiaries.deleted_at')

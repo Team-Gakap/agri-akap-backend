@@ -21,6 +21,8 @@ class PestMonitoring extends Model
         'farm_plot_id',
         'technician_id',
         'crop',
+        'crop_category',
+        'hvcc_commodity',
         'crop_stage',
         'variety',
         'area_planted',

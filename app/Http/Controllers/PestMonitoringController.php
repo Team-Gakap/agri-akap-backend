@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Farmer;
 use App\Models\FarmPlot;
 use App\Models\PestMonitoring;
+use App\Support\HvccCatalog;
 use App\Traits\AssertsPlotAreaCap;
 use App\Traits\DecodesBase64Image;
 use App\Traits\LogsReportAudit;
@@ -40,7 +41,7 @@ class PestMonitoringController extends Controller
 
         $query = PestMonitoring::query()
             ->with([
-                'farmer:id,rsbsa_no,surname,first_name,middle_name,ext_name,birthdate,permanent_house_no,permanent_street,permanent_brgy,permanent_city,permanent_province',
+                'farmer:id,rsbsa_no,surname,first_name,middle_name,ext_name,birthdate,permanent_house_no,permanent_street,permanent_brgy,permanent_city,permanent_province,is_temporary,registration_type',
                 'farmPlot:id,location_brgy,commodity,size_ha',
             ])
             ->orderByDesc('date_of_inspection')
@@ -88,7 +89,7 @@ class PestMonitoringController extends Controller
     {
         $row = PestMonitoring::query()
             ->with([
-                'farmer:id,rsbsa_no,surname,first_name,middle_name,ext_name,permanent_brgy,mobile_number',
+                'farmer:id,rsbsa_no,surname,first_name,middle_name,ext_name,permanent_brgy,mobile_number,is_temporary,registration_type',
                 'farmPlot:id,location_brgy,commodity,size_ha',
             ])
             ->findOrFail($id);
@@ -106,6 +107,7 @@ class PestMonitoringController extends Controller
             'farmer_id' => ['required', 'uuid', 'exists:farmers,id'],
             'farm_plot_id' => ['nullable', 'uuid', 'exists:farm_plots,id'],
             'crop' => ['required', 'string', 'max:64'],
+            ...HvccCatalog::optionalFieldRules(),
             'crop_stage' => ['nullable', 'string', 'max:64'],
             'variety' => ['nullable', 'string', 'max:128'],
             'area_planted' => ['required', 'numeric', 'min:0'],
@@ -138,16 +140,15 @@ class PestMonitoringController extends Controller
                     'message' => 'Selected farm plot does not belong to this farmer.',
                 ], 422);
             }
-            if (strcasecmp((string) $plot->commodity, (string) $validated['crop']) !== 0) {
+            if (! HvccCatalog::plotMatches((string) $plot->commodity, (string) $validated['crop'], $validated['hvcc_commodity'] ?? null)) {
                 return response()->json([
                     'status' => 'error',
                     'message' => "Selected plot is {$plot->commodity}, but this form is for {$validated['crop']} only.",
                 ], 422);
             }
         } else {
-            $hasCropPlot = FarmPlot::where('farmer_id', $farmer->id)
-                ->whereRaw('LOWER(commodity) = ?', [strtolower($validated['crop'])])
-                ->exists();
+            $hasCropPlot = FarmPlot::where('farmer_id', $farmer->id)->get()
+                ->contains(fn ($plot) => HvccCatalog::plotMatches((string) $plot->commodity, (string) $validated['crop'], $validated['hvcc_commodity'] ?? null));
             if (! $hasCropPlot) {
                 return response()->json([
                     'status' => 'error',
@@ -192,6 +193,8 @@ class PestMonitoringController extends Controller
             'farm_plot_id' => $validated['farm_plot_id'] ?? null,
             'technician_id' => $user->id,
             'crop' => $validated['crop'],
+            'crop_category' => $validated['crop_category'] ?? null,
+            'hvcc_commodity' => $validated['hvcc_commodity'] ?? null,
             'crop_stage' => $validated['crop_stage'] ?? null,
             'variety' => $validated['variety'] ?? null,
             'area_planted' => $validated['area_planted'],

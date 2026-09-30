@@ -18,6 +18,7 @@ class SystemAuditLogger
         'password',
         'current_password',
         'password_confirmation',
+        'override_password',
         'temporary_password',
         'access_token',
         'token',

@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Farmer;
 use App\Models\FarmPlot;
 use App\Models\PlantingLog;
+use App\Support\HvccCatalog;
 use App\Traits\AssertsPlotAreaCap;
 use App\Traits\LogsReportAudit;
 use App\Traits\ResolvesEncodingBarangay;
@@ -21,6 +22,8 @@ class PlantingLogController extends Controller
         $validated = $request->validate([
             'barangay' => ['nullable', 'string'],
             'crop_type' => ['nullable', 'string'],
+            'hvcc_commodity' => ['nullable', 'string', 'max:64'],
+            'registry_status' => ['nullable', 'string', 'in:all,rsbsa,walkin'],
             'date_from' => ['nullable', 'date'],
             'date_to' => ['nullable', 'date'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:500'],
@@ -28,7 +31,7 @@ class PlantingLogController extends Controller
 
         $query = PlantingLog::query()
             ->with([
-                'farmer:id,rsbsa_no,surname,first_name,middle_name,ext_name,birthdate,permanent_house_no,permanent_street,permanent_brgy,permanent_city,permanent_province',
+                'farmer:id,rsbsa_no,surname,first_name,middle_name,ext_name,birthdate,permanent_house_no,permanent_street,permanent_brgy,permanent_city,permanent_province,is_temporary,registration_type',
                 'farmPlot:id,location_brgy,commodity,size_ha',
             ])
             ->orderByDesc('date_planted');
@@ -37,6 +40,14 @@ class PlantingLogController extends Controller
 
         if (! empty($validated['crop_type'])) {
             $query->where('crop_type', $validated['crop_type']);
+        }
+        if (! empty($validated['hvcc_commodity'])) {
+            $query->where('hvcc_commodity', $validated['hvcc_commodity']);
+        }
+        if (($validated['registry_status'] ?? 'all') === 'rsbsa') {
+            $query->whereHas('farmer', fn ($q) => $q->where('is_temporary', false)->whereNotNull('rsbsa_no'));
+        } elseif (($validated['registry_status'] ?? 'all') === 'walkin') {
+            $query->whereHas('farmer', fn ($q) => $q->where('is_temporary', true));
         }
         if (! empty($validated['date_from'])) {
             $query->whereDate('date_planted', '>=', $validated['date_from']);
@@ -58,6 +69,7 @@ class PlantingLogController extends Controller
             'farmer_id' => ['required', 'uuid', 'exists:farmers,id'],
             'farm_plot_id' => ['nullable', 'uuid', 'exists:farm_plots,id'],
             'crop_type' => ['required', 'string', 'max:64'],
+            ...HvccCatalog::optionalFieldRules(),
             'variety' => ['required', 'string', 'max:128'],
             'area_planted' => ['required', 'numeric', 'min:0'],
             'date_planted' => ['required', 'date'],
@@ -85,16 +97,15 @@ class PlantingLogController extends Controller
                     'message' => 'Selected farm plot does not belong to this farmer.',
                 ], 422);
             }
-            if (strcasecmp((string) $plot->commodity, (string) $validated['crop_type']) !== 0) {
+            if (! HvccCatalog::plotMatches((string) $plot->commodity, (string) $validated['crop_type'], $validated['hvcc_commodity'] ?? null)) {
                 return response()->json([
                     'status' => 'error',
                     'message' => "Selected plot is {$plot->commodity}, but this form is for {$validated['crop_type']} only.",
                 ], 422);
             }
         } else {
-            $hasCropPlot = FarmPlot::where('farmer_id', $farmer->id)
-                ->whereRaw('LOWER(commodity) = ?', [strtolower($validated['crop_type'])])
-                ->exists();
+            $hasCropPlot = FarmPlot::where('farmer_id', $farmer->id)->get()
+                ->contains(fn ($plot) => HvccCatalog::plotMatches((string) $plot->commodity, (string) $validated['crop_type'], $validated['hvcc_commodity'] ?? null));
             if (! $hasCropPlot) {
                 return response()->json([
                     'status' => 'error',
@@ -131,8 +142,11 @@ class PlantingLogController extends Controller
             'farm_plot_id' => $validated['farm_plot_id'] ?? null,
             'technician_id' => $user->id,
             'crop_type' => $validated['crop_type'],
+            'crop_category' => $validated['crop_category'] ?? null,
+            'hvcc_commodity' => $validated['hvcc_commodity'] ?? null,
             'variety' => $validated['variety'],
             'area_planted' => $validated['area_planted'],
+            'num_hills_trees' => $validated['num_hills_trees'] ?? null,
             'date_planted' => $validated['date_planted'],
             'status' => $validated['status'] ?? 'Active',
             'water_source' => $validated['water_source'] ?? null,
@@ -163,6 +177,7 @@ class PlantingLogController extends Controller
         $validated = $request->validate([
             'farm_plot_id' => ['nullable', 'uuid', 'exists:farm_plots,id'],
             'crop_type' => ['sometimes', 'required', 'string', 'max:64'],
+            ...HvccCatalog::optionalFieldRules(),
             'variety' => ['sometimes', 'required', 'string', 'max:128'],
             'area_planted' => ['sometimes', 'required', 'numeric', 'min:0'],
             'date_planted' => ['sometimes', 'required', 'date'],

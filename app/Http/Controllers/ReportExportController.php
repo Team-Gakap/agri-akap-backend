@@ -110,7 +110,7 @@ class ReportExportController extends Controller
                 $x->permanent_brgy,
                 $x->permanent_city,
                 $x->permanent_province,
-                $x->civil_status,
+                $x->civil_status ?: 'Not Specified',
                 $x->is_pwd ? 'Yes' : 'No',
                 $x->is_4ps_beneficiary ? 'Yes' : 'No',
                 $x->livelihood_type,

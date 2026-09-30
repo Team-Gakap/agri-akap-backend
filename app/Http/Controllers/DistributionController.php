@@ -5,14 +5,18 @@ namespace App\Http\Controllers;
 use App\Models\Distribution;
 use App\Models\Farmer;
 use App\Models\Program;
+use App\Models\User;
 use App\Http\Requests\ClaimSubsidyRequest;
+use App\Support\AuditRemarks;
 use App\Traits\DecodesBase64Image;
 use App\Traits\LogsReportAudit;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 class DistributionController extends Controller
 {
@@ -188,6 +192,14 @@ class DistributionController extends Controller
 
                 // 4. Fetch Farmer and Calculate Eligible Hectares
                 $farmer = Farmer::with('farmPlots')->findOrFail($validated['farmer_id']);
+                $overrideMeta = null;
+                if ($farmer->is_temporary) {
+                    $override = $this->resolveWalkInOverride($validated, $technicianId);
+                    if (isset($override['error'])) {
+                        return $override['error'];
+                    }
+                    $overrideMeta = $override;
+                }
                 $totalHectares = $farmer->farmPlots->sum('size_ha');
 
                 if ($totalHectares <= 0) {
@@ -241,14 +253,16 @@ class DistributionController extends Controller
                     'claimed_at' => $this->parseClaimedAt($validated['claimed_at'] ?? null),
                 ]);
 
-                $this->logReportAudit('distribution.claimed', $distribution, [
+                $this->logReportAudit('distribution.claimed', $distribution, array_filter([
                     'after' => [
                         'program_id' => $program->id,
                         'farmer_id' => $farmer->id,
                         'quantity_claimed' => $quantityToDispense,
                     ],
-                    'record_code' => $farmer->rsbsa_no,
-                ]);
+                    'record_code' => $farmer->rsbsa_no ?: $farmer->transaction_code,
+                    'remarks' => is_array($overrideMeta) ? $overrideMeta['reason'] : null,
+                    'admin_override' => $overrideMeta,
+                ], fn ($value) => $value !== null));
 
                 return $this->claimResult(200, 'synced', [
                     'status' => 'success',
@@ -276,6 +290,31 @@ class DistributionController extends Controller
                     : 'A critical error occurred while processing the claim.',
             ]);
         }
+    }
+
+    /**
+     * Subsidy release to a provisional (manual walk-in) farmer requires the
+     * acting user's password and a written justification. Same rules apply to
+     * live claims and queued offline sync, because both call executeClaim().
+     *
+     * @return array{reason: string, overridden_by: string}|array{error: array}
+     */
+    private function resolveWalkInOverride(array $validated, string $technicianId): array
+    {
+        $resolved = \App\Support\WalkInOverride::resolve($validated, $technicianId);
+        if (isset($resolved['error'])) {
+            return ['error' => $this->claimResult($resolved['status'], 'failed', [
+                'status' => 'error',
+                'code' => 'ADMIN_OVERRIDE_REQUIRED',
+                'message' => $resolved['error'],
+            ])];
+        }
+
+        return [
+            'reason' => $resolved['reason'],
+            'reason_code' => $resolved['reason_code'],
+            'overridden_by' => $resolved['overridden_by'],
+        ];
     }
 
     private function claimResult(int $http, string $outcome, array $body): array

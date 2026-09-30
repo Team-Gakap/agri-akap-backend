@@ -14,7 +14,8 @@ class Farmer extends Model
     use HasFactory, HasUuid, SoftDeletes;
 
     protected $fillable = [
-        'rsbsa_no', 'transaction_code', 'photo_path', 'qr_code_hash',
+        'rsbsa_no', 'registration_type', 'is_temporary', 'enlisted_by_user_id', 'enlistment_remarks', 'declared_sitio',
+        'transaction_code', 'photo_path', 'qr_code_hash',
         'is_probable_duplicate',
         'verification_status', 'rts_reason', 'verified_at',
         'surname', 'first_name', 'middle_name', 'ext_name',
@@ -58,6 +59,7 @@ class Farmer extends Model
         'is_pwd' => 'boolean',
         'is_4ps_beneficiary' => 'boolean',
         'is_probable_duplicate' => 'boolean',
+        'is_temporary' => 'boolean',
         'birthdate' => 'date',
         'verified_at' => 'datetime',
         'total_farm_area_ha' => 'decimal:4',

@@ -26,6 +26,10 @@ class ClaimSubsidyRequest extends FormRequest
             'geo_tag_lat' => 'nullable|numeric|between:-90,90',
             'geo_tag_long' => 'nullable|numeric|between:-180,180',
             'photo_proof_base64' => 'nullable|string',
+            'override_password' => 'nullable|string',
+            'override_reason' => 'nullable|string|max:500',
+            'override_reason_code' => 'nullable|string|max:32',
+            'override_justification' => 'nullable|string|max:500',
         ];
     }
 }

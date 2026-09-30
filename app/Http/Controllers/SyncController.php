@@ -267,6 +267,9 @@ class SyncController extends Controller
             'geo_tag_lat' => $item['geo_tag_lat'] ?? null,
             'geo_tag_long' => $item['geo_tag_long'] ?? null,
             'photo_proof_base64' => $item['photo_proof_base64'] ?? null,
+            // Provisional farmers are rejected inside executeClaim unless these were captured before queueing.
+            'override_password' => $item['override_password'] ?? null,
+            'override_reason' => $item['override_reason'] ?? null,
         ];
 
         $result = $this->distributions->executeClaim($payload, $technicianId);

@@ -12,6 +12,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use App\Support\CalamityTypes;
+use App\Support\HvccCatalog;
 use App\Support\AuditRemarks;
 
 class DamageAssessmentController extends Controller
@@ -43,7 +44,7 @@ class DamageAssessmentController extends Controller
         $user = $request->user();
 
         $query = DamageAssessment::with([
-            'farmer:id,first_name,surname,middle_name,ext_name,rsbsa_no,permanent_brgy,mobile_number',
+            'farmer:id,first_name,surname,middle_name,ext_name,rsbsa_no,permanent_brgy,mobile_number,is_temporary,registration_type',
             'farmPlot:id,commodity,size_ha,location_brgy',
             'technician:id,name',
             'verifier:id,name',
@@ -141,6 +142,7 @@ class DamageAssessmentController extends Controller
             'calamity_type' => ['required', CalamityTypes::rule()],
             'calamity_name' => 'nullable|string|max:255',
             'crop_stage' => ['nullable', Rule::in(['Seedling', 'Vegetative', 'Reproductive', 'Maturity', 'Harvested'])],
+            ...HvccCatalog::optionalFieldRules(),
             'variety' => 'nullable|string|max:128',
             'area_destroyed_ha' => 'nullable|numeric|min:0',
             'area_planted_ha' => 'nullable|numeric|min:0',
@@ -219,6 +221,9 @@ class DamageAssessmentController extends Controller
             'calamity_type' => $validated['calamity_type'],
             'calamity_name' => $validated['calamity_name'] ?? $validated['calamity_type'],
             'crop_stage' => $validated['crop_stage'] ?? null,
+            'crop_category' => $validated['crop_category'] ?? null,
+            'hvcc_commodity' => $validated['hvcc_commodity'] ?? null,
+            'num_hills_trees' => $validated['num_hills_trees'] ?? null,
             'variety' => $validated['variety'] ?? null,
             'area_destroyed_ha' => $destroyedHa,
             'area_planted_ha' => $validated['area_planted_ha'] ?? null,

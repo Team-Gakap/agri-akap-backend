@@ -109,6 +109,8 @@ Route::middleware('auth:sanctum')->group(function () {
     // Farmer Registry
     Route::get('/farmers', [FarmerController::class, 'index']);
     Route::post('/farmers', [FarmerController::class, 'store']);
+    Route::post('/farmers/manual-enlist', [FarmerController::class, 'storeManualWalkIn'])
+        ->middleware('role:barangay_official,technician,admin');
     Route::post('/farmers/import', [FarmerController::class, 'import'])
         ->middleware('role:admin');
     Route::get('/farmers/lookup', [FarmerController::class, 'lookup']);
@@ -174,6 +176,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/subsidies/{id}/status', [SubsidyController::class, 'updateStatus'])
         ->middleware('role:admin');
     Route::post('/subsidies/{id}/generate-masterlist', [SubsidyController::class, 'generateMasterlist'])
+        ->middleware('role:admin');
+    Route::get('/subsidies/{id}/eligible-farmers', [SubsidyController::class, 'manualFilter'])
+        ->middleware('role:admin');
+    Route::post('/subsidies/{id}/manual-select', [SubsidyController::class, 'manualSelect'])
         ->middleware('role:admin');
     Route::get('/subsidies/{id}/masterlist', [SubsidyController::class, 'masterlist'])
         ->middleware('role:admin');

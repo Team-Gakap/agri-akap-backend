@@ -16,6 +16,7 @@ class SubsidyProgram extends Model
     protected $fillable = [
         'program_name',
         'target_crop',
+        'hvcc_commodity',
         'target_barangays',
         'seed_class',
         'item_type',

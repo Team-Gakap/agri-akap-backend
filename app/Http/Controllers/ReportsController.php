@@ -169,6 +169,8 @@ class ReportsController extends Controller
             'mode'      => ['nullable', 'string', 'in:planting,harvest'],
             'barangay'  => ['nullable', 'string'],
             'crop_type' => ['nullable', 'string'],
+            'hvcc_commodity' => ['nullable', 'string', 'max:64'],
+            'registry_status' => ['nullable', 'string', 'in:all,rsbsa,walkin'],
             'date_from' => ['nullable', 'date'],
             'date_to'   => ['nullable', 'date'],
         ]);
@@ -194,7 +196,7 @@ class ReportsController extends Controller
     {
         $query = PlantingLog::query()
             ->with([
-                'farmer:id,rsbsa_no,surname,first_name,middle_name,permanent_brgy',
+                'farmer:id,rsbsa_no,surname,first_name,middle_name,permanent_brgy,is_temporary,registration_type',
                 'farmPlot:id,location_brgy,commodity',
             ])
             ->orderBy('date_planted', 'desc');
@@ -205,6 +207,10 @@ class ReportsController extends Controller
         if (! empty($f['crop_type'])) {
             $query->where('crop_type', $f['crop_type']);
         }
+        if (! empty($f['hvcc_commodity'])) {
+            $query->where('hvcc_commodity', $f['hvcc_commodity']);
+        }
+        $this->applyRegistryStatus($query, $f['registry_status'] ?? null);
         if (! empty($f['date_from'])) {
             $query->whereDate('date_planted', '>=', $f['date_from']);
         }
@@ -229,6 +235,11 @@ class ReportsController extends Controller
                 'name'         => $names['display'],
                 'farm_location'=> $log->farm_location ?: ($log->farmPlot?->location_brgy ?? $farmer?->permanent_brgy ?? ''),
                 'crop'         => $log->crop_type ?? '',
+                'crop_category'=> $log->crop_category ?? '',
+                'hvcc_commodity' => $log->hvcc_commodity ?? '',
+                'num_hills_trees' => $log->num_hills_trees,
+                'is_temporary' => (bool) ($farmer?->is_temporary),
+                'registration_type' => $farmer?->registration_type ?? 'rsbsa',
                 'variety'      => $log->variety ?? '',
                 'area_planted' => (float) ($log->area_planted ?? 0),
                 'date_planted' => optional($log->date_planted)->format('Y-m-d'),
@@ -251,6 +262,12 @@ class ReportsController extends Controller
                     'farmers.surname',
                     'farmers.first_name',
                     'farmers.middle_name',
+                    'farmers.is_temporary',
+                    'farmers.registration_type',
+                    'harvest_logs.crop_category',
+                    'harvest_logs.hvcc_commodity',
+                    'harvest_logs.num_hills_trees',
+                    'harvest_logs.yield_unit',
                     DB::raw("TRIM(CONCAT(COALESCE(farmers.first_name,''), ' ', COALESCE(farmers.surname,''))) AS name"),
                     DB::raw("COALESCE(harvest_logs.farm_location, farm_plots.location_brgy, farmers.permanent_brgy, '') AS farm_location"),
                     DB::raw("COALESCE(harvest_logs.crop_type, farm_plots.commodity, '') AS crop"),
@@ -270,6 +287,14 @@ class ReportsController extends Controller
                     $q->where('harvest_logs.crop_type', $f['crop_type'])
                       ->orWhere('farm_plots.commodity', $f['crop_type']);
                 });
+            }
+            if (! empty($f['hvcc_commodity'])) {
+                $query->where('harvest_logs.hvcc_commodity', $f['hvcc_commodity']);
+            }
+            if (($f['registry_status'] ?? '') === 'rsbsa') {
+                $query->where('farmers.is_temporary', false)->whereNotNull('farmers.rsbsa_no');
+            } elseif (($f['registry_status'] ?? '') === 'walkin') {
+                $query->where('farmers.is_temporary', true);
             }
             if (! empty($f['date_from'])) {
                 $query->whereDate('harvest_logs.date_harvested', '>=', $f['date_from']);
@@ -294,6 +319,12 @@ class ReportsController extends Controller
                 'name'           => $names['display'],
                 'farm_location'  => $row->farm_location,
                 'crop'           => $row->crop,
+                'crop_category'  => $row->crop_category ?? '',
+                'hvcc_commodity' => $row->hvcc_commodity ?? '',
+                'num_hills_trees' => $row->num_hills_trees,
+                'yield_unit'     => $row->yield_unit ?? 'Metric Tons',
+                'is_temporary'   => (bool) ($row->is_temporary ?? false),
+                'registration_type' => $row->registration_type ?? 'rsbsa',
                 'variety'        => $row->variety,
                 'area_harvested' => (float) $row->area_harvested,
                 'total_yield'    => (float) $row->total_yield,
@@ -318,6 +349,8 @@ class ReportsController extends Controller
         $request->validate([
             'barangay'  => ['nullable', 'string'],
             'crop_type' => ['nullable', 'string'],
+            'hvcc_commodity' => ['nullable', 'string', 'max:64'],
+            'registry_status' => ['nullable', 'string', 'in:all,rsbsa,walkin'],
             'status'    => ['nullable', 'string'],
             'date_from' => ['nullable', 'date'],
             'date_to'   => ['nullable', 'date'],
@@ -325,7 +358,7 @@ class ReportsController extends Controller
 
         $query = PestMonitoring::query()
             ->with([
-                'farmer:id,rsbsa_no,surname,first_name,middle_name,permanent_brgy',
+                'farmer:id,rsbsa_no,surname,first_name,middle_name,permanent_brgy,is_temporary,registration_type',
                 'farmPlot:id,location_brgy,commodity',
             ])
             ->orderByRaw('COALESCE(date_of_inspection, DATE(pest_monitoring.created_at)) DESC');
@@ -333,6 +366,10 @@ class ReportsController extends Controller
         if ($request->filled('crop_type')) {
             $query->where('crop', $request->crop_type);
         }
+        if ($request->filled('hvcc_commodity')) {
+            $query->where('hvcc_commodity', $request->hvcc_commodity);
+        }
+        $this->applyRegistryStatus($query, $request->input('registry_status'));
         $barangay = $this->scopedBarangay($request);
         if ($barangay !== null) {
             $query->whereHas('farmer', fn ($q) => $q->where('permanent_brgy', $barangay));
@@ -413,7 +450,13 @@ class ReportsController extends Controller
                 'middle_name'   => $names['middle_name'],
                 'farmer_name'   => $names['display'],
                 'farm_location' => $row->farm_location ?: ($row->farmPlot?->location_brgy ?? $farmer?->permanent_brgy ?? ''),
+                'rsbsa_no'      => $farmer?->rsbsa_no ?? '',
                 'crop'           => $row->crop ?? '',
+                'crop_category'  => $row->crop_category ?? '',
+                'hvcc_commodity' => $row->hvcc_commodity ?? '',
+                'is_temporary'   => (bool) ($farmer?->is_temporary),
+                'registration_type' => $farmer?->registration_type ?? 'rsbsa',
+                'area_planted'   => $planted,
                 'variety'        => $row->variety ?? '',
                 'pest_disease'  => $row->pest_name ?? '',
                 'severity'      => $row->severity ?? 'Low',
@@ -441,6 +484,8 @@ class ReportsController extends Controller
         $request->validate([
             'barangay'      => ['nullable', 'string'],
             'crop_type'     => ['nullable', 'string'],
+            'hvcc_commodity' => ['nullable', 'string', 'max:64'],
+            'registry_status' => ['nullable', 'string', 'in:all,rsbsa,walkin'],
             'calamity_type' => ['nullable', 'string'],
             'status'        => ['nullable', 'string'],
             'date_from'     => ['nullable', 'date'],
@@ -449,7 +494,7 @@ class ReportsController extends Controller
 
         $query = DamageAssessment::query()
             ->with([
-                'farmer:id,rsbsa_no,surname,first_name,middle_name,permanent_brgy',
+                'farmer:id,rsbsa_no,surname,first_name,middle_name,permanent_brgy,is_temporary,registration_type',
                 'farmPlot:id,location_brgy,commodity,size_ha',
             ])
             ->orderBy('date_of_calamity', 'desc');
@@ -462,8 +507,19 @@ class ReportsController extends Controller
             });
         }
         if ($request->filled('crop_type')) {
-            $query->whereHas('farmPlot', fn ($fp) => $fp->where('commodity', $request->crop_type));
+            $cropType = (string) $request->crop_type;
+            $query->where(function ($q) use ($cropType) {
+                $q->whereHas('farmPlot', fn ($fp) => $fp->where('commodity', $cropType))
+                    ->orWhere('hvcc_commodity', $cropType);
+                if (strcasecmp($cropType, 'HVCC') === 0) {
+                    $q->orWhereNotNull('hvcc_commodity');
+                }
+            });
         }
+        if ($request->filled('hvcc_commodity')) {
+            $query->where('hvcc_commodity', $request->hvcc_commodity);
+        }
+        $this->applyRegistryStatus($query, $request->input('registry_status'));
         if ($request->filled('calamity_type')) {
             $query->where('calamity_type', $request->calamity_type);
         }
@@ -500,8 +556,15 @@ class ReportsController extends Controller
                 'first_name'     => $names['first_name'],
                 'middle_name'    => $names['middle_name'],
                 'farmer_name'    => $names['display'],
+                'rsbsa_no'       => $farmer?->rsbsa_no ?? '',
                 'farm_location'  => $row->farmPlot?->location_brgy ?? $brgy,
-                'crop'           => $row->farmPlot?->commodity ?? '',
+                'crop'           => $row->hvcc_commodity ? 'HVCC' : ($row->farmPlot?->commodity ?? ''),
+                'crop_category'  => $row->crop_category ?? '',
+                'hvcc_commodity' => $row->hvcc_commodity ?? '',
+                'num_hills_trees' => $row->num_hills_trees,
+                'area_planted'   => (float) ($row->area_planted_ha ?? $row->farmPlot?->size_ha ?? 0),
+                'is_temporary'   => (bool) ($farmer?->is_temporary),
+                'registration_type' => $farmer?->registration_type ?? 'rsbsa',
                 'calamity_type'  => $row->calamity_type ?? '',
                 'calamity_name'  => $row->calamity_name ?? '',
                 'area_affected'  => $areaAffected,
@@ -540,6 +603,15 @@ class ReportsController extends Controller
      * Barangay officials are always locked to assigned_barangay.
      * Admins use the optional request barangay filter.
      */
+    private function applyRegistryStatus($query, ?string $status): void
+    {
+        if ($status === 'rsbsa') {
+            $query->whereHas('farmer', fn ($q) => $q->where('is_temporary', false)->whereNotNull('rsbsa_no'));
+        } elseif ($status === 'walkin') {
+            $query->whereHas('farmer', fn ($q) => $q->where('is_temporary', true));
+        }
+    }
+
     private function scopedBarangay(Request $request): ?string
     {
         $user = $request->user();
