@@ -28,6 +28,7 @@ use App\Http\Controllers\SmsSettingsController;
 use App\Http\Controllers\StaffController;
 use App\Http\Controllers\StandingCropLogController;
 use App\Http\Controllers\SubsidyController;
+use App\Http\Controllers\SubsidyImportController;
 use App\Http\Controllers\OfflineFieldCacheController;
 use App\Http\Controllers\SyncController;
 use App\Http\Controllers\SystemAuditLogController;
@@ -165,6 +166,14 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:admin');
 
     // Subsidy Auto-Masterlist programs (tbl_subsidy_programs)
+    Route::get('/subsidies/import-batches', [SubsidyImportController::class, 'index'])
+        ->middleware('role:admin');
+    Route::get('/subsidies/import-batches/{batchId}', [SubsidyImportController::class, 'show'])
+        ->middleware('role:admin');
+    Route::post('/subsidies/import-batches', [SubsidyImportController::class, 'preview'])
+        ->middleware('role:admin');
+    Route::post('/subsidies/import-batches/{batchId}/commit', [SubsidyImportController::class, 'commit'])
+        ->middleware('role:admin');
     Route::get('/subsidies', [SubsidyController::class, 'index'])
         ->middleware('role:admin,technician,barangay_official');
     Route::post('/subsidies', [SubsidyController::class, 'store'])

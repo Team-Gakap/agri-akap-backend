@@ -17,11 +17,18 @@ class SubsidyBeneficiary extends Model
 
     protected $fillable = [
         'program_id',
+        'batch_id',
         'farmer_id',
         'farmer_rsbsa_no',
         'is_walkin',
         'calculated_allocation',
         'calculated_allocation_secondary',
+        'source_farm_area',
+        'source_commodity',
+        'source_farmer_barangay',
+        'source_farmer_municipality',
+        'source_farm_barangay',
+        'source_farm_municipality',
         'status',
         'priority_tier',
         'selection_mode',
@@ -37,6 +44,7 @@ class SubsidyBeneficiary extends Model
     protected $casts = [
         'calculated_allocation' => 'decimal:2',
         'calculated_allocation_secondary' => 'decimal:2',
+        'source_farm_area' => 'decimal:4',
         'priority_tier' => 'integer',
         'is_walkin' => 'boolean',
         'claimed_at' => 'datetime',

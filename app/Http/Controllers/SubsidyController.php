@@ -580,7 +580,7 @@ class SubsidyController extends Controller
                 'beneficiaries.priority_tier',
                 'beneficiaries.selection_mode',
             ])
-            ->selectRaw('ROUND('.$this->farmAreaSql().', 4) as farm_area')
+            ->selectRaw('ROUND(CASE WHEN COALESCE(plots.area, 0) > 0 THEN plots.area WHEN COALESCE(planted.area, 0) > 0 THEN planted.area ELSE beneficiaries.source_farm_area END, 4) as farm_area')
             ->get()
             ->map(function ($row) {
                 $row->is_pwd = (bool) $row->is_pwd;

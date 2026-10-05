@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Models\Traits\HasUuid;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class SubsidyProgram extends Model
@@ -14,7 +15,10 @@ class SubsidyProgram extends Model
     protected $table = 'tbl_subsidy_programs';
 
     protected $fillable = [
+        'batch_id',
         'program_name',
+        'sheet_name',
+        'source',
         'target_crop',
         'hvcc_commodity',
         'target_barangays',
@@ -52,5 +56,10 @@ class SubsidyProgram extends Model
     public function beneficiaries(): HasMany
     {
         return $this->hasMany(SubsidyBeneficiary::class, 'program_id');
+    }
+
+    public function importBatch(): BelongsTo
+    {
+        return $this->belongsTo(SubsidyImportBatch::class, 'batch_id');
     }
 }
