@@ -79,7 +79,7 @@ class HvccCatalog
     }
 
     /**
-     * Display label for grids and statutory exports: "HVCC (Banana)" or plain Rice/Corn.
+     * Display label for grids and statutory exports: "HVCC - Banana" or plain Rice/Corn.
      */
     public static function formatCropLabel(?string $cropType, ?string $commodity = null, ?string $category = null): string
     {
@@ -90,7 +90,7 @@ class HvccCatalog
 
         $detail = trim((string) ($commodity ?: $category));
 
-        return $detail !== '' ? 'HVCC ('.$detail.')' : 'HVCC';
+        return $detail !== '' ? 'HVCC - '.$detail : 'HVCC';
     }
 
     public static function normalize(?string $value): string
