@@ -29,6 +29,7 @@ use App\Http\Controllers\StaffController;
 use App\Http\Controllers\StandingCropLogController;
 use App\Http\Controllers\SubsidyController;
 use App\Http\Controllers\SubsidyImportController;
+use App\Http\Controllers\SeedVarietyController;
 use App\Http\Controllers\OfflineFieldCacheController;
 use App\Http\Controllers\SyncController;
 use App\Http\Controllers\SystemAuditLogController;
@@ -174,6 +175,23 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:admin');
     Route::post('/subsidies/import-batches/{batchId}/commit', [SubsidyImportController::class, 'commit'])
         ->middleware('role:admin');
+
+    // Municipal seed variety stock (program-free releases)
+    Route::get('/seed-varieties', [SeedVarietyController::class, 'index'])
+        ->middleware('role:admin,technician,barangay_official');
+    Route::post('/seed-varieties', [SeedVarietyController::class, 'store'])
+        ->middleware('role:admin');
+    Route::put('/seed-varieties/sync', [SeedVarietyController::class, 'sync'])
+        ->middleware('role:admin');
+    Route::patch('/seed-varieties/{id}', [SeedVarietyController::class, 'update'])
+        ->middleware('role:admin');
+    Route::post('/seed-varieties/{id}/restock', [SeedVarietyController::class, 'restock'])
+        ->middleware('role:admin');
+    Route::post('/seed-varieties/verify-farmer', [SeedVarietyController::class, 'verifyFarmer'])
+        ->middleware('role:admin,technician');
+    Route::post('/seed-varieties/claim', [SeedVarietyController::class, 'claim'])
+        ->middleware('role:admin,technician');
+
     Route::get('/subsidies', [SubsidyController::class, 'index'])
         ->middleware('role:admin,technician,barangay_official');
     Route::post('/subsidies', [SubsidyController::class, 'store'])

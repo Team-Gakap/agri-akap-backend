@@ -49,6 +49,7 @@ class Farmer extends Model
         'association_1', 'association_2', 'association_3', 'associations', 'livelihood_type',
         'livelihood_detail', 'other_livelihood_type', 'other_livelihood_detail',
         'total_farm_area_ha',
+        'subsidy_exclusion_reason',
     ];
 
     protected $casts = [

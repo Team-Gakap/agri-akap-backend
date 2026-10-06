@@ -212,6 +212,7 @@ class FarmerController extends Controller
                     'created' => $import->created,
                     'updated' => $import->updated,
                     'skipped' => $import->skipped,
+                    'excluded' => $import->excluded,
                 ],
             ], 200);
         } catch (\Throwable $e) {

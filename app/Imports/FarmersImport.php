@@ -2,24 +2,21 @@
 
 namespace App\Imports;
 
-use App\Models\Farmer;
-use Carbon\Carbon;
+use App\Support\RsbsaMasterlistColumns;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Maatwebsite\Excel\Concerns\ToCollection;
+use Maatwebsite\Excel\Concerns\WithChunkReading;
 use Maatwebsite\Excel\Concerns\WithHeadingRow;
 
 /**
- * Bulk upsert of the official RSBSA masterlist.
+ * Bulk upsert of the official RSBSA masterlist (~7k+ rows).
  *
- * Expected Excel headers (aliases accepted):
- *   rsbsa_no, last_name|surname, first_name, middle_name, ext_name,
- *   birthday|birthdate, barangay|permanent_brgy, mobile_number
- *
- * Matching key: rsbsa_no — existing rows are updated; new rows are created
- * with safe defaults for columns required by the farmers schema.
+ * Chunked reads + upsert by rsbsa_no so re-uploads correct farm barangay,
+ * contact, area, and exclusion without locking farmers for the whole file.
  */
-class FarmersImport implements ToCollection, WithHeadingRow
+class FarmersImport implements ToCollection, WithHeadingRow, WithChunkReading
 {
     public int $created = 0;
 
@@ -27,39 +24,62 @@ class FarmersImport implements ToCollection, WithHeadingRow
 
     public int $skipped = 0;
 
+    public int $excluded = 0;
+
+    public function chunkSize(): int
+    {
+        return 400;
+    }
+
     public function collection(Collection $rows): void
     {
-        foreach ($rows as $row) {
-            $data = $this->normalizeRow($row->toArray());
+        $payload = [];
+        $seenInChunk = [];
 
+        foreach ($rows as $row) {
+            $data = RsbsaMasterlistColumns::extractFarmerRow($row->toArray());
             if ($data === null) {
                 $this->skipped++;
                 continue;
             }
 
-            $existing = Farmer::withTrashed()->where('rsbsa_no', $data['rsbsa_no'])->first();
-
-            if ($existing) {
-                if ($existing->trashed()) {
-                    $existing->restore();
-                }
-
-                $existing->update([
-                    'surname' => $data['surname'],
-                    'first_name' => $data['first_name'],
-                    'middle_name' => $data['middle_name'],
-                    'ext_name' => $data['ext_name'],
-                    'no_middle_name' => empty($data['middle_name']),
-                    'no_ext_name' => empty($data['ext_name']),
-                    'birthdate' => $data['birthdate'],
-                    'permanent_brgy' => $data['permanent_brgy'],
-                    'mobile_number' => $data['mobile_number'],
-                ]);
-                $this->updated++;
+            $rsbsa = $data['rsbsa_no'];
+            if (isset($seenInChunk[$rsbsa])) {
+                $this->skipped++;
                 continue;
             }
+            $seenInChunk[$rsbsa] = true;
 
-            Farmer::create([
+            if (! empty($data['subsidy_exclusion_reason'])) {
+                $this->excluded++;
+            }
+
+            $payload[] = $data;
+        }
+
+        if ($payload === []) {
+            return;
+        }
+
+        $rsbsaList = array_column($payload, 'rsbsa_no');
+        $existingKeys = DB::table('farmers')
+            ->whereIn('rsbsa_no', $rsbsaList)
+            ->pluck('rsbsa_no')
+            ->flip();
+
+        $now = now()->toDateTimeString();
+        $upsertRows = [];
+
+        foreach ($payload as $data) {
+            $isUpdate = $existingKeys->has($data['rsbsa_no']);
+            if ($isUpdate) {
+                $this->updated++;
+            } else {
+                $this->created++;
+            }
+
+            $upsertRows[] = [
+                'id' => (string) Str::uuid(),
                 'rsbsa_no' => $data['rsbsa_no'],
                 'transaction_code' => 'IMP-'.Str::upper(Str::random(10)),
                 'qr_code_hash' => (string) Str::uuid(),
@@ -67,89 +87,63 @@ class FarmersImport implements ToCollection, WithHeadingRow
                 'first_name' => $data['first_name'],
                 'middle_name' => $data['middle_name'],
                 'ext_name' => $data['ext_name'],
-                'no_middle_name' => empty($data['middle_name']),
-                'no_ext_name' => empty($data['ext_name']),
-                'sex' => 'Male',
+                'no_middle_name' => empty($data['middle_name']) ? 1 : 0,
+                'no_ext_name' => empty($data['ext_name']) ? 1 : 0,
+                'sex' => $data['sex'],
+                'birthdate' => $data['birthdate'],
                 'permanent_house_no' => 'N/A',
                 'permanent_street' => 'N/A',
                 'permanent_brgy' => $data['permanent_brgy'],
-                'permanent_city' => 'Echague',
-                'permanent_province' => 'Isabela',
-                'permanent_region' => 'Region II',
-                'birthdate' => $data['birthdate'],
+                'permanent_city' => $data['permanent_city'],
+                'permanent_province' => $data['permanent_province'],
+                'permanent_region' => $data['permanent_region'],
                 'mobile_number' => $data['mobile_number'],
-                'is_mobile_owner' => true,
+                'is_mobile_owner' => 1,
                 'mothers_maiden_first_name' => 'N/A',
                 'mothers_maiden_surname' => 'N/A',
                 'civil_status' => 'Single',
                 'highest_education' => 'None',
                 'livelihood_type' => 'Farmer',
-            ]);
-            $this->created++;
+                'total_farm_area_ha' => $data['total_farm_area_ha'],
+                'is_pwd' => $data['is_pwd'] ? 1 : 0,
+                'is_4ps_beneficiary' => $data['is_4ps_beneficiary'] ? 1 : 0,
+                'is_icc_ip' => $data['is_icc_ip'] ? 1 : 0,
+                'subsidy_exclusion_reason' => $data['subsidy_exclusion_reason'],
+                'deleted_at' => null,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
         }
-    }
 
-    /**
-     * @param  array<string, mixed>  $row
-     * @return array<string, mixed>|null
-     */
-    private function normalizeRow(array $row): ?array
-    {
-        $get = function (array $keys) use ($row) {
-            foreach ($keys as $key) {
-                if (array_key_exists($key, $row) && $row[$key] !== null && trim((string) $row[$key]) !== '') {
-                    return trim((string) $row[$key]);
-                }
+        DB::transaction(function () use ($upsertRows) {
+            foreach (array_chunk($upsertRows, 200) as $chunk) {
+                DB::table('farmers')->upsert(
+                    $chunk,
+                    ['rsbsa_no'],
+                    [
+                        'surname',
+                        'first_name',
+                        'middle_name',
+                        'ext_name',
+                        'no_middle_name',
+                        'no_ext_name',
+                        'sex',
+                        'birthdate',
+                        'permanent_brgy',
+                        'permanent_city',
+                        'permanent_province',
+                        'permanent_region',
+                        'mobile_number',
+                        'total_farm_area_ha',
+                        'is_pwd',
+                        'is_4ps_beneficiary',
+                        'is_icc_ip',
+                        'subsidy_exclusion_reason',
+                        'deleted_at',
+                        'updated_at',
+                    ]
+                );
             }
-
-            return null;
-        };
-
-        $rsbsa = $get(['rsbsa_no', 'rsbsa', 'rsbsa_number']);
-        $surname = $get(['last_name', 'surname', 'lastname']);
-        $firstName = $get(['first_name', 'firstname', 'given_name']);
-        $barangay = $get(['barangay', 'permanent_brgy', 'brgy']);
-
-        if (! $rsbsa || ! $surname || ! $firstName || ! $barangay) {
-            return null;
-        }
-
-        $birthRaw = $get(['birthday', 'birthdate', 'date_of_birth', 'dob']);
-        $birthdate = $this->parseDate($birthRaw);
-        if ($birthdate === null) {
-            return null;
-        }
-
-        $mobile = $get(['mobile_number', 'contact_number', 'phone', 'mobile']) ?? '09000000000';
-
-        return [
-            'rsbsa_no' => $rsbsa,
-            'surname' => $surname,
-            'first_name' => $firstName,
-            'middle_name' => $get(['middle_name', 'middlename']),
-            'ext_name' => $get(['ext_name', 'extension_name', 'suffix']),
-            'birthdate' => $birthdate,
-            'permanent_brgy' => $barangay,
-            'mobile_number' => $mobile,
-        ];
-    }
-
-    private function parseDate(?string $value): ?string
-    {
-        if ($value === null || $value === '') {
-            return null;
-        }
-
-        try {
-            // Excel serial date numbers
-            if (is_numeric($value)) {
-                return Carbon::instance(\PhpOffice\PhpSpreadsheet\Shared\Date::excelToDateTimeObject((float) $value))
-                    ->format('Y-m-d');
-            }
-
-            return Carbon::parse($value)->format('Y-m-d');
-        } catch (\Throwable) {
-            return null;
-        }
+        });
     }
 }
