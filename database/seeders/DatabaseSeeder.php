@@ -13,7 +13,6 @@ class DatabaseSeeder extends Seeder
             BarangayCoordinateSeeder::class,
             UserSeeder::class,
             BarangayUserSeeder::class,
-            FarmPlotSeeder::class,
         ]);
     }
 }
