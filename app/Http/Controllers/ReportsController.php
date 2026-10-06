@@ -29,6 +29,7 @@ class ReportsController extends Controller
         $request->validate([
             'variety_id' => ['nullable', 'string'],
             'barangay'   => ['nullable', 'string'],
+            'drop_off_point' => ['nullable', 'string'],
             'seed_class' => ['nullable', 'string'],
             'date_from'  => ['nullable', 'date'],
             'date_to'    => ['nullable', 'date'],
@@ -52,6 +53,8 @@ class ReportsController extends Controller
                 'tbl_subsidy_beneficiaries.claimed_at',
                 'tbl_subsidy_beneficiaries.photo_proof_path',
                 'tbl_subsidy_beneficiaries.source_farm_barangay',
+                'tbl_subsidy_beneficiaries.drop_off_point',
+                'tbl_subsidy_beneficiaries.fca_name',
                 'tbl_subsidy_programs.program_name',
                 'tbl_subsidy_programs.target_crop',
                 'tbl_subsidy_programs.seed_class',
@@ -87,6 +90,9 @@ class ReportsController extends Controller
                     ->orWhere('farmers.permanent_brgy', $barangay);
             });
         }
+        if ($request->filled('drop_off_point')) {
+            $query->where('tbl_subsidy_beneficiaries.drop_off_point', $request->drop_off_point);
+        }
         if ($request->filled('date_from')) {
             $query->whereDate('tbl_subsidy_beneficiaries.claimed_at', '>=', $request->date_from);
         }
@@ -110,6 +116,8 @@ class ReportsController extends Controller
                 'middle_name'   => $names['middle_name'],
                 'farmer_name'   => $names['display'],
                 'barangay'      => $farmBrgy,
+                'drop_off_point'=> $row->drop_off_point ?: $farmBrgy,
+                'fca_name'      => $row->fca_name,
                 'program_name'  => $row->program_name ?? '',
                 'target_crop'   => $row->target_crop ?? '',
                 'seed_class'    => $seedClass,

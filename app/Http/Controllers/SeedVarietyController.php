@@ -7,6 +7,7 @@ use App\Models\SubsidyBeneficiary;
 use App\Models\SubsidyProgram;
 use App\Models\SubsidyProgramVariety;
 use App\Support\AuditRemarks;
+use App\Support\SubsidyAllocation;
 use App\Traits\LogsReportAudit;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -44,11 +45,14 @@ class SeedVarietyController extends Controller
                     'bags_per_hectare' => (float) ($v->bags_per_hectare ?? $program?->items_per_hectare ?? 1),
                     'total_quantity' => (float) $v->total_quantity,
                     'remaining_quantity' => (float) $v->remaining_quantity,
+                    'target_fca' => $v->target_fca,
+                    'target_barangays' => $v->target_barangays ?? [],
                     'program_id' => $v->program_id,
                     'program_name' => $program?->program_name,
                     'seed_class' => $program?->seed_class,
                     'subsidy_line' => $this->subsidyLineLabel($program?->seed_class),
-                    'target_barangays' => is_array($v->target_barangays) ? array_values($v->target_barangays) : [],
+                    'delivery_start_date' => optional($program?->delivery_start_date)->toDateString(),
+                    'delivery_end_date' => optional($program?->delivery_end_date)->toDateString(),
                     'is_active' => $program?->status === 'Active',
                 ];
             })
@@ -74,8 +78,9 @@ class SeedVarietyController extends Controller
             'varieties.*.quantity' => 'required|numeric|min:0|max:1000000',
             'varieties.*.bags_per_hectare' => 'nullable|numeric|min:0.01|max:100000',
             'varieties.*.unit' => 'nullable|string|max:64',
+            'varieties.*.target_fca' => 'nullable|string|max:150',
             'varieties.*.target_barangays' => 'nullable|array',
-            'varieties.*.target_barangays.*' => 'string|max:128',
+            'varieties.*.target_barangays.*' => 'string|max:100',
         ]);
         $remarks = AuditRemarks::require($request, 'A justification is required before syncing seed varieties.');
 
@@ -99,12 +104,13 @@ class SeedVarietyController extends Controller
                     [
                         'unit' => $row['unit'] ?? null,
                         'bags_per_hectare' => $row['bags_per_hectare'] ?? $program->items_per_hectare,
+                        'target_fca' => $row['target_fca'] ?? null,
+                        'target_barangays' => $row['target_barangays'] ?? null,
                         'total_quantity' => $qty,
                         'remaining_quantity' => $hasClaims
                             ? DB::raw('remaining_quantity')
                             : $qty,
                         'sort_order' => $index,
-                        'target_barangays' => $this->normalizeTargetBarangays($row['target_barangays'] ?? null),
                     ]
                 );
             }
@@ -242,10 +248,10 @@ class SeedVarietyController extends Controller
             ->all();
 
         $area = (float) ($farmer->total_farm_area_ha ?? 0);
-        $farmBrgy = trim((string) ($farmer->farm_brgy ?: $farmer->permanent_brgy));
+        $farmBrgy = $farmer->farm_brgy ?: $farmer->permanent_brgy;
 
         $varieties = SubsidyProgramVariety::query()
-            ->with('program:id,program_name,seed_class,status,unit_of_measurement,items_per_hectare,max_hectares_limit')
+            ->with('program:id,program_name,seed_class,status,unit_of_measurement,items_per_hectare,max_hectares_limit,delivery_start_date,delivery_end_date')
             ->where('remaining_quantity', '>', 0)
             ->whereHas('program', fn ($q) => $q->where('status', 'Active'))
             ->orderBy('sort_order')
@@ -255,10 +261,9 @@ class SeedVarietyController extends Controller
                 $program = $v->program;
                 $rate = (float) ($v->bags_per_hectare ?? $program?->items_per_hectare ?? 1);
                 $cap = (float) ($program?->max_hectares_limit ?? 0);
-                $eligible = $cap > 0 ? min($area, $cap) : $area;
-                $qty = (float) floor(($eligible * $rate) + 0.0000001);
+                $qty = SubsidyAllocation::bagsForArea($area, $rate, $cap > 0 ? $cap : null);
                 $already = in_array($v->program_id, $claimedProgramIds, true);
-                $targets = is_array($v->target_barangays) ? array_values($v->target_barangays) : [];
+                $recommended = $v->isRecommendedFor($farmBrgy);
 
                 return [
                     'id' => $v->id,
@@ -271,8 +276,9 @@ class SeedVarietyController extends Controller
                     'program_name' => $program?->program_name,
                     'seed_class' => $program?->seed_class,
                     'subsidy_line' => $this->subsidyLineLabel($program?->seed_class),
-                    'target_barangays' => $targets,
-                    'recommended' => $this->isRecommendedForBarangay($targets, $farmBrgy),
+                    'target_fca' => $v->target_fca,
+                    'target_barangays' => $v->target_barangays ?? [],
+                    'recommended' => $recommended,
                     'already_claimed' => $already,
                 ];
             })
@@ -287,12 +293,13 @@ class SeedVarietyController extends Controller
                 'farmer_id' => $farmer->id,
                 'farmer_name' => trim($farmer->surname.', '.$farmer->first_name.' '.($farmer->middle_name ?? '')),
                 'rsbsa_no' => $farmer->rsbsa_no,
-                'barangay' => $farmer->farm_brgy ?: $farmer->permanent_brgy,
+                'barangay' => $farmBrgy,
                 'farm_brgy' => $farmer->farm_brgy,
                 'permanent_brgy' => $farmer->permanent_brgy,
                 'mobile_number' => $farmer->mobile_number,
                 'total_farm_size' => $area,
                 'eligible_size' => $area,
+                'allocated_bags' => SubsidyAllocation::bagsForArea($area, 1.0, null),
                 'varieties' => $varieties,
                 'source' => 'seed_variety',
             ],
@@ -305,6 +312,9 @@ class SeedVarietyController extends Controller
             'farmer_id' => 'nullable|uuid|exists:farmers,id',
             'rsbsa_no' => 'nullable|string|max:64',
             'variety_id' => 'required|uuid|exists:tbl_subsidy_program_varieties,id',
+            'drop_off_point' => 'nullable|string|max:150',
+            'fca_name' => 'nullable|string|max:150',
+            'offline_sync_hash' => 'nullable|string|max:64',
             'geo_tag_lat' => 'nullable|numeric',
             'geo_tag_long' => 'nullable|numeric',
             'override_reason' => 'nullable|string|max:255',
@@ -390,21 +400,33 @@ class SeedVarietyController extends Controller
                     ];
                 }
 
+                if (! empty($item['offline_sync_hash'])) {
+                    $prior = SubsidyBeneficiary::query()
+                        ->where('offline_sync_hash', $item['offline_sync_hash'])
+                        ->first();
+                    if ($prior) {
+                        return [
+                            'outcome' => 'already_claimed',
+                            'message' => 'This offline release was already synced.',
+                            'data' => [
+                                'beneficiary_id' => $prior->id,
+                                'variety_name' => optional($prior->variety)->variety_name,
+                                'quantity' => (float) $prior->calculated_allocation,
+                                'claimed_at' => $prior->claimed_at,
+                            ],
+                        ];
+                    }
+                }
+
                 $area = (float) ($farmer->total_farm_area_ha ?? 0);
                 if ($area <= 0) {
                     return ['outcome' => 'failed', 'code' => 422, 'message' => 'This farmer has no farm area on record.'];
                 }
 
                 $rate = (float) ($variety->bags_per_hectare ?? $program->items_per_hectare ?? 1);
-                if ($rate <= 0) {
-                    $rate = 1;
-                }
                 $cap = (float) ($program->max_hectares_limit ?? 0);
-                $eligible = $cap > 0 ? min($area, $cap) : $area;
-                $qty = (float) floor(($eligible * $rate) + 0.0000001);
-                if ($qty <= 0) {
-                    $qty = 1.0;
-                }
+                // Smallholder minimum 1 bag; larger farms round(ha × rate); single variety only.
+                $qty = (float) SubsidyAllocation::bagsForArea($area, $rate, $cap > 0 ? $cap : null);
 
                 if ((float) $variety->remaining_quantity < $qty) {
                     return [
@@ -429,6 +451,8 @@ class SeedVarietyController extends Controller
                 $program->save();
 
                 $farmBrgy = $farmer->farm_brgy ?: $farmer->permanent_brgy;
+                $dropOff = trim((string) ($item['drop_off_point'] ?? '')) ?: $farmBrgy;
+                $fcaName = trim((string) ($item['fca_name'] ?? '')) ?: null;
 
                 $beneficiary = SubsidyBeneficiary::create([
                     'program_id' => $program->id,
@@ -441,6 +465,9 @@ class SeedVarietyController extends Controller
                     'source_farm_municipality' => $farmer->farm_city ?: 'Echague',
                     'source_farmer_barangay' => $farmer->permanent_brgy,
                     'source_farmer_municipality' => $farmer->permanent_city,
+                    'drop_off_point' => $dropOff,
+                    'fca_name' => $fcaName,
+                    'offline_sync_hash' => $item['offline_sync_hash'] ?? null,
                     'status' => 'Claimed',
                     'selection_mode' => 'field_release',
                     'claimed_at' => now(),
@@ -458,6 +485,8 @@ class SeedVarietyController extends Controller
                         'farmer_id' => $farmer->id,
                         'farmer_name' => trim($farmer->surname.', '.$farmer->first_name),
                         'barangay' => $farmBrgy,
+                        'drop_off_point' => $dropOff,
+                        'fca_name' => $fcaName,
                         'program_id' => $program->id,
                         'program_name' => $program->program_name,
                         'seed_class' => $program->seed_class,
@@ -473,7 +502,7 @@ class SeedVarietyController extends Controller
             });
         } catch (\Throwable $e) {
             // Unique constraint race: farmer already claimed this program.
-            if (Str::contains($e->getMessage(), 'subsidy_program_farmer_unique')) {
+            if (Str::contains($e->getMessage(), ['subsidy_program_farmer_unique', 'offline_sync_hash'])) {
                 return [
                     'outcome' => 'already_claimed',
                     'message' => 'This farmer already claimed seed for this subsidy cycle.',
@@ -482,24 +511,6 @@ class SeedVarietyController extends Controller
 
             return ['outcome' => 'failed', 'code' => 500, 'message' => $e->getMessage() ?: 'Could not save the seed release.'];
         }
-    }
-
-    /**
-     * @param  array<int, string>  $targets
-     */
-    private function isRecommendedForBarangay(array $targets, string $farmBrgy): bool
-    {
-        if ($farmBrgy === '' || $targets === []) {
-            return false;
-        }
-
-        foreach ($targets as $name) {
-            if (strcasecmp(trim((string) $name), $farmBrgy) === 0) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private function subsidyLineLabel(?string $seedClass): string
@@ -512,23 +523,6 @@ class SeedVarietyController extends Controller
         }
 
         return $seedClass ?: 'Seed';
-    }
-
-    /**
-     * @param  mixed  $raw
-     * @return array<int, string>|null
-     */
-    private function normalizeTargetBarangays(mixed $raw): ?array
-    {
-        if (! is_array($raw)) {
-            return null;
-        }
-        $names = array_values(array_unique(array_filter(array_map(
-            fn ($b) => trim((string) $b),
-            $raw
-        ), fn ($b) => $b !== '')));
-
-        return $names ?: null;
     }
 
     private function resolveFarmer(?string $farmerId, ?string $rsbsaNo): ?Farmer

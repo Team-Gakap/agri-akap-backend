@@ -38,6 +38,8 @@ class SubsidyProgram extends Model
         'secondary_total_quantity',
         'secondary_remaining_quantity',
         'secondary_reorder_level',
+        'delivery_start_date',
+        'delivery_end_date',
     ];
 
     protected $casts = [
@@ -52,6 +54,8 @@ class SubsidyProgram extends Model
         'secondary_remaining_quantity' => 'decimal:2',
         'secondary_reorder_level' => 'decimal:2',
         'target_barangays' => 'array',
+        'delivery_start_date' => 'date',
+        'delivery_end_date' => 'date',
     ];
 
     public function beneficiaries(): HasMany

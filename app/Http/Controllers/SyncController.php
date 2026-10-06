@@ -319,6 +319,9 @@ class SyncController extends Controller
             'variety_id' => 'required|uuid|exists:tbl_subsidy_program_varieties,id',
             'farmer_id' => 'nullable|uuid|exists:farmers,id',
             'rsbsa_no' => 'nullable|string|max:64',
+            'drop_off_point' => 'nullable|string|max:150',
+            'fca_name' => 'nullable|string|max:150',
+            'offline_sync_hash' => 'nullable|string|max:64',
         ]);
 
         if ($validator->fails()) {

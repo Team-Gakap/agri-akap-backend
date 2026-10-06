@@ -234,14 +234,17 @@ class OfflineFieldCacheController extends Controller
                         : (float) $p->items_per_hectare,
                     'total_quantity' => (float) $v->total_quantity,
                     'remaining_quantity' => (float) $v->remaining_quantity,
+                    'target_fca' => $v->target_fca,
+                    'target_barangays' => $v->target_barangays ?? [],
                     'program_id' => $p->id,
                     'program_name' => $p->program_name,
                     'seed_class' => $p->seed_class,
                     'subsidy_line' => $p->seed_class === 'Inbred' ? 'RCEF' : ($p->seed_class === 'Hybrid' ? 'Hybrid' : $p->seed_class),
-                    'target_barangays' => is_array($v->target_barangays) ? array_values($v->target_barangays) : [],
                 ])
                 ->values()
                 ->all(),
+            'delivery_start_date' => optional($p->delivery_start_date)->toDateString(),
+            'delivery_end_date' => optional($p->delivery_end_date)->toDateString(),
         ];
     }
 }
