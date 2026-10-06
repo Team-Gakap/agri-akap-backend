@@ -285,6 +285,7 @@ class SyncController extends Controller
             'farmer_id' => 'nullable|uuid|exists:farmers,id',
             'rsbsa_no' => 'nullable|string|max:64',
             'beneficiary_id' => 'nullable|uuid',
+            'variety_id' => 'nullable|uuid|exists:tbl_subsidy_program_varieties,id',
         ]);
 
         if ($validator->fails()) {
