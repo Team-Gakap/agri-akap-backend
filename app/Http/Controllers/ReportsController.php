@@ -8,6 +8,7 @@ use App\Models\PestMonitoring;
 use App\Models\PlantingLog;
 use App\Models\SubsidyBeneficiary;
 use App\Models\SubsidyProgram;
+use App\Models\SubsidyProgramVariety;
 use App\Support\SubsidyCatalog;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -26,6 +27,7 @@ class ReportsController extends Controller
     {
         $request->validate([
             'program_id' => ['nullable', 'string'],
+            'variety_id' => ['nullable', 'string'],
             'barangay'   => ['nullable', 'string'],
             'crop_type'  => ['nullable', 'string'],
             'seed_class' => ['nullable', 'string'],
@@ -38,6 +40,7 @@ class ReportsController extends Controller
             ->where('tbl_subsidy_beneficiaries.status', 'Claimed')
             ->join('tbl_subsidy_programs', 'tbl_subsidy_programs.id', '=', 'tbl_subsidy_beneficiaries.program_id')
             ->leftJoin('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
+            ->leftJoin('tbl_subsidy_program_varieties', 'tbl_subsidy_program_varieties.id', '=', 'tbl_subsidy_beneficiaries.variety_id')
             ->select([
                 'tbl_subsidy_beneficiaries.id',
                 'tbl_subsidy_beneficiaries.farmer_rsbsa_no',
@@ -51,6 +54,8 @@ class ReportsController extends Controller
                 'tbl_subsidy_programs.item_type',
                 'tbl_subsidy_programs.unit_of_measurement',
                 'tbl_subsidy_programs.secondary_unit',
+                'tbl_subsidy_program_varieties.variety_name',
+                'tbl_subsidy_program_varieties.unit as variety_unit',
                 'farmers.surname',
                 'farmers.first_name',
                 'farmers.middle_name',
@@ -61,6 +66,9 @@ class ReportsController extends Controller
 
         if ($request->filled('program_id')) {
             $query->where('tbl_subsidy_beneficiaries.program_id', $request->program_id);
+        }
+        if ($request->filled('variety_id')) {
+            $query->where('tbl_subsidy_beneficiaries.variety_id', $request->variety_id);
         }
         if ($request->filled('crop_type')) {
             $crop = (string) $request->crop_type;
@@ -108,6 +116,8 @@ class ReportsController extends Controller
                     ? (float) $row->calculated_allocation_secondary
                     : null,
                 'unit_secondary' => $row->secondary_unit,
+                'variety_name'  => $row->variety_name,
+                'variety_unit'  => $row->variety_unit,
                 'date_claimed'  => $row->claimed_at,
                 'photo_path'    => $row->photo_proof_path,
                 'photo_url'     => public_storage_url($row->photo_proof_path),

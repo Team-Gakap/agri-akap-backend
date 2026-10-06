@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Farmer;
 use App\Models\SubsidyBeneficiary;
 use App\Models\SubsidyProgram;
+use App\Models\SubsidyProgramVariety;
 use App\Support\OfficialBarangays;
 use App\Support\SubsidyCatalog;
 use App\Support\AuditRemarks;
@@ -31,6 +32,7 @@ class SubsidyController extends Controller
     public function index(Request $request): JsonResponse
     {
         $query = SubsidyProgram::query()
+            ->with('varieties')
             ->withCount([
                 'beneficiaries',
                 'beneficiaries as claimed_count' => fn ($q) => $q->where('status', 'Claimed'),
@@ -80,6 +82,12 @@ class SubsidyController extends Controller
             'secondary_reorder_level' => 'nullable|numeric|min:0|max:1000000',
             'target_barangays' => 'nullable|array',
             'target_barangays.*' => Rule::in(OfficialBarangays::names()),
+            // Optional per-variety breakdown (e.g. LP 937: 550, JACKPOT: 1090 …).
+            // total_quantity is auto-computed as the sum when varieties are provided.
+            'varieties'                  => 'nullable|array',
+            'varieties.*.variety_name'   => 'required_with:varieties|string|max:120',
+            'varieties.*.quantity'       => 'required_with:varieties|numeric|min:0|max:1000000',
+            'varieties.*.unit'           => 'nullable|string|max:64',
         ]);
 
         $targetBarangays = $validated['target_barangays'] ?? null;
@@ -111,7 +119,14 @@ class SubsidyController extends Controller
             ], 422);
         }
 
-        $totalQuantity = $validated['total_quantity'] ?? 0;
+        // When a variety breakdown is provided, the sum of variety quantities becomes
+        // the opening stock; the manual total_quantity field is ignored / overridden.
+        $rawVarieties = $validated['varieties'] ?? [];
+        $varietyDerivedTotal = count($rawVarieties) > 0
+            ? (float) array_sum(array_column($rawVarieties, 'quantity'))
+            : null;
+
+        $totalQuantity = $varietyDerivedTotal ?? ($validated['total_quantity'] ?? 0);
         $secondaryTotalQuantity = $isDualUnit ? ($validated['secondary_total_quantity'] ?? 0) : null;
 
         $program = SubsidyProgram::create([
@@ -138,6 +153,11 @@ class SubsidyController extends Controller
             'secondary_reorder_level' => $isDualUnit ? ($validated['secondary_reorder_level'] ?? null) : null,
         ]);
 
+        // Persist variety rows if provided.
+        if (count($rawVarieties) > 0) {
+            $this->syncProgramVarieties($program, $rawVarieties);
+        }
+
         $this->logReportAudit('subsidy_program.created', $program, [
             'after' => $program->only(['program_name', 'target_crop', 'item_type', 'items_per_hectare', 'status', 'total_quantity']),
         ]);
@@ -145,7 +165,7 @@ class SubsidyController extends Controller
         return response()->json([
             'status' => 'success',
             'message' => 'Subsidy program created.',
-            'data' => $program,
+            'data' => $this->serializeProgram($program->load('varieties')),
         ], 201);
     }
 
@@ -616,6 +636,9 @@ class SubsidyController extends Controller
             'override_reason' => 'nullable|string|max:500',
             'override_reason_code' => 'nullable|string|max:32',
             'override_justification' => 'nullable|string|max:500',
+            // The specific seed variety given to this farmer (e.g. JACKPOT, LP 937).
+            // Required when the program has a variety breakdown, ignored otherwise.
+            'variety_id' => 'nullable|uuid',
         ]);
 
         $result = DB::transaction(function () use ($id, $beneficiaryId, $validated) {
@@ -643,6 +666,11 @@ class SubsidyController extends Controller
                 return ['error' => 'This farmer is still waitlisted pending stock and cannot claim yet.', 'code' => 409];
             }
 
+            if ($beneficiary->status === 'Excluded') {
+                $reason = $beneficiary->exclusion_reason ?? 'ineligible';
+                return ['error' => "This farmer is excluded from this program: {$reason}.", 'code' => 409];
+            }
+
             $farmer = $beneficiary->farmer_id
                 ? Farmer::query()->find($beneficiary->farmer_id)
                 : Farmer::query()->where('rsbsa_no', $beneficiary->farmer_rsbsa_no)->first();
@@ -668,6 +696,27 @@ class SubsidyController extends Controller
                 return ['error' => $shortfall, 'code' => 409];
             }
 
+            // Variety stock: validate and deduct the chosen variety's stock first.
+            $variety = null;
+            $hasVarieties = SubsidyProgramVariety::where('program_id', $id)->exists();
+            if ($hasVarieties) {
+                if (empty($validated['variety_id'])) {
+                    return ['error' => 'Please select a seed variety to release.', 'code' => 422];
+                }
+                $variety = SubsidyProgramVariety::where('id', $validated['variety_id'])
+                    ->where('program_id', $id)
+                    ->lockForUpdate()
+                    ->first();
+                if (! $variety) {
+                    return ['error' => 'The selected variety does not belong to this program.', 'code' => 422];
+                }
+                if ((float) $variety->remaining_quantity < $allocation) {
+                    return ['error' => "Not enough stock for {$variety->variety_name} (only {$variety->remaining_quantity} left).", 'code' => 409];
+                }
+                $variety->remaining_quantity = (float) $variety->remaining_quantity - $allocation;
+                $variety->save();
+            }
+
             $program->remaining_quantity -= $allocation;
             if ($allocationSecondary !== null && $program->secondary_unit) {
                 $program->secondary_remaining_quantity = (float) ($program->secondary_remaining_quantity ?? 0) - $allocationSecondary;
@@ -681,6 +730,7 @@ class SubsidyController extends Controller
                 'claimed_at' => now(),
                 'claimed_by' => Auth::id(),
                 'photo_proof_path' => $photoPath,
+                'variety_id' => $variety?->id,
                 'updated_at' => now(),
             ];
             if (is_array($override)) {
@@ -697,7 +747,7 @@ class SubsidyController extends Controller
                 ->where('id', $beneficiaryId)
                 ->update($claimUpdate);
 
-            return ['program' => $program->fresh()];
+            return ['program' => $program->fresh(), 'variety' => $variety];
         });
 
         if (isset($result['error'])) {
@@ -912,6 +962,17 @@ class SubsidyController extends Controller
             ], 409);
         }
 
+        if ($beneficiary->status === 'Excluded') {
+            return response()->json([
+                'status' => 'error',
+                'eligible' => false,
+                'message' => 'This farmer is excluded from this program' . ($beneficiary->exclusion_reason ? ': ' . $beneficiary->exclusion_reason : '.'),
+                'data' => [
+                    'exclusion_reason' => $beneficiary->exclusion_reason,
+                ],
+            ], 409);
+        }
+
         $allocation = $this->cashCappedAllocation($program, (int) $beneficiary->calculated_allocation);
         $allocationSecondary = $beneficiary->calculated_allocation_secondary !== null
             ? (int) $beneficiary->calculated_allocation_secondary
@@ -938,6 +999,19 @@ class SubsidyController extends Controller
         }
         $cap = (float) ($program->max_hectares_limit ?? $totalFarmSize);
         $eligibleSize = $cap > 0 ? min($totalFarmSize, $cap) : $totalFarmSize;
+
+        // Include available varieties so the technician UI can render the variety picker.
+        $varieties = $program->varieties()
+            ->where('remaining_quantity', '>', 0)
+            ->orderBy('sort_order')
+            ->orderBy('variety_name')
+            ->get()
+            ->map(fn ($v) => [
+                'id'                 => $v->id,
+                'variety_name'       => $v->variety_name,
+                'unit'               => $v->unit ?? $program->unit_of_measurement,
+                'remaining_quantity' => (float) $v->remaining_quantity,
+            ])->values();
 
         return response()->json([
             'status' => 'success',
@@ -967,6 +1041,9 @@ class SubsidyController extends Controller
                 'source' => 'subsidy',
                 'requires_override' => $requiresOverride,
                 'is_temporary' => (bool) $farmer->is_temporary,
+                // Non-empty only when the program has per-variety stock breakdown.
+                // Technician must pick one before confirming release.
+                'varieties' => $varieties,
             ],
         ]);
     }
@@ -985,6 +1062,7 @@ class SubsidyController extends Controller
             'override_reason' => 'nullable|string|max:500',
             'override_reason_code' => 'nullable|string|max:32',
             'override_justification' => 'nullable|string|max:500',
+            'variety_id' => 'nullable|uuid',
         ]);
 
         $result = $this->executeClaim($id, $validated, $request->user()?->id);
@@ -1065,6 +1143,11 @@ class SubsidyController extends Controller
                 return ['error' => 'This farmer is still waitlisted pending stock and cannot claim yet.', 'code' => 409, 'outcome' => 'failed'];
             }
 
+            if ($beneficiary->status === 'Excluded') {
+                $reason = $beneficiary->exclusion_reason ?? 'ineligible';
+                return ['error' => "This farmer is excluded from this program: {$reason}.", 'code' => 409, 'outcome' => 'failed'];
+            }
+
             $claimFarmer = $farmer;
             if (! $claimFarmer && ! empty($beneficiary->farmer_id)) {
                 $claimFarmer = Farmer::query()->find($beneficiary->farmer_id);
@@ -1092,6 +1175,28 @@ class SubsidyController extends Controller
                 return ['error' => $shortfall, 'code' => 409, 'outcome' => 'failed'];
             }
 
+            // Variety stock decrement (mirrors claimBeneficiary logic).
+            $variety = null;
+            $hasVarieties = SubsidyProgramVariety::where('program_id', $programId)->exists();
+            if ($hasVarieties) {
+                $varietyId = $item['variety_id'] ?? null;
+                if (! $varietyId) {
+                    return ['error' => 'Please select a seed variety to release.', 'code' => 422, 'outcome' => 'failed'];
+                }
+                $variety = SubsidyProgramVariety::where('id', $varietyId)
+                    ->where('program_id', $programId)
+                    ->lockForUpdate()
+                    ->first();
+                if (! $variety) {
+                    return ['error' => 'The selected variety does not belong to this program.', 'code' => 422, 'outcome' => 'failed'];
+                }
+                if ((float) $variety->remaining_quantity < $allocation) {
+                    return ['error' => "Not enough stock for {$variety->variety_name} (only {$variety->remaining_quantity} left).", 'code' => 409, 'outcome' => 'failed'];
+                }
+                $variety->remaining_quantity = (float) $variety->remaining_quantity - $allocation;
+                $variety->save();
+            }
+
             $program->remaining_quantity -= $allocation;
             if ($allocationSecondary !== null && $program->secondary_unit) {
                 $program->secondary_remaining_quantity = (float) ($program->secondary_remaining_quantity ?? 0) - $allocationSecondary;
@@ -1105,6 +1210,7 @@ class SubsidyController extends Controller
                 'claimed_at' => $this->parseClaimedAt($item['claimed_at'] ?? null),
                 'claimed_by' => $technicianId ?? Auth::id(),
                 'photo_proof_path' => $photoPath,
+                'variety_id' => $variety?->id,
                 'updated_at' => now(),
             ];
             if (is_array($override)) {
@@ -1119,9 +1225,10 @@ class SubsidyController extends Controller
                 ->update($claimUpdate);
 
             return [
-                'program' => $program->fresh(),
+                'program'     => $program->fresh(),
                 'beneficiary' => $beneficiary,
-                'farmer' => $farmer,
+                'farmer'      => $farmer,
+                'variety'     => $variety,
             ];
         });
 
@@ -1163,6 +1270,8 @@ class SubsidyController extends Controller
                 'inventory_remaining_secondary' => $result['program']->secondary_unit
                     ? (float) ($result['program']->secondary_remaining_quantity ?? 0)
                     : null,
+                'variety_name' => $result['variety']?->variety_name,
+                'variety_remaining' => $result['variety'] !== null ? (float) $result['variety']->remaining_quantity : null,
                 'program' => $result['program'],
             ],
         ];
@@ -1188,6 +1297,18 @@ class SubsidyController extends Controller
      */
     private function serializeProgram(SubsidyProgram $p): array
     {
+        // Varieties are eager-loaded if the relation was loaded; otherwise lazy-loaded here.
+        $varieties = ($p->relationLoaded('varieties') ? $p->varieties : $p->varieties()->get())
+            ->map(fn ($v) => [
+                'id'                 => $v->id,
+                'variety_name'       => $v->variety_name,
+                'unit'               => $v->unit,
+                'total_quantity'     => (float) $v->total_quantity,
+                'remaining_quantity' => (float) $v->remaining_quantity,
+                'reorder_level'      => $v->reorder_level !== null ? (float) $v->reorder_level : null,
+                'sort_order'         => $v->sort_order,
+            ])->values();
+
         return [
             'id' => $p->id,
             'program_name' => $p->program_name,
@@ -1212,8 +1333,85 @@ class SubsidyController extends Controller
             'is_low_stock' => $this->isLowStock($p),
             'beneficiaries_count' => (int) ($p->beneficiaries_count ?? 0),
             'claimed_count' => (int) ($p->claimed_count ?? 0),
+            'varieties' => $varieties,
             'created_at' => optional($p->created_at)->toIso8601String(),
         ];
+    }
+
+    /**
+     * PATCH /subsidies/{id}/varieties
+     * Replace the variety breakdown for an admin-created program.
+     * When varieties are supplied the program's total/remaining_quantity roll-up
+     * is synchronised to the sum — matching the import pipeline behaviour.
+     */
+    public function updateVarieties(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'varieties'                  => 'required|array',
+            'varieties.*.variety_name'   => 'required|string|max:120',
+            'varieties.*.quantity'       => 'required|numeric|min:0|max:1000000',
+            'varieties.*.unit'           => 'nullable|string|max:64',
+        ]);
+
+        $program = SubsidyProgram::query()->findOrFail($id);
+        $remarks = AuditRemarks::require($request, 'A justification is required when updating variety breakdown.');
+
+        $this->syncProgramVarieties($program, $validated['varieties']);
+
+        $this->logReportAudit('subsidy_program.varieties_updated', $program->fresh(), [
+            'after' => ['varieties' => $validated['varieties']],
+            'remarks' => $remarks,
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Variety breakdown updated.',
+            'data' => $this->serializeProgram($program->fresh()->load('varieties')),
+        ]);
+    }
+
+    /**
+     * Sync variety rows for a manually-managed program from a raw array of
+     * [{variety_name, quantity, unit?}] entries.
+     *
+     * @param  array<int, array{variety_name: string, quantity: float|int, unit?: string|null}>  $rawVarieties
+     */
+    private function syncProgramVarieties(SubsidyProgram $program, array $rawVarieties): void
+    {
+        $hasClaims = $program->beneficiaries()->where('status', 'Claimed')->exists();
+
+        if (! $hasClaims) {
+            SubsidyProgramVariety::where('program_id', $program->id)->delete();
+        }
+
+        $total = 0.0;
+        foreach ($rawVarieties as $index => $v) {
+            $name = trim((string) ($v['variety_name'] ?? ''));
+            $qty  = (float) ($v['quantity'] ?? 0);
+            $unit = isset($v['unit']) ? trim((string) $v['unit']) : null;
+            if ($name === '' || $qty < 0) {
+                continue;
+            }
+            $total += $qty;
+
+            SubsidyProgramVariety::updateOrCreate(
+                ['program_id' => $program->id, 'variety_name' => $name],
+                [
+                    'unit'               => $unit ?: null,
+                    'total_quantity'     => $qty,
+                    'remaining_quantity' => $hasClaims
+                        ? DB::raw('remaining_quantity')
+                        : $qty,
+                    'sort_order'         => $index,
+                ]
+            );
+        }
+
+        if (! $hasClaims) {
+            $program->total_quantity     = $total;
+            $program->remaining_quantity = $total;
+            $program->save();
+        }
     }
 
     /**

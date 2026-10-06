@@ -5,12 +5,14 @@ namespace App\Http\Controllers;
 use App\Imports\RegionalMonthlyExtractionImport;
 use App\Models\SubsidyImportBatch;
 use App\Models\SubsidyProgram;
+use App\Models\SubsidyProgramVariety;
 use App\Support\AuditRemarks;
 use App\Support\RegionalExtractionColumns;
 use App\Support\SubsidyCatalog;
 use App\Traits\LogsReportAudit;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -40,7 +42,7 @@ class SubsidyImportController extends Controller
     public function show(string $batchId): JsonResponse
     {
         $batch = SubsidyImportBatch::query()
-            ->with(['uploader:id,name', 'programs'])
+            ->with(['uploader:id,name', 'programs.varieties'])
             ->withCount('programs')
             ->findOrFail($batchId);
 
@@ -133,6 +135,11 @@ class SubsidyImportController extends Controller
             'sheets.*.secondary_total_quantity' => 'nullable|numeric|min:0|max:1000000',
             'sheets.*.reorder_level' => 'nullable|numeric|min:0|max:1000000',
             'sheets.*.secondary_reorder_level' => 'nullable|numeric|min:0|max:1000000',
+            // Variety breakdown (optional). When provided, total_quantity is the sum.
+            'sheets.*.varieties'                    => 'nullable|array',
+            'sheets.*.varieties.*.variety_name'     => 'required_with:sheets.*.varieties|string|max:120',
+            'sheets.*.varieties.*.quantity'         => 'required_with:sheets.*.varieties|numeric|min:0|max:1000000',
+            'sheets.*.varieties.*.unit'             => 'nullable|string|max:64',
         ]);
 
         $absolutePath = Storage::disk('local')->path($batch->stored_path);
@@ -220,12 +227,24 @@ class SubsidyImportController extends Controller
 
         $batch->update(['status' => 'completed']);
 
+        // Sync variety rows for each imported program (uses the sheet config).
+        foreach ($import->importers as $importer) {
+            if ($importer->programId === null) {
+                continue;
+            }
+            $sheetVarieties = $configsByIndex[$importer->sheetIndex]['varieties'] ?? [];
+            if (! empty($sheetVarieties)) {
+                $this->syncVarieties($importer->programId, $sheetVarieties);
+            }
+        }
+
         $results = collect($import->importers)->map(fn ($importer) => [
             'program_id' => $importer->programId,
             'program_name' => $importer->programName,
             'created' => $importer->rowsCreated,
             'updated' => $importer->rowsUpdated,
             'waitlisted' => $importer->rowsWaitlisted,
+            'excluded' => $importer->rowsExcluded,
             'skipped' => $importer->rowsSkipped,
             'duplicates_in_file' => $importer->duplicatesInFile,
         ])->values();
@@ -350,8 +369,72 @@ class SubsidyImportController extends Controller
         return [null, null];
     }
 
+    /**
+     * Sync (upsert/replace) variety rows for a program from the sheet's variety
+     * breakdown config.  When the program has no Claimed beneficiaries yet the
+     * variety list is fully replaced; otherwise only new varieties are added and
+     * unclaimed existing varieties have their totals updated.
+     *
+     * @param  array<int, array{variety_name: string, quantity: float|int, unit?: string|null}>  $varieties
+     */
+    private function syncVarieties(string $programId, array $varieties): void
+    {
+        $program = SubsidyProgram::find($programId);
+        if (! $program) {
+            return;
+        }
+
+        $hasClaims = $program->beneficiaries()->where('status', 'Claimed')->exists();
+
+        if (! $hasClaims) {
+            // Safe to replace entire variety list (mirrors existing total/remaining reset).
+            SubsidyProgramVariety::where('program_id', $programId)->delete();
+        }
+
+        $totalFromVarieties = 0.0;
+        foreach ($varieties as $index => $v) {
+            $name = trim((string) ($v['variety_name'] ?? ''));
+            $qty  = (float) ($v['quantity'] ?? 0);
+            $unit = isset($v['unit']) ? trim((string) $v['unit']) : null;
+            if ($name === '' || $qty < 0) {
+                continue;
+            }
+
+            $totalFromVarieties += $qty;
+
+            SubsidyProgramVariety::updateOrCreate(
+                ['program_id' => $programId, 'variety_name' => $name],
+                [
+                    'unit'               => $unit ?: null,
+                    'total_quantity'     => $qty,
+                    // Only reset remaining for programs with no claims yet.
+                    'remaining_quantity' => $hasClaims
+                        ? \DB::raw('remaining_quantity')  // leave untouched
+                        : $qty,
+                    'sort_order'         => $index,
+                ]
+            );
+        }
+
+        // Keep the program-level totals as a roll-up so existing dashboards work.
+        if (! $hasClaims) {
+            $program->total_quantity     = $totalFromVarieties;
+            $program->remaining_quantity = $totalFromVarieties;
+            $program->save();
+        }
+    }
+
     private function serializeProgram(SubsidyProgram $program): array
     {
+        $varieties = $program->varieties->map(fn ($v) => [
+            'id'                 => $v->id,
+            'variety_name'       => $v->variety_name,
+            'unit'               => $v->unit,
+            'total_quantity'     => (float) $v->total_quantity,
+            'remaining_quantity' => (float) $v->remaining_quantity,
+            'reorder_level'      => $v->reorder_level !== null ? (float) $v->reorder_level : null,
+        ])->values();
+
         return [
             'id' => $program->id,
             'program_name' => $program->program_name,
@@ -366,6 +449,7 @@ class SubsidyImportController extends Controller
             'items_per_hectare' => (float) $program->items_per_hectare,
             'total_quantity' => (float) $program->total_quantity,
             'remaining_quantity' => (float) $program->remaining_quantity,
+            'varieties' => $varieties,
         ];
     }
 }

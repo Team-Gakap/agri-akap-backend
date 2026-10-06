@@ -8,6 +8,7 @@ use App\Models\SubsidyProgram;
 use App\Support\OfficialLocations;
 use App\Support\RegionalExtractionColumns;
 use App\Support\SubsidyCatalog;
+use App\Support\SubsidyExclusionRules;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -26,6 +27,9 @@ class RegionalProgramSheetImport implements ToCollection, WithHeadingRow
 
     public int $duplicatesInFile = 0;
 
+    /** Rows excluded due to a disqualifying remark (DECEASED, OFW, NO FARM, INACTIVE…). */
+    public int $rowsExcluded = 0;
+
     public ?string $programId = null;
 
     public ?string $programName = null;
@@ -36,6 +40,7 @@ class RegionalProgramSheetImport implements ToCollection, WithHeadingRow
     public function __construct(
         protected array $sheetConfig,
         protected string $batchId,
+        public int $sheetIndex = 0,
     ) {
     }
 
@@ -47,6 +52,7 @@ class RegionalProgramSheetImport implements ToCollection, WithHeadingRow
 
         $seen = [];
         $prepared = [];
+        $excluded = [];
 
         foreach ($rows as $row) {
             $data = RegionalExtractionColumns::extractRow($row->toArray());
@@ -62,6 +68,13 @@ class RegionalProgramSheetImport implements ToCollection, WithHeadingRow
                 continue;
             }
             $seen[$key] = true;
+
+            // Check for a disqualifying remark BEFORE computing allocation.
+            $exclusionLabel = SubsidyExclusionRules::matchedLabel($data['remarks'] ?? null);
+            if ($exclusionLabel !== null) {
+                $excluded[] = ['row' => $data, 'reason' => $exclusionLabel];
+                continue;
+            }
 
             $allocation = $this->allocationFor($program, (float) $data['farm_area']);
             if ($allocation === null) {
@@ -86,7 +99,8 @@ class RegionalProgramSheetImport implements ToCollection, WithHeadingRow
         $cutoff = false;
         $now = now();
 
-        DB::transaction(function () use ($prepared, $program, &$primaryLeft, &$secondaryLeft, &$cutoff, $now) {
+        DB::transaction(function () use ($prepared, $excluded, $program, &$primaryLeft, &$secondaryLeft, &$cutoff, $now) {
+            // ── Eligible rows ──────────────────────────────────────────────────────
             foreach ($prepared as $item) {
                 $data = $item['row'];
                 $primary = $item['primary'];
@@ -135,6 +149,7 @@ class RegionalProgramSheetImport implements ToCollection, WithHeadingRow
                     'source_farm_municipality' => $data['farm_address_2'],
                     'status' => $status,
                     'selection_mode' => 'regional_import',
+                    'exclusion_reason' => null,
                     'updated_at' => $now,
                 ];
 
@@ -152,6 +167,59 @@ class RegionalProgramSheetImport implements ToCollection, WithHeadingRow
                     'created_at' => $now,
                 ]);
                 $this->rowsCreated++;
+            }
+
+            // ── Excluded rows (disqualifying remark) ──────────────────────────────
+            // We still upsert the farmer record (preserves name/address data) but
+            // the beneficiary row gets status = Excluded and cannot be claimed.
+            // Excluded rows do NOT consume any stock allocation.
+            foreach ($excluded as $item) {
+                $data = $item['row'];
+                $reason = $item['reason'];
+
+                $farmer = $this->upsertFarmer($data);
+
+                $existing = SubsidyBeneficiary::withTrashed()
+                    ->where('program_id', $program->id)
+                    ->where('farmer_rsbsa_no', $data['rsbsa_no'])
+                    ->first();
+
+                // Never overwrite a Claimed row with Excluded.
+                if ($existing && $existing->status === 'Claimed' && ! $existing->trashed()) {
+                    continue;
+                }
+
+                $payload = [
+                    'batch_id' => $this->batchId,
+                    'farmer_id' => $farmer->id,
+                    'farmer_rsbsa_no' => $data['rsbsa_no'],
+                    'is_walkin' => false,
+                    'calculated_allocation' => 0,
+                    'calculated_allocation_secondary' => null,
+                    'source_farm_area' => $data['farm_area'],
+                    'source_commodity' => $data['commodity'],
+                    'source_farmer_barangay' => $data['farmer_address_1'],
+                    'source_farmer_municipality' => $data['farmer_address_2'],
+                    'source_farm_barangay' => $data['farm_address_1'],
+                    'source_farm_municipality' => $data['farm_address_2'],
+                    'status' => 'Excluded',
+                    'selection_mode' => 'regional_import',
+                    'exclusion_reason' => $reason,
+                    'updated_at' => $now,
+                ];
+
+                if ($existing) {
+                    if ($existing->trashed()) {
+                        $existing->restore();
+                    }
+                    $existing->update($payload);
+                } else {
+                    SubsidyBeneficiary::create($payload + [
+                        'program_id' => $program->id,
+                        'created_at' => $now,
+                    ]);
+                }
+                $this->rowsExcluded++;
             }
         });
     }

@@ -184,6 +184,8 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:admin');
     Route::patch('/subsidies/{id}/status', [SubsidyController::class, 'updateStatus'])
         ->middleware('role:admin');
+    Route::put('/subsidies/{id}/varieties', [SubsidyController::class, 'updateVarieties'])
+        ->middleware('role:admin');
     Route::post('/subsidies/{id}/generate-masterlist', [SubsidyController::class, 'generateMasterlist'])
         ->middleware('role:admin');
     Route::get('/subsidies/{id}/eligible-farmers', [SubsidyController::class, 'manualFilter'])

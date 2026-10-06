@@ -32,7 +32,7 @@ class RegionalMonthlyExtractionImport implements WithMultipleSheets
             if (($config['mode'] ?? 'skip') === 'skip') {
                 continue;
             }
-            $importer = new RegionalProgramSheetImport($config, $this->batchId);
+            $importer = new RegionalProgramSheetImport($config, $this->batchId, (int) $index);
             $this->importers[] = $importer;
             $map[(int) $index] = $importer;
         }

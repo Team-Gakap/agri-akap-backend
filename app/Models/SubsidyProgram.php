@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class SubsidyProgram extends Model
 {
@@ -58,8 +59,22 @@ class SubsidyProgram extends Model
         return $this->hasMany(SubsidyBeneficiary::class, 'program_id');
     }
 
+    public function varieties(): HasMany
+    {
+        return $this->hasMany(SubsidyProgramVariety::class, 'program_id')->orderBy('sort_order')->orderBy('variety_name');
+    }
+
     public function importBatch(): BelongsTo
     {
         return $this->belongsTo(SubsidyImportBatch::class, 'batch_id');
+    }
+
+    /**
+     * Returns true if this program has at least one variety defined,
+     * meaning technicians must pick a variety at release time.
+     */
+    public function hasVarieties(): bool
+    {
+        return $this->varieties()->exists();
     }
 }

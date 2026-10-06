@@ -31,6 +31,9 @@ class RegionalExtractionColumns
             'farm_address_2' => ['farm_address_2', 'farm_address2', 'farm_municipality'],
             'farm_area' => ['farm_area', 'farm_area_ha', 'hectares', 'area'],
             'commodity' => ['commodity', 'crop', 'primary_commodity'],
+            // Optional column — not in REQUIRED.  Presence triggers eligibility
+            // checks via SubsidyExclusionRules before a beneficiary row is created.
+            'remarks'   => ['remarks', 'remark', 'notes', 'status_remarks', 'beneficiary_remarks'],
         ];
     }
 
@@ -135,6 +138,9 @@ class RegionalExtractionColumns
             'farm_address_2' => $get('farm_address_2'),
             'farm_area' => $farmArea,
             'commodity' => $get('commodity'),
+            // Raw cell value; SubsidyExclusionRules::matchedLabel() decides
+            // if it disqualifies the row.  Null when the column is absent.
+            'remarks' => $get('remarks'),
         ];
     }
 }

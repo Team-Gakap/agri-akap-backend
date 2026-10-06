@@ -21,6 +21,7 @@ class SubsidyBeneficiary extends Model
         'farmer_id',
         'farmer_rsbsa_no',
         'is_walkin',
+        'variety_id',
         'calculated_allocation',
         'calculated_allocation_secondary',
         'source_farm_area',
@@ -32,6 +33,7 @@ class SubsidyBeneficiary extends Model
         'status',
         'priority_tier',
         'selection_mode',
+        'exclusion_reason',
         'claimed_at',
         'claimed_by',
         'photo_proof_path',
@@ -64,6 +66,11 @@ class SubsidyBeneficiary extends Model
     public function farmerByRsbsa(): BelongsTo
     {
         return $this->belongsTo(Farmer::class, 'farmer_rsbsa_no', 'rsbsa_no');
+    }
+
+    public function variety(): BelongsTo
+    {
+        return $this->belongsTo(SubsidyProgramVariety::class, 'variety_id');
     }
 
     public function overrideAdmin(): BelongsTo
