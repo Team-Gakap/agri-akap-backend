@@ -238,6 +238,7 @@ class OfflineFieldCacheController extends Controller
                     'program_name' => $p->program_name,
                     'seed_class' => $p->seed_class,
                     'subsidy_line' => $p->seed_class === 'Inbred' ? 'RCEF' : ($p->seed_class === 'Hybrid' ? 'Hybrid' : $p->seed_class),
+                    'target_barangays' => is_array($v->target_barangays) ? array_values($v->target_barangays) : [],
                 ])
                 ->values()
                 ->all(),

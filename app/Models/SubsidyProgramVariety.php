@@ -23,6 +23,7 @@ class SubsidyProgramVariety extends Model
         'remaining_quantity',
         'reorder_level',
         'sort_order',
+        'target_barangays',
     ];
 
     protected $casts = [
@@ -31,6 +32,7 @@ class SubsidyProgramVariety extends Model
         'remaining_quantity' => 'decimal:2',
         'reorder_level'      => 'decimal:2',
         'sort_order'         => 'integer',
+        'target_barangays'   => 'array',
     ];
 
     public function program(): BelongsTo

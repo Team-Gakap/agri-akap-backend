@@ -48,6 +48,7 @@ class SeedVarietyController extends Controller
                     'program_name' => $program?->program_name,
                     'seed_class' => $program?->seed_class,
                     'subsidy_line' => $this->subsidyLineLabel($program?->seed_class),
+                    'target_barangays' => is_array($v->target_barangays) ? array_values($v->target_barangays) : [],
                     'is_active' => $program?->status === 'Active',
                 ];
             })
@@ -73,6 +74,8 @@ class SeedVarietyController extends Controller
             'varieties.*.quantity' => 'required|numeric|min:0|max:1000000',
             'varieties.*.bags_per_hectare' => 'nullable|numeric|min:0.01|max:100000',
             'varieties.*.unit' => 'nullable|string|max:64',
+            'varieties.*.target_barangays' => 'nullable|array',
+            'varieties.*.target_barangays.*' => 'string|max:128',
         ]);
         $remarks = AuditRemarks::require($request, 'A justification is required before syncing seed varieties.');
 
@@ -101,6 +104,7 @@ class SeedVarietyController extends Controller
                             ? DB::raw('remaining_quantity')
                             : $qty,
                         'sort_order' => $index,
+                        'target_barangays' => $this->normalizeTargetBarangays($row['target_barangays'] ?? null),
                     ]
                 );
             }
@@ -238,6 +242,7 @@ class SeedVarietyController extends Controller
             ->all();
 
         $area = (float) ($farmer->total_farm_area_ha ?? 0);
+        $farmBrgy = trim((string) ($farmer->farm_brgy ?: $farmer->permanent_brgy));
 
         $varieties = SubsidyProgramVariety::query()
             ->with('program:id,program_name,seed_class,status,unit_of_measurement,items_per_hectare,max_hectares_limit')
@@ -246,13 +251,14 @@ class SeedVarietyController extends Controller
             ->orderBy('sort_order')
             ->orderBy('variety_name')
             ->get()
-            ->map(function (SubsidyProgramVariety $v) use ($claimedProgramIds, $area) {
+            ->map(function (SubsidyProgramVariety $v) use ($claimedProgramIds, $area, $farmBrgy) {
                 $program = $v->program;
                 $rate = (float) ($v->bags_per_hectare ?? $program?->items_per_hectare ?? 1);
                 $cap = (float) ($program?->max_hectares_limit ?? 0);
                 $eligible = $cap > 0 ? min($area, $cap) : $area;
                 $qty = (float) floor(($eligible * $rate) + 0.0000001);
                 $already = in_array($v->program_id, $claimedProgramIds, true);
+                $targets = is_array($v->target_barangays) ? array_values($v->target_barangays) : [];
 
                 return [
                     'id' => $v->id,
@@ -265,9 +271,12 @@ class SeedVarietyController extends Controller
                     'program_name' => $program?->program_name,
                     'seed_class' => $program?->seed_class,
                     'subsidy_line' => $this->subsidyLineLabel($program?->seed_class),
+                    'target_barangays' => $targets,
+                    'recommended' => $this->isRecommendedForBarangay($targets, $farmBrgy),
                     'already_claimed' => $already,
                 ];
             })
+            ->sortByDesc(fn ($row) => $row['recommended'] ? 1 : 0)
             ->values();
 
         return response()->json([
@@ -475,6 +484,24 @@ class SeedVarietyController extends Controller
         }
     }
 
+    /**
+     * @param  array<int, string>  $targets
+     */
+    private function isRecommendedForBarangay(array $targets, string $farmBrgy): bool
+    {
+        if ($farmBrgy === '' || $targets === []) {
+            return false;
+        }
+
+        foreach ($targets as $name) {
+            if (strcasecmp(trim((string) $name), $farmBrgy) === 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function subsidyLineLabel(?string $seedClass): string
     {
         if ($seedClass === 'Inbred') {
@@ -485,6 +512,23 @@ class SeedVarietyController extends Controller
         }
 
         return $seedClass ?: 'Seed';
+    }
+
+    /**
+     * @param  mixed  $raw
+     * @return array<int, string>|null
+     */
+    private function normalizeTargetBarangays(mixed $raw): ?array
+    {
+        if (! is_array($raw)) {
+            return null;
+        }
+        $names = array_values(array_unique(array_filter(array_map(
+            fn ($b) => trim((string) $b),
+            $raw
+        ), fn ($b) => $b !== '')));
+
+        return $names ?: null;
     }
 
     private function resolveFarmer(?string $farmerId, ?string $rsbsaNo): ?Farmer

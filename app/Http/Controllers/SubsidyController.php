@@ -89,6 +89,8 @@ class SubsidyController extends Controller
             'varieties.*.quantity'       => 'required_with:varieties|numeric|min:0|max:1000000',
             'varieties.*.unit'           => 'nullable|string|max:64',
             'varieties.*.bags_per_hectare' => 'nullable|numeric|min:0.01|max:100000',
+            'varieties.*.target_barangays' => 'nullable|array',
+            'varieties.*.target_barangays.*' => 'string|max:128',
         ]);
 
         $targetBarangays = $validated['target_barangays'] ?? null;
@@ -1309,6 +1311,7 @@ class SubsidyController extends Controller
                 'remaining_quantity' => (float) $v->remaining_quantity,
                 'reorder_level'      => $v->reorder_level !== null ? (float) $v->reorder_level : null,
                 'sort_order'         => $v->sort_order,
+                'target_barangays'   => is_array($v->target_barangays) ? array_values($v->target_barangays) : [],
             ])->values();
 
         return [
@@ -1354,6 +1357,8 @@ class SubsidyController extends Controller
             'varieties.*.quantity'       => 'required|numeric|min:0|max:1000000',
             'varieties.*.unit'           => 'nullable|string|max:64',
             'varieties.*.bags_per_hectare' => 'nullable|numeric|min:0.01|max:100000',
+            'varieties.*.target_barangays' => 'nullable|array',
+            'varieties.*.target_barangays.*' => 'string|max:128',
         ]);
 
         $program = SubsidyProgram::query()->findOrFail($id);
@@ -1393,6 +1398,10 @@ class SubsidyController extends Controller
             $qty  = (float) ($v['quantity'] ?? 0);
             $unit = isset($v['unit']) ? trim((string) $v['unit']) : null;
             $rate = isset($v['bags_per_hectare']) ? (float) $v['bags_per_hectare'] : null;
+            $targets = array_values(array_filter(array_map(
+                fn ($b) => trim((string) $b),
+                is_array($v['target_barangays'] ?? null) ? $v['target_barangays'] : []
+            ), fn ($b) => $b !== ''));
             if ($name === '' || $qty < 0) {
                 continue;
             }
@@ -1408,6 +1417,7 @@ class SubsidyController extends Controller
                         ? DB::raw('remaining_quantity')
                         : $qty,
                     'sort_order'         => $index,
+                    'target_barangays'   => $targets ?: null,
                 ]
             );
         }
