@@ -18,6 +18,7 @@ class SubsidyProgramVariety extends Model
         'program_id',
         'variety_name',
         'unit',
+        'bags_per_hectare',
         'total_quantity',
         'remaining_quantity',
         'reorder_level',
@@ -25,6 +26,7 @@ class SubsidyProgramVariety extends Model
     ];
 
     protected $casts = [
+        'bags_per_hectare'   => 'decimal:4',
         'total_quantity'     => 'decimal:2',
         'remaining_quantity' => 'decimal:2',
         'reorder_level'      => 'decimal:2',

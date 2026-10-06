@@ -320,9 +320,10 @@ class RegionalProgramSheetImport implements ToCollection, WithHeadingRow
             'ext_name' => $data['suffix_and_extension'],
             'no_middle_name' => empty($data['middle_name']),
             'no_ext_name' => empty($data['suffix_and_extension']),
-            'permanent_brgy' => $data['farm_address_1'] ?: ($data['farmer_address_1'] ?: ($existing->permanent_brgy ?? 'Unknown')),
-            'permanent_city' => 'Echague',
-            'permanent_province' => 'Isabela',
+            'permanent_brgy' => $data['farmer_address_1'] ?: ($existing->permanent_brgy ?? 'Unknown'),
+            'permanent_city' => $data['farmer_address_2'] ?: ($existing->permanent_city ?? 'Echague'),
+            'farm_brgy' => $data['farm_address_1'] ?: ($existing->farm_brgy ?? $data['farmer_address_1'] ?? 'Unknown'),
+            'farm_city' => $data['farm_address_2'] ?: ($existing->farm_city ?? 'Echague'),
             'total_farm_area_ha' => $data['farm_area'],
             'subsidy_exclusion_reason' => $data['subsidy_exclusion_reason'] ?? null,
         ];

@@ -2,12 +2,10 @@
 
 namespace App\Support;
 
-use Illuminate\Support\Str;
-
 /**
  * Header matching for regional / masterlist workbooks.
- * Farmer address fields are kept for snapshot display only;
- * registry barangay always comes from farm address via RsbsaMasterlistColumns.
+ * Farmer address fields are residence; farm address is distribution barangay.
+ * Registry upsert uses RsbsaMasterlistColumns.
  */
 class RegionalExtractionColumns
 {
@@ -32,10 +30,8 @@ class RegionalExtractionColumns
             'first_name' => ['first_name', 'firstname', 'given_name'],
             'middle_name' => ['middle_name', 'middlename'],
             'suffix_and_extension' => ['suffix_and_extension', 'suffix', 'ext_name', 'extension_name'],
-            // Residential (home) — stored as snapshot only, not registry address.
-            'farmer_address_1' => ['farmer_address_1', 'farmer_address1'],
-            'farmer_address_2' => ['farmer_address_2', 'farmer_address2'],
-            // Farm location inside Echague — used as registry barangay.
+            'farmer_address_1' => ['farmer_address_1', 'farmer_address1', 'permanent_brgy'],
+            'farmer_address_2' => ['farmer_address_2', 'farmer_address2', 'permanent_city'],
             'farm_address_1' => ['farm_address_1', 'farm_address1', 'farm_barangay', 'barangay'],
             'farm_address_2' => ['farm_address_2', 'farm_address2', 'farm_municipality'],
             'farm_area' => ['farm_area', 'farm_area_ha', 'farm_size', 'hectares', 'area', 'ch'],
@@ -95,7 +91,6 @@ class RegionalExtractionColumns
      */
     public static function extractRow(array $row): ?array
     {
-        // Prefer the shared farmer mapper so registry address = farm barangay.
         $farmer = RsbsaMasterlistColumns::extractFarmerRow($row);
         if ($farmer === null) {
             return null;
@@ -109,8 +104,8 @@ class RegionalExtractionColumns
             'suffix_and_extension' => $farmer['ext_name'],
             'farmer_address_1' => $farmer['permanent_brgy'],
             'farmer_address_2' => $farmer['permanent_city'],
-            'farm_address_1' => $farmer['permanent_brgy'],
-            'farm_address_2' => $farmer['permanent_city'],
+            'farm_address_1' => $farmer['farm_brgy'],
+            'farm_address_2' => $farmer['farm_city'],
             'farm_area' => $farmer['total_farm_area_ha'],
             'commodity' => null,
             'remarks' => $farmer['remarks_raw'],

@@ -46,6 +46,8 @@ class OfflineFieldCacheController extends Controller
                 'middle_name',
                 'ext_name',
                 'permanent_brgy',
+                'farm_brgy',
+                'farm_city',
                 'mobile_number',
             ])
             ->map(function (Farmer $farmer) {
@@ -66,6 +68,8 @@ class OfflineFieldCacheController extends Controller
                     'middle_name' => $farmer->middle_name,
                     'ext_name' => $farmer->ext_name,
                     'permanent_brgy' => $farmer->permanent_brgy,
+                    'farm_brgy' => $farmer->farm_brgy,
+                    'farm_city' => $farmer->farm_city,
                     'mobile_number' => $farmer->mobile_number,
                     'farm_plots' => $plots,
                     'farmPlots' => $plots,
@@ -76,6 +80,7 @@ class OfflineFieldCacheController extends Controller
 
         $programs = SubsidyProgram::query()
             ->where('status', 'Active')
+            ->with(['varieties' => fn ($q) => $q->orderBy('sort_order')->orderBy('variety_name')])
             ->withCount([
                 'beneficiaries',
                 'beneficiaries as claimed_count' => fn ($q) => $q->where('status', 'Claimed'),
@@ -219,6 +224,23 @@ class OfflineFieldCacheController extends Controller
             'beneficiaries_count' => (int) ($p->beneficiaries_count ?? 0),
             'claimed_count' => (int) ($p->claimed_count ?? 0),
             'created_at' => optional($p->created_at)->toIso8601String(),
+            'varieties' => ($p->relationLoaded('varieties') ? $p->varieties : collect())
+                ->map(fn ($v) => [
+                    'id' => $v->id,
+                    'variety_name' => $v->variety_name,
+                    'unit' => $v->unit ?? $p->unit_of_measurement,
+                    'bags_per_hectare' => $v->bags_per_hectare !== null
+                        ? (float) $v->bags_per_hectare
+                        : (float) $p->items_per_hectare,
+                    'total_quantity' => (float) $v->total_quantity,
+                    'remaining_quantity' => (float) $v->remaining_quantity,
+                    'program_id' => $p->id,
+                    'program_name' => $p->program_name,
+                    'seed_class' => $p->seed_class,
+                    'subsidy_line' => $p->seed_class === 'Inbred' ? 'RCEF' : ($p->seed_class === 'Hybrid' ? 'Hybrid' : $p->seed_class),
+                ])
+                ->values()
+                ->all(),
         ];
     }
 }

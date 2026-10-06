@@ -8,12 +8,12 @@ use Illuminate\Support\Str;
 /**
  * Shared RSBSA Excel column map for Farmer Registry import and masterlist upload.
  *
- * Address rule: the farmer's registry barangay is the FARM location
- * (always within Echague), never the residential "Farmer Address".
+ * Residence (Farmer Address) → permanent_brgy / permanent_city
+ * Farm location (Farm Address / BARANGAY) → farm_brgy / farm_city
  */
 class RsbsaMasterlistColumns
 {
-    public const CITY = 'Echague';
+    public const FARM_CITY_DEFAULT = 'Echague';
 
     public const PROVINCE = 'Isabela';
 
@@ -43,18 +43,34 @@ class RsbsaMasterlistColumns
             'first_name' => ['first_name', 'firstname', 'given_name'],
             'middle_name' => ['middle_name', 'middlename'],
             'suffix' => ['suffix', 'suffix_and_extension', 'ext_name', 'extension_name'],
-            // Farm barangay only — never farmer_address_1 / residential address.
+            // Residential / home address
+            'residence_barangay' => [
+                'farmer_address_1',
+                'farmer_address1',
+                'permanent_brgy',
+                'residence_barangay',
+                'home_barangay',
+            ],
+            'residence_municipality' => [
+                'farmer_address_2',
+                'farmer_address2',
+                'permanent_city',
+                'residence_municipality',
+                'home_municipality',
+            ],
+            // Farm location (Echague drop-off / distribution barangay)
             'farm_barangay' => [
-                'barangay',
                 'farm_address_1',
                 'farm_address1',
                 'farm_barangay',
                 'farm_brgy',
+                'barangay',
             ],
             'farm_municipality' => [
                 'farm_address_2',
                 'farm_address2',
                 'farm_municipality',
+                'farm_city',
             ],
             'mobile_number' => [
                 'contact_no',
@@ -122,7 +138,6 @@ class RsbsaMasterlistColumns
                     continue;
                 }
                 $text = trim((string) $normalized[$alias]);
-                // Treat Excel #N/A as empty.
                 if ($text === '' || strcasecmp($text, '#N/A') === 0 || strcasecmp($text, 'N/A') === 0) {
                     continue;
                 }
@@ -137,7 +152,9 @@ class RsbsaMasterlistColumns
         $lastName = $get('last_name');
         $firstName = $get('first_name');
         $farmBrgy = $get('farm_barangay');
+        $residenceBrgy = $get('residence_barangay');
 
+        // Farm barangay is required for Echague distribution; residence falls back to farm when absent.
         if (! $rsbsa || ! $lastName || ! $firstName || ! $farmBrgy) {
             return null;
         }
@@ -168,6 +185,11 @@ class RsbsaMasterlistColumns
             $mobile = $digits !== '' ? $digits : self::DEFAULT_MOBILE;
         }
 
+        // Home address stays as written; do not force Echague onto residence.
+        $permanentBrgy = $residenceBrgy ?: $farmBrgy;
+        $permanentCity = $get('residence_municipality') ?: 'Unknown';
+        $farmCity = $get('farm_municipality') ?: self::FARM_CITY_DEFAULT;
+
         return [
             'rsbsa_no' => $rsbsa,
             'surname' => $lastName,
@@ -176,10 +198,12 @@ class RsbsaMasterlistColumns
             'ext_name' => $get('suffix'),
             'sex' => $sex,
             'birthdate' => self::parseDate($get('birthdate')) ?? self::DEFAULT_BIRTHDATE,
-            'permanent_brgy' => $farmBrgy,
-            'permanent_city' => self::CITY,
+            'permanent_brgy' => $permanentBrgy,
+            'permanent_city' => $permanentCity,
             'permanent_province' => self::PROVINCE,
             'permanent_region' => self::REGION,
+            'farm_brgy' => $farmBrgy,
+            'farm_city' => $farmCity,
             'mobile_number' => $mobile,
             'total_farm_area_ha' => $farmArea,
             'is_pwd' => self::parseYesNo($get('is_pwd')),
@@ -212,7 +236,6 @@ class RsbsaMasterlistColumns
                     ->format('Y-m-d');
             }
 
-            // DD/MM/YYYY common in DA sheets
             if (preg_match('/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/', $value, $m)) {
                 return Carbon::createFromFormat('d/m/Y', sprintf('%02d/%02d/%04d', (int) $m[1], (int) $m[2], (int) $m[3]))
                     ->format('Y-m-d');

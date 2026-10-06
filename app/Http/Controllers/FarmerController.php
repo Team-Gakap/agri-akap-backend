@@ -71,13 +71,32 @@ class FarmerController extends Controller
                     'message' => 'No barangay assignment on this account.',
                 ], 403);
             }
-            $query->where('permanent_brgy', $assigned);
+            $query->where(function ($q) use ($assigned) {
+                $q->where('farm_brgy', $assigned)
+                    ->orWhere(function ($inner) use ($assigned) {
+                        $inner->whereNull('farm_brgy')->where('permanent_brgy', $assigned);
+                    });
+            });
         } elseif ($user?->isMunicipalAdmin()) {
-            // Full registry — optional barangay filter still allowed
-            $query->when($barangay, fn ($q, $b) => $q->where('permanent_brgy', $b));
+            // Full registry — optional farm-barangay filter still allowed
+            $query->when($barangay, function ($q, $b) {
+                $q->where(function ($inner) use ($b) {
+                    $inner->where('farm_brgy', $b)
+                        ->orWhere(function ($fallback) use ($b) {
+                            $fallback->whereNull('farm_brgy')->where('permanent_brgy', $b);
+                        });
+                });
+            });
         } elseif ($role === 'technician') {
-            // Field search across Echague; keep barangay filter optional
-            $query->when($barangay, fn ($q, $b) => $q->where('permanent_brgy', $b));
+            // Field search across Echague; keep farm-barangay filter optional
+            $query->when($barangay, function ($q, $b) {
+                $q->where(function ($inner) use ($b) {
+                    $inner->where('farm_brgy', $b)
+                        ->orWhere(function ($fallback) use ($b) {
+                            $fallback->whereNull('farm_brgy')->where('permanent_brgy', $b);
+                        });
+                });
+            });
         } else {
             return response()->json([
                 'status' => 'error',
@@ -355,9 +374,9 @@ class FarmerController extends Controller
 
         if ($request->boolean('with_farmers')) {
             $used = Farmer::query()
+                ->selectRaw('COALESCE(farm_brgy, permanent_brgy) as brgy')
                 ->distinct()
-                ->orderBy('permanent_brgy')
-                ->pluck('permanent_brgy')
+                ->pluck('brgy')
                 ->filter();
             $names = $names->intersect($used)->values();
         }
@@ -896,10 +915,13 @@ class FarmerController extends Controller
             ], 403));
         }
 
-        if (strcasecmp(trim((string) $farmer->permanent_brgy), $assigned) !== 0) {
+        $farmBrgy = trim((string) ($farmer->farm_brgy ?? ''));
+        $homeBrgy = trim((string) ($farmer->permanent_brgy ?? ''));
+        $match = strcasecmp($farmBrgy !== '' ? $farmBrgy : $homeBrgy, $assigned) === 0;
+        if (! $match) {
             abort(response()->json([
                 'status' => 'error',
-                'message' => 'You can only manage farmers in your assigned barangay.',
+                'message' => 'You can only manage farmers whose farm is in your assigned barangay.',
             ], 403));
         }
     }

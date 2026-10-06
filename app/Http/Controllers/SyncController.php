@@ -312,11 +312,11 @@ class SyncController extends Controller
         }
     }
 
-    /** Program-free municipal seed release (tbl_seed_varieties / tbl_seed_releases). */
+    /** Offline claim against an Active program variety (one claim per program cycle). */
     private function syncSeedVarietyClaim(array $item, ?string $clientId, string $technicianId): array
     {
         $validator = Validator::make($item, [
-            'variety_id' => 'required|uuid|exists:tbl_seed_varieties,id',
+            'variety_id' => 'required|uuid|exists:tbl_subsidy_program_varieties,id',
             'farmer_id' => 'nullable|uuid|exists:farmers,id',
             'rsbsa_no' => 'nullable|string|max:64',
         ]);

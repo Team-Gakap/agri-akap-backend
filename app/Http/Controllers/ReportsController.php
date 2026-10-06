@@ -21,66 +21,28 @@ class ReportsController extends Controller
 
     /**
      * GET /reports/subsidies
-     * Seed releases (program-free) filtered by claim date, variety, and barangay.
-     * Legacy program-based claims are included when present.
+     * Claimed releases from program beneficiaries, filtered by date, variety,
+     * farm barangay, and subsidy line (Hybrid / RCEF).
      */
     public function subsidies(Request $request): JsonResponse
     {
         $request->validate([
             'variety_id' => ['nullable', 'string'],
             'barangay'   => ['nullable', 'string'],
+            'seed_class' => ['nullable', 'string'],
             'date_from'  => ['nullable', 'date'],
             'date_to'    => ['nullable', 'date'],
         ]);
 
         $barangay = $this->scopedBarangay($request);
 
-        $releaseQuery = DB::table('tbl_seed_releases')
-            ->where('tbl_seed_releases.status', 'Claimed')
-            ->join('tbl_seed_varieties', 'tbl_seed_varieties.id', '=', 'tbl_seed_releases.variety_id')
-            ->leftJoin('farmers', 'farmers.id', '=', 'tbl_seed_releases.farmer_id')
-            ->select([
-                'tbl_seed_releases.id',
-                'tbl_seed_releases.farmer_rsbsa_no',
-                'tbl_seed_releases.quantity as calculated_allocation',
-                DB::raw('NULL as calculated_allocation_secondary'),
-                'tbl_seed_releases.claimed_at',
-                DB::raw('NULL as photo_proof_path'),
-                DB::raw("'Seed Release' as program_name"),
-                DB::raw("'Rice' as target_crop"),
-                DB::raw('NULL as seed_class'),
-                DB::raw("'seed' as item_type"),
-                'tbl_seed_releases.unit as unit_of_measurement',
-                DB::raw('NULL as secondary_unit'),
-                'tbl_seed_varieties.variety_name',
-                'tbl_seed_varieties.unit as variety_unit',
-                'tbl_seed_releases.variety_id',
-                'farmers.surname',
-                'farmers.first_name',
-                'farmers.middle_name',
-                DB::raw('COALESCE(tbl_seed_releases.farm_barangay, farmers.permanent_brgy) as permanent_brgy'),
-            ]);
-
-        if ($request->filled('variety_id')) {
-            $releaseQuery->where('tbl_seed_releases.variety_id', $request->variety_id);
-        }
-        if ($barangay !== null) {
-            $releaseQuery->where(function ($q) use ($barangay) {
-                $q->where('tbl_seed_releases.farm_barangay', $barangay)
-                    ->orWhere('farmers.permanent_brgy', $barangay);
-            });
-        }
-        if ($request->filled('date_from')) {
-            $releaseQuery->whereDate('tbl_seed_releases.claimed_at', '>=', $request->date_from);
-        }
-        if ($request->filled('date_to')) {
-            $releaseQuery->whereDate('tbl_seed_releases.claimed_at', '<=', $request->date_to);
-        }
-
-        $legacyQuery = SubsidyBeneficiary::query()
+        $query = SubsidyBeneficiary::query()
             ->where('tbl_subsidy_beneficiaries.status', 'Claimed')
             ->join('tbl_subsidy_programs', 'tbl_subsidy_programs.id', '=', 'tbl_subsidy_beneficiaries.program_id')
-            ->leftJoin('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
+            ->leftJoin('farmers', function ($join) {
+                $join->on('farmers.id', '=', 'tbl_subsidy_beneficiaries.farmer_id')
+                    ->orOn('farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no');
+            })
             ->leftJoin('tbl_subsidy_program_varieties', 'tbl_subsidy_program_varieties.id', '=', 'tbl_subsidy_beneficiaries.variety_id')
             ->select([
                 'tbl_subsidy_beneficiaries.id',
@@ -89,6 +51,7 @@ class ReportsController extends Controller
                 'tbl_subsidy_beneficiaries.calculated_allocation_secondary',
                 'tbl_subsidy_beneficiaries.claimed_at',
                 'tbl_subsidy_beneficiaries.photo_proof_path',
+                'tbl_subsidy_beneficiaries.source_farm_barangay',
                 'tbl_subsidy_programs.program_name',
                 'tbl_subsidy_programs.target_crop',
                 'tbl_subsidy_programs.seed_class',
@@ -101,33 +64,43 @@ class ReportsController extends Controller
                 'farmers.surname',
                 'farmers.first_name',
                 'farmers.middle_name',
+                'farmers.farm_brgy',
                 'farmers.permanent_brgy',
-            ]);
-        SubsidyBeneficiary::applyNotDeleted($legacyQuery);
+            ])
+            ->orderByDesc('tbl_subsidy_beneficiaries.claimed_at');
+        SubsidyBeneficiary::applyNotDeleted($query);
 
         if ($request->filled('variety_id')) {
-            $legacyQuery->where('tbl_subsidy_beneficiaries.variety_id', $request->variety_id);
+            $query->where('tbl_subsidy_beneficiaries.variety_id', $request->variety_id);
+        }
+        if ($request->filled('seed_class')) {
+            $seedClass = (string) $request->seed_class;
+            if (strcasecmp($seedClass, 'RCEF') === 0) {
+                $seedClass = 'Inbred';
+            }
+            $query->where('tbl_subsidy_programs.seed_class', $seedClass);
         }
         if ($barangay !== null) {
-            $legacyQuery->where('farmers.permanent_brgy', $barangay);
+            $query->where(function ($q) use ($barangay) {
+                $q->where('tbl_subsidy_beneficiaries.source_farm_barangay', $barangay)
+                    ->orWhere('farmers.farm_brgy', $barangay)
+                    ->orWhere('farmers.permanent_brgy', $barangay);
+            });
         }
         if ($request->filled('date_from')) {
-            $legacyQuery->whereDate('tbl_subsidy_beneficiaries.claimed_at', '>=', $request->date_from);
+            $query->whereDate('tbl_subsidy_beneficiaries.claimed_at', '>=', $request->date_from);
         }
         if ($request->filled('date_to')) {
-            $legacyQuery->whereDate('tbl_subsidy_beneficiaries.claimed_at', '<=', $request->date_to);
+            $query->whereDate('tbl_subsidy_beneficiaries.claimed_at', '<=', $request->date_to);
         }
 
-        $combined = $releaseQuery
-            ->unionAll($legacyQuery->toBase())
-            ->orderByDesc('claimed_at')
-            ->limit(3000)
-            ->get();
-
-        $rows = $combined->map(function ($row) {
+        $rows = $query->limit(3000)->get()->map(function ($row) {
             $names = $this->splitFarmerName($row->surname ?? '', $row->first_name ?? '', $row->middle_name ?? '');
             $unit = $row->variety_unit ?: ($row->unit_of_measurement ?? 'Bags');
             $qty = (float) ($row->calculated_allocation ?? 0);
+            $seedClass = $row->seed_class;
+            $subsidyLine = $seedClass === 'Inbred' ? 'RCEF' : ($seedClass === 'Hybrid' ? 'Hybrid' : ($seedClass ?? ''));
+            $farmBrgy = $row->source_farm_barangay ?: ($row->farm_brgy ?: ($row->permanent_brgy ?? ''));
 
             return [
                 'id'            => $row->id,
@@ -136,10 +109,11 @@ class ReportsController extends Controller
                 'first_name'    => $names['first_name'],
                 'middle_name'   => $names['middle_name'],
                 'farmer_name'   => $names['display'],
-                'barangay'      => $row->permanent_brgy ?? '',
+                'barangay'      => $farmBrgy,
                 'program_name'  => $row->program_name ?? '',
                 'target_crop'   => $row->target_crop ?? '',
-                'seed_class'    => $row->seed_class,
+                'seed_class'    => $seedClass,
+                'subsidy_line'  => $subsidyLine,
                 'item_type'     => $row->item_type,
                 'item_received' => $qty.' '.$unit.($row->variety_name ? ' · '.$row->variety_name : ''),
                 'quantity'      => $qty,

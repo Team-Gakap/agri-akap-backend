@@ -3,91 +3,148 @@
 namespace App\Http\Controllers;
 
 use App\Models\Farmer;
-use App\Models\SeedRelease;
-use App\Models\SeedVariety;
+use App\Models\SubsidyBeneficiary;
+use App\Models\SubsidyProgram;
+use App\Models\SubsidyProgramVariety;
 use App\Support\AuditRemarks;
 use App\Traits\LogsReportAudit;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\Rule;
+use Illuminate\Support\Str;
 
+/**
+ * Technician-facing variety list / verify / claim.
+ * Stock lives on tbl_subsidy_program_varieties under Active programs.
+ * One claim per farmer per program cycle (any variety).
+ */
 class SeedVarietyController extends Controller
 {
     use LogsReportAudit;
 
+    /**
+     * Flattened list of varieties on Active programs (for stock display / chips).
+     */
     public function index(): JsonResponse
     {
-        $varieties = SeedVariety::query()
-            ->orderByRaw('COALESCE(sort_order, 9999)')
+        $varieties = SubsidyProgramVariety::query()
+            ->with('program:id,program_name,seed_class,item_type,status,unit_of_measurement,items_per_hectare')
+            ->whereHas('program', fn ($q) => $q->where('status', 'Active'))
+            ->orderBy('sort_order')
             ->orderBy('variety_name')
-            ->get();
+            ->get()
+            ->map(function (SubsidyProgramVariety $v) {
+                $program = $v->program;
+
+                return [
+                    'id' => $v->id,
+                    'variety_name' => $v->variety_name,
+                    'unit' => $v->unit ?? $program?->unit_of_measurement ?? 'Bags',
+                    'bags_per_hectare' => (float) ($v->bags_per_hectare ?? $program?->items_per_hectare ?? 1),
+                    'total_quantity' => (float) $v->total_quantity,
+                    'remaining_quantity' => (float) $v->remaining_quantity,
+                    'program_id' => $v->program_id,
+                    'program_name' => $program?->program_name,
+                    'seed_class' => $program?->seed_class,
+                    'subsidy_line' => $this->subsidyLineLabel($program?->seed_class),
+                    'is_active' => $program?->status === 'Active',
+                ];
+            })
+            ->values();
 
         return response()->json([
             'status' => 'success',
-            'message' => 'Seed varieties loaded.',
+            'message' => 'Active seed varieties loaded.',
             'data' => $varieties,
         ]);
     }
 
-    public function store(Request $request): JsonResponse
+    /**
+     * Compatibility: sync varieties onto a program when program_id is provided.
+     * Prefer PUT /subsidies/{id}/varieties for admin batch setup.
+     */
+    public function sync(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'variety_name' => 'required|string|max:120|unique:tbl_seed_varieties,variety_name',
-            'unit' => 'nullable|string|max:64',
-            'bags_per_hectare' => 'required|numeric|min:0.01|max:100000',
-            'total_quantity' => 'required|numeric|min:0|max:1000000',
-            'reorder_level' => 'nullable|numeric|min:0|max:1000000',
-            'sort_order' => 'nullable|integer|min:0|max:9999',
+            'program_id' => 'required|uuid|exists:tbl_subsidy_programs,id',
+            'varieties' => 'required|array|min:1',
+            'varieties.*.variety_name' => 'required|string|max:120',
+            'varieties.*.quantity' => 'required|numeric|min:0|max:1000000',
+            'varieties.*.bags_per_hectare' => 'nullable|numeric|min:0.01|max:100000',
+            'varieties.*.unit' => 'nullable|string|max:64',
         ]);
-        $remarks = AuditRemarks::require($request, 'A justification is required before adding a seed variety.');
+        $remarks = AuditRemarks::require($request, 'A justification is required before syncing seed varieties.');
 
-        $qty = (float) $validated['total_quantity'];
-        $variety = SeedVariety::create([
-            'variety_name' => trim($validated['variety_name']),
-            'unit' => $validated['unit'] ?? 'Bags',
-            'bags_per_hectare' => $validated['bags_per_hectare'],
-            'total_quantity' => $qty,
-            'remaining_quantity' => $qty,
-            'reorder_level' => $validated['reorder_level'] ?? null,
-            'sort_order' => $validated['sort_order'] ?? null,
-            'is_active' => true,
-        ]);
+        $program = SubsidyProgram::query()->findOrFail($validated['program_id']);
+        $hasClaims = SubsidyBeneficiary::query()
+            ->where('program_id', $program->id)
+            ->where('status', 'Claimed')
+            ->exists();
 
-        $this->logReportAudit('seed_variety.created', $variety->id, [
-            'variety_name' => $variety->variety_name,
-            'total_quantity' => $qty,
+        DB::transaction(function () use ($validated, $program, $hasClaims) {
+            if (! $hasClaims) {
+                SubsidyProgramVariety::where('program_id', $program->id)->delete();
+            }
+            $total = 0.0;
+            foreach ($validated['varieties'] as $index => $row) {
+                $name = trim($row['variety_name']);
+                $qty = (float) $row['quantity'];
+                $total += $qty;
+                SubsidyProgramVariety::updateOrCreate(
+                    ['program_id' => $program->id, 'variety_name' => $name],
+                    [
+                        'unit' => $row['unit'] ?? null,
+                        'bags_per_hectare' => $row['bags_per_hectare'] ?? $program->items_per_hectare,
+                        'total_quantity' => $qty,
+                        'remaining_quantity' => $hasClaims
+                            ? DB::raw('remaining_quantity')
+                            : $qty,
+                        'sort_order' => $index,
+                    ]
+                );
+            }
+            if (! $hasClaims) {
+                $program->total_quantity = $total;
+                $program->remaining_quantity = $total;
+                $program->save();
+            }
+        });
+
+        $this->logReportAudit('seed_variety.synced', $program->id, [
+            'count' => count($validated['varieties']),
             'remarks' => $remarks,
         ]);
 
         return response()->json([
             'status' => 'success',
-            'message' => 'Seed variety created.',
-            'data' => $variety,
-        ], 201);
+            'message' => 'Program varieties saved.',
+            'data' => $this->index()->getData(true)['data'] ?? [],
+        ]);
+    }
+
+    public function store(Request $request): JsonResponse
+    {
+        return response()->json([
+            'status' => 'error',
+            'message' => 'Create an Active subsidy program and add varieties under that batch.',
+        ], 422);
     }
 
     public function update(Request $request, string $id): JsonResponse
     {
-        $variety = SeedVariety::query()->findOrFail($id);
+        $variety = SubsidyProgramVariety::query()->findOrFail($id);
         $validated = $request->validate([
-            'variety_name' => [
-                'sometimes', 'string', 'max:120',
-                Rule::unique('tbl_seed_varieties', 'variety_name')->ignore($variety->id),
-            ],
+            'variety_name' => 'sometimes|string|max:120',
             'unit' => 'nullable|string|max:64',
             'bags_per_hectare' => 'sometimes|numeric|min:0.01|max:100000',
             'reorder_level' => 'nullable|numeric|min:0|max:1000000',
-            'sort_order' => 'nullable|integer|min:0|max:9999',
-            'is_active' => 'sometimes|boolean',
         ]);
         $remarks = AuditRemarks::require($request, 'A justification is required before updating a seed variety.');
-
-        $variety->fill($validated);
-        $variety->save();
+        $variety->fill($validated)->save();
 
         $this->logReportAudit('seed_variety.updated', $variety->id, [
-            'after' => $variety->only(['variety_name', 'bags_per_hectare', 'is_active', 'reorder_level']),
+            'after' => $variety->only(['variety_name', 'bags_per_hectare']),
             'remarks' => $remarks,
         ]);
 
@@ -98,93 +155,42 @@ class SeedVarietyController extends Controller
         ]);
     }
 
-    public function sync(Request $request): JsonResponse
-    {
-        $validated = $request->validate([
-            'varieties' => 'required|array|min:1',
-            'varieties.*.variety_name' => 'required|string|max:120',
-            'varieties.*.quantity' => 'required|numeric|min:0|max:1000000',
-            'varieties.*.bags_per_hectare' => 'nullable|numeric|min:0.01|max:100000',
-            'varieties.*.unit' => 'nullable|string|max:64',
-        ]);
-        $remarks = AuditRemarks::require($request, 'A justification is required before syncing seed varieties.');
-
-        $hasClaims = SeedRelease::query()->where('status', 'Claimed')->exists();
-
-        DB::transaction(function () use ($validated, $hasClaims) {
-            $order = 0;
-            foreach ($validated['varieties'] as $row) {
-                $name = trim($row['variety_name']);
-                $qty = (float) $row['quantity'];
-                $existing = SeedVariety::query()->where('variety_name', $name)->first();
-                if ($existing) {
-                    if (! $hasClaims) {
-                        $existing->total_quantity = $qty;
-                        $existing->remaining_quantity = $qty;
-                    }
-                    if (isset($row['bags_per_hectare'])) {
-                        $existing->bags_per_hectare = $row['bags_per_hectare'];
-                    }
-                    if (! empty($row['unit'])) {
-                        $existing->unit = $row['unit'];
-                    }
-                    $existing->sort_order = $order++;
-                    $existing->is_active = true;
-                    $existing->save();
-                } else {
-                    SeedVariety::create([
-                        'variety_name' => $name,
-                        'unit' => $row['unit'] ?? 'Bags',
-                        'bags_per_hectare' => $row['bags_per_hectare'] ?? 1,
-                        'total_quantity' => $qty,
-                        'remaining_quantity' => $qty,
-                        'sort_order' => $order++,
-                        'is_active' => true,
-                    ]);
-                }
-            }
-        });
-
-        $this->logReportAudit('seed_variety.synced', null, [
-            'count' => count($validated['varieties']),
-            'remarks' => $remarks,
-        ]);
-
-        return response()->json([
-            'status' => 'success',
-            'message' => 'Seed varieties saved.',
-            'data' => SeedVariety::query()->orderByRaw('COALESCE(sort_order, 9999)')->orderBy('variety_name')->get(),
-        ]);
-    }
-
     public function restock(Request $request, string $id): JsonResponse
     {
-        $variety = SeedVariety::query()->findOrFail($id);
+        $variety = SubsidyProgramVariety::query()->findOrFail($id);
         $validated = $request->validate([
             'quantity' => 'required|numeric|min:0.01|max:1000000',
         ]);
         $remarks = AuditRemarks::require($request, 'A justification is required before restocking seed variety inventory.');
 
         $qty = (float) $validated['quantity'];
-        $variety->total_quantity = (float) $variety->total_quantity + $qty;
-        $variety->remaining_quantity = (float) $variety->remaining_quantity + $qty;
-        $variety->save();
+        DB::transaction(function () use ($variety, $qty) {
+            $variety = SubsidyProgramVariety::where('id', $variety->id)->lockForUpdate()->first();
+            $variety->total_quantity = (float) $variety->total_quantity + $qty;
+            $variety->remaining_quantity = (float) $variety->remaining_quantity + $qty;
+            $variety->save();
+            $program = SubsidyProgram::where('id', $variety->program_id)->lockForUpdate()->first();
+            if ($program) {
+                $program->total_quantity = (float) $program->total_quantity + $qty;
+                $program->remaining_quantity = (float) $program->remaining_quantity + $qty;
+                $program->save();
+            }
+        });
 
         $this->logReportAudit('seed_variety.restocked', $variety->id, [
             'added' => $qty,
-            'remaining' => (float) $variety->remaining_quantity,
             'remarks' => $remarks,
         ]);
 
         return response()->json([
             'status' => 'success',
             'message' => 'Variety restocked.',
-            'data' => $variety,
+            'data' => $variety->fresh(),
         ]);
     }
 
     /**
-     * Registry-based eligibility check — no subsidy program required.
+     * Registry-based eligibility — lists Active program varieties the farmer may still claim.
      */
     public function verifyFarmer(Request $request): JsonResponse
     {
@@ -219,29 +225,50 @@ class SeedVarietyController extends Controller
             ], 409);
         }
 
-        $claimedVarietyIds = SeedRelease::query()
-            ->where('farmer_id', $farmer->id)
+        $claimedProgramIds = SubsidyBeneficiary::query()
             ->where('status', 'Claimed')
-            ->pluck('variety_id')
+            ->where(function ($q) use ($farmer) {
+                $q->where('farmer_id', $farmer->id);
+                if ($farmer->rsbsa_no) {
+                    $q->orWhere('farmer_rsbsa_no', $farmer->rsbsa_no);
+                }
+            })
+            ->pluck('program_id')
+            ->unique()
             ->all();
 
-        $varieties = SeedVariety::query()
-            ->where('is_active', true)
+        $area = (float) ($farmer->total_farm_area_ha ?? 0);
+
+        $varieties = SubsidyProgramVariety::query()
+            ->with('program:id,program_name,seed_class,status,unit_of_measurement,items_per_hectare,max_hectares_limit')
             ->where('remaining_quantity', '>', 0)
-            ->orderByRaw('COALESCE(sort_order, 9999)')
+            ->whereHas('program', fn ($q) => $q->where('status', 'Active'))
+            ->orderBy('sort_order')
             ->orderBy('variety_name')
             ->get()
-            ->map(fn (SeedVariety $v) => [
-                'id' => $v->id,
-                'variety_name' => $v->variety_name,
-                'unit' => $v->unit,
-                'bags_per_hectare' => (float) $v->bags_per_hectare,
-                'remaining_quantity' => (float) $v->remaining_quantity,
-                'already_claimed' => in_array($v->id, $claimedVarietyIds, true),
-            ])
-            ->values();
+            ->map(function (SubsidyProgramVariety $v) use ($claimedProgramIds, $area) {
+                $program = $v->program;
+                $rate = (float) ($v->bags_per_hectare ?? $program?->items_per_hectare ?? 1);
+                $cap = (float) ($program?->max_hectares_limit ?? 0);
+                $eligible = $cap > 0 ? min($area, $cap) : $area;
+                $qty = (float) floor(($eligible * $rate) + 0.0000001);
+                $already = in_array($v->program_id, $claimedProgramIds, true);
 
-        $area = (float) ($farmer->total_farm_area_ha ?? 0);
+                return [
+                    'id' => $v->id,
+                    'variety_name' => $v->variety_name,
+                    'unit' => $v->unit ?? $program?->unit_of_measurement ?? 'Bags',
+                    'bags_per_hectare' => $rate,
+                    'remaining_quantity' => (float) $v->remaining_quantity,
+                    'estimated_quantity' => $qty,
+                    'program_id' => $v->program_id,
+                    'program_name' => $program?->program_name,
+                    'seed_class' => $program?->seed_class,
+                    'subsidy_line' => $this->subsidyLineLabel($program?->seed_class),
+                    'already_claimed' => $already,
+                ];
+            })
+            ->values();
 
         return response()->json([
             'status' => 'success',
@@ -251,7 +278,9 @@ class SeedVarietyController extends Controller
                 'farmer_id' => $farmer->id,
                 'farmer_name' => trim($farmer->surname.', '.$farmer->first_name.' '.($farmer->middle_name ?? '')),
                 'rsbsa_no' => $farmer->rsbsa_no,
-                'barangay' => $farmer->permanent_brgy,
+                'barangay' => $farmer->farm_brgy ?: $farmer->permanent_brgy,
+                'farm_brgy' => $farmer->farm_brgy,
+                'permanent_brgy' => $farmer->permanent_brgy,
                 'mobile_number' => $farmer->mobile_number,
                 'total_farm_size' => $area,
                 'eligible_size' => $area,
@@ -266,7 +295,7 @@ class SeedVarietyController extends Controller
         $validated = $request->validate([
             'farmer_id' => 'nullable|uuid|exists:farmers,id',
             'rsbsa_no' => 'nullable|string|max:64',
-            'variety_id' => 'required|uuid|exists:tbl_seed_varieties,id',
+            'variety_id' => 'required|uuid|exists:tbl_subsidy_program_varieties,id',
             'geo_tag_lat' => 'nullable|numeric',
             'geo_tag_long' => 'nullable|numeric',
             'override_reason' => 'nullable|string|max:255',
@@ -279,12 +308,12 @@ class SeedVarietyController extends Controller
 
         $code = match ($result['outcome'] ?? 'failed') {
             'created', 'already_claimed' => 200,
-            'failed' => 422,
+            'failed' => $result['code'] ?? 422,
             default => 409,
         };
 
         return response()->json([
-            'status' => ($result['outcome'] ?? '') === 'created' || ($result['outcome'] ?? '') === 'already_claimed' ? 'success' : 'error',
+            'status' => in_array($result['outcome'] ?? '', ['created', 'already_claimed'], true) ? 'success' : 'error',
             'message' => $result['message'] ?? 'Claim failed.',
             'data' => $result['data'] ?? null,
         ], $code);
@@ -292,48 +321,61 @@ class SeedVarietyController extends Controller
 
     /**
      * @param  array<string, mixed>  $item
-     * @return array{outcome: string, message: string, data?: array<string, mixed>}
+     * @return array{outcome: string, message: string, code?: int, data?: array<string, mixed>}
      */
     public function executeClaim(array $item, ?string $technicianId = null): array
     {
         $farmer = $this->resolveFarmer($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null);
         if (! $farmer) {
-            return ['outcome' => 'failed', 'message' => 'No registered farmer matches that ID / RSBSA.'];
+            return ['outcome' => 'failed', 'code' => 404, 'message' => 'No registered farmer matches that ID / RSBSA.'];
         }
 
         if (! empty($farmer->subsidy_exclusion_reason)) {
             return [
                 'outcome' => 'failed',
+                'code' => 409,
                 'message' => 'This farmer is excluded from subsidies: '.$farmer->subsidy_exclusion_reason,
             ];
         }
 
         $varietyId = $item['variety_id'] ?? null;
         if (! $varietyId) {
-            return ['outcome' => 'failed', 'message' => 'Select a seed variety to release.'];
+            return ['outcome' => 'failed', 'code' => 422, 'message' => 'Select a seed variety to release.'];
         }
 
         try {
             return DB::transaction(function () use ($farmer, $varietyId, $item, $technicianId) {
-                $variety = SeedVariety::query()->lockForUpdate()->find($varietyId);
-                if (! $variety || ! $variety->is_active) {
-                    return ['outcome' => 'failed', 'message' => 'That seed variety is not available.'];
+                $variety = SubsidyProgramVariety::query()->lockForUpdate()->find($varietyId);
+                if (! $variety) {
+                    return ['outcome' => 'failed', 'code' => 404, 'message' => 'That seed variety is not available.'];
                 }
 
-                $existing = SeedRelease::query()
-                    ->where('farmer_id', $farmer->id)
-                    ->where('variety_id', $variety->id)
+                $program = SubsidyProgram::query()->lockForUpdate()->find($variety->program_id);
+                if (! $program || $program->status !== 'Active') {
+                    return ['outcome' => 'failed', 'code' => 400, 'message' => 'The parent subsidy program is not active.'];
+                }
+
+                $existingQuery = SubsidyBeneficiary::query()
+                    ->where('program_id', $program->id)
                     ->where('status', 'Claimed')
-                    ->first();
+                    ->where(function ($q) use ($farmer) {
+                        $q->where('farmer_id', $farmer->id);
+                        if ($farmer->rsbsa_no) {
+                            $q->orWhere('farmer_rsbsa_no', $farmer->rsbsa_no);
+                        }
+                    });
+                $existing = $existingQuery->first();
 
                 if ($existing) {
                     return [
                         'outcome' => 'already_claimed',
-                        'message' => 'This farmer already claimed '.$variety->variety_name.'.',
+                        'message' => 'This farmer already claimed seed for '.$program->program_name.'.',
                         'data' => [
-                            'release_id' => $existing->id,
-                            'variety_name' => $variety->variety_name,
-                            'quantity' => (float) $existing->quantity,
+                            'beneficiary_id' => $existing->id,
+                            'program_id' => $program->id,
+                            'program_name' => $program->program_name,
+                            'variety_name' => optional($existing->variety)->variety_name,
+                            'quantity' => (float) $existing->calculated_allocation,
                             'claimed_at' => $existing->claimed_at,
                         ],
                     ];
@@ -341,67 +383,108 @@ class SeedVarietyController extends Controller
 
                 $area = (float) ($farmer->total_farm_area_ha ?? 0);
                 if ($area <= 0) {
-                    return ['outcome' => 'failed', 'message' => 'This farmer has no farm area on record.'];
+                    return ['outcome' => 'failed', 'code' => 422, 'message' => 'This farmer has no farm area on record.'];
                 }
 
-                $qty = (float) floor(($area * (float) $variety->bags_per_hectare) + 0.0000001);
-                if ($qty <= 0) {
-                    $qty = (float) $variety->bags_per_hectare > 0 ? 1.0 : 0.0;
+                $rate = (float) ($variety->bags_per_hectare ?? $program->items_per_hectare ?? 1);
+                if ($rate <= 0) {
+                    $rate = 1;
                 }
+                $cap = (float) ($program->max_hectares_limit ?? 0);
+                $eligible = $cap > 0 ? min($area, $cap) : $area;
+                $qty = (float) floor(($eligible * $rate) + 0.0000001);
                 if ($qty <= 0) {
-                    return ['outcome' => 'failed', 'message' => 'Calculated allocation is zero.'];
+                    $qty = 1.0;
                 }
 
                 if ((float) $variety->remaining_quantity < $qty) {
                     return [
                         'outcome' => 'failed',
+                        'code' => 409,
                         'message' => 'Not enough stock for '.$variety->variety_name.
                             ' (need '.$qty.', have '.(float) $variety->remaining_quantity.').',
                     ];
                 }
 
+                if ((float) $program->remaining_quantity < $qty) {
+                    return [
+                        'outcome' => 'failed',
+                        'code' => 409,
+                        'message' => 'Not enough program stock for '.$program->program_name.'.',
+                    ];
+                }
+
                 $variety->remaining_quantity = (float) $variety->remaining_quantity - $qty;
                 $variety->save();
+                $program->remaining_quantity = (float) $program->remaining_quantity - $qty;
+                $program->save();
 
-                $release = SeedRelease::create([
+                $farmBrgy = $farmer->farm_brgy ?: $farmer->permanent_brgy;
+
+                $beneficiary = SubsidyBeneficiary::create([
+                    'program_id' => $program->id,
                     'farmer_id' => $farmer->id,
-                    'variety_id' => $variety->id,
                     'farmer_rsbsa_no' => $farmer->rsbsa_no,
-                    'farm_barangay' => $farmer->permanent_brgy,
-                    'farm_area_ha' => $area,
-                    'quantity' => $qty,
-                    'unit' => $variety->unit,
-                    'released_by' => $technicianId,
-                    'claimed_at' => now(),
-                    'device_id' => $item['device_id'] ?? null,
-                    'geo_tag_lat' => $item['geo_tag_lat'] ?? null,
-                    'geo_tag_long' => $item['geo_tag_long'] ?? null,
-                    'override_reason' => $item['override_reason'] ?? null,
-                    'override_reason_code' => $item['override_reason_code'] ?? null,
-                    'override_justification' => $item['override_justification'] ?? null,
+                    'variety_id' => $variety->id,
+                    'calculated_allocation' => $qty,
+                    'source_farm_area' => $area,
+                    'source_farm_barangay' => $farmBrgy,
+                    'source_farm_municipality' => $farmer->farm_city ?: 'Echague',
+                    'source_farmer_barangay' => $farmer->permanent_brgy,
+                    'source_farmer_municipality' => $farmer->permanent_city,
                     'status' => 'Claimed',
+                    'selection_mode' => 'field_release',
+                    'claimed_at' => now(),
+                    'claimed_by' => $technicianId ?? Auth::id(),
+                    'override_justification' => $item['override_justification'] ?? null,
+                    'override_reason_code' => $item['override_reason_code'] ?? null,
                 ]);
 
                 return [
                     'outcome' => 'created',
-                    'message' => 'Released '.$qty.' '.$variety->unit.' of '.$variety->variety_name.'.',
+                    'message' => 'Released '.$qty.' '.($variety->unit ?? $program->unit_of_measurement).
+                        ' of '.$variety->variety_name.' ('.$this->subsidyLineLabel($program->seed_class).').',
                     'data' => [
-                        'release_id' => $release->id,
+                        'beneficiary_id' => $beneficiary->id,
                         'farmer_id' => $farmer->id,
                         'farmer_name' => trim($farmer->surname.', '.$farmer->first_name),
-                        'barangay' => $farmer->permanent_brgy,
+                        'barangay' => $farmBrgy,
+                        'program_id' => $program->id,
+                        'program_name' => $program->program_name,
+                        'seed_class' => $program->seed_class,
+                        'subsidy_line' => $this->subsidyLineLabel($program->seed_class),
                         'variety_id' => $variety->id,
                         'variety_name' => $variety->variety_name,
                         'quantity' => $qty,
-                        'unit' => $variety->unit,
+                        'unit' => $variety->unit ?? $program->unit_of_measurement,
                         'variety_remaining' => (float) $variety->remaining_quantity,
-                        'claimed_at' => $release->claimed_at,
+                        'claimed_at' => $beneficiary->claimed_at,
                     ],
                 ];
             });
         } catch (\Throwable $e) {
-            return ['outcome' => 'failed', 'message' => $e->getMessage() ?: 'Could not save the seed release.'];
+            // Unique constraint race: farmer already claimed this program.
+            if (Str::contains($e->getMessage(), 'subsidy_program_farmer_unique')) {
+                return [
+                    'outcome' => 'already_claimed',
+                    'message' => 'This farmer already claimed seed for this subsidy cycle.',
+                ];
+            }
+
+            return ['outcome' => 'failed', 'code' => 500, 'message' => $e->getMessage() ?: 'Could not save the seed release.'];
         }
+    }
+
+    private function subsidyLineLabel(?string $seedClass): string
+    {
+        if ($seedClass === 'Inbred') {
+            return 'RCEF';
+        }
+        if ($seedClass === 'Hybrid') {
+            return 'Hybrid';
+        }
+
+        return $seedClass ?: 'Seed';
     }
 
     private function resolveFarmer(?string $farmerId, ?string $rsbsaNo): ?Farmer
