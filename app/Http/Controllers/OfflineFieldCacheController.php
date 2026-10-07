@@ -181,6 +181,11 @@ class OfflineFieldCacheController extends Controller
             'secondary_items_per_hectare' => $p->secondary_items_per_hectare !== null
                 ? (float) $p->secondary_items_per_hectare
                 : null,
+            'bag_size_kg' => $p->bag_size_kg !== null
+                ? (float) $p->bag_size_kg
+                : ($p->item_type === 'seed'
+                    ? ($p->seed_class === 'Hybrid' ? 15.0 : 20.0)
+                    : null),
             'status' => $p->status,
             'unit_of_measurement' => $p->unit_of_measurement,
             'secondary_unit' => $p->secondary_unit,

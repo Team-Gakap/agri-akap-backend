@@ -79,6 +79,7 @@ class SubsidyController extends Controller
             'min_hectares_limit' => 'nullable|numeric|min:0|max:9999|lte:max_hectares_limit',
             'items_per_hectare' => 'required|numeric|min:0.01|max:100000',
             'secondary_items_per_hectare' => 'nullable|numeric|min:0.01|max:100000',
+            'bag_size_kg' => 'nullable|numeric|min:0.01|max:1000',
             'status' => ['nullable', Rule::in(['Draft', 'Active', 'Completed'])],
             'unit_of_measurement' => 'nullable|string|max:64',
             'total_quantity' => 'nullable|numeric|min:0|max:1000000',
@@ -142,8 +143,22 @@ class SubsidyController extends Controller
             ? (float) array_sum(array_column($rawVarieties, 'quantity'))
             : null;
 
-        $totalQuantity = $varietyDerivedTotal ?? ($validated['total_quantity'] ?? 0);
+        $bagSizeKg = isset($validated['bag_size_kg']) ? (float) $validated['bag_size_kg'] : null;
+        if ($itemType === SubsidyCatalog::SEED && $bagSizeKg === null) {
+            $bagSizeKg = $seedClass === SubsidyCatalog::HYBRID ? 15.0 : 20.0;
+        }
+
+        // Seed variety quantities are bag counts. Dual-unit Hybrid stores kg primary + bags secondary.
+        $totalQuantity = $validated['total_quantity'] ?? 0;
         $secondaryTotalQuantity = $isDualUnit ? ($validated['secondary_total_quantity'] ?? 0) : null;
+        if ($varietyDerivedTotal !== null) {
+            if ($itemType === SubsidyCatalog::SEED && $isDualUnit && $bagSizeKg) {
+                $secondaryTotalQuantity = $varietyDerivedTotal;
+                $totalQuantity = $varietyDerivedTotal * $bagSizeKg;
+            } else {
+                $totalQuantity = $varietyDerivedTotal;
+            }
+        }
 
         $program = SubsidyProgram::create([
             'program_name' => $validated['program_name'],
@@ -158,6 +173,7 @@ class SubsidyController extends Controller
             'min_hectares_limit' => $validated['min_hectares_limit'] ?? 0,
             'items_per_hectare' => $validated['items_per_hectare'],
             'secondary_items_per_hectare' => $isDualUnit ? $validated['secondary_items_per_hectare'] : null,
+            'bag_size_kg' => $bagSizeKg,
             'status' => $validated['status'] ?? 'Draft',
             'unit_of_measurement' => $unit ?: 'Bags',
             'secondary_unit' => $secondaryUnit,
@@ -197,6 +213,7 @@ class SubsidyController extends Controller
         $validated = $request->validate([
             'quantity_added' => 'required|numeric|min:0.01|max:1000000',
             'secondary_quantity_added' => 'nullable|numeric|min:0.01|max:1000000',
+            'bags_added' => 'nullable|numeric|min:0.01|max:1000000',
         ]);
 
         $remarks = AuditRemarks::require($request, 'A justification is required before logging a warehouse delivery.');
@@ -204,12 +221,41 @@ class SubsidyController extends Controller
 
         $program = DB::transaction(function () use ($id, $validated) {
             $program = SubsidyProgram::where('id', $id)->lockForUpdate()->firstOrFail();
-            $program->total_quantity += $validated['quantity_added'];
-            $program->remaining_quantity += $validated['quantity_added'];
 
-            if (! empty($validated['secondary_quantity_added']) && $program->secondary_unit) {
-                $program->secondary_total_quantity = (float) ($program->secondary_total_quantity ?? 0) + $validated['secondary_quantity_added'];
-                $program->secondary_remaining_quantity = (float) ($program->secondary_remaining_quantity ?? 0) + $validated['secondary_quantity_added'];
+            // Seed restock is entered in bags; kilograms are derived from bag_size_kg.
+            $bagSize = $this->resolvedBagSizeKg($program) ?? 0.0;
+            if ($program->item_type === SubsidyCatalog::SEED && $bagSize > 0 && $program->bag_size_kg === null) {
+                $program->bag_size_kg = $bagSize;
+            }
+            $bagsAdded = isset($validated['bags_added'])
+                ? (float) $validated['bags_added']
+                : null;
+            if ($bagsAdded === null
+                && $program->item_type === SubsidyCatalog::SEED
+                && $bagSize > 0
+                && empty($validated['secondary_quantity_added'])) {
+                $bagsAdded = (float) $validated['quantity_added'];
+            }
+
+            if ($bagsAdded !== null && $bagSize > 0) {
+                $kgAdded = $bagsAdded * $bagSize;
+                if ($program->secondary_unit) {
+                    $program->secondary_total_quantity = (float) ($program->secondary_total_quantity ?? 0) + $bagsAdded;
+                    $program->secondary_remaining_quantity = (float) ($program->secondary_remaining_quantity ?? 0) + $bagsAdded;
+                    $program->total_quantity += $kgAdded;
+                    $program->remaining_quantity += $kgAdded;
+                } else {
+                    $program->total_quantity += $bagsAdded;
+                    $program->remaining_quantity += $bagsAdded;
+                }
+            } else {
+                $program->total_quantity += $validated['quantity_added'];
+                $program->remaining_quantity += $validated['quantity_added'];
+
+                if (! empty($validated['secondary_quantity_added']) && $program->secondary_unit) {
+                    $program->secondary_total_quantity = (float) ($program->secondary_total_quantity ?? 0) + $validated['secondary_quantity_added'];
+                    $program->secondary_remaining_quantity = (float) ($program->secondary_remaining_quantity ?? 0) + $validated['secondary_quantity_added'];
+                }
             }
 
             $program->save();
@@ -217,9 +263,24 @@ class SubsidyController extends Controller
             return $program;
         });
 
-        $message = "Delivery logged. {$validated['quantity_added']} {$program->unit_of_measurement} added to stock.";
-        if (! empty($validated['secondary_quantity_added']) && $program->secondary_unit) {
-            $message .= " Plus {$validated['secondary_quantity_added']} {$program->secondary_unit}.";
+        $bagSizeLogged = $this->resolvedBagSizeKg($program) ?? 0.0;
+        $bagsLogged = isset($validated['bags_added'])
+            ? (float) $validated['bags_added']
+            : (
+                $program->item_type === SubsidyCatalog::SEED
+                && $bagSizeLogged > 0
+                && empty($validated['secondary_quantity_added'])
+                    ? (float) $validated['quantity_added']
+                    : null
+            );
+        if ($bagsLogged !== null && $bagSizeLogged > 0) {
+            $kgLogged = $bagsLogged * $bagSizeLogged;
+            $message = "Delivery logged. {$bagsLogged} bags ({$kgLogged} kg) added to stock.";
+        } else {
+            $message = "Delivery logged. {$validated['quantity_added']} {$program->unit_of_measurement} added to stock.";
+            if (! empty($validated['secondary_quantity_added']) && $program->secondary_unit) {
+                $message .= " Plus {$validated['secondary_quantity_added']} {$program->secondary_unit}.";
+            }
         }
 
         $this->logReportAudit('subsidy_program.restocked', $program, [
@@ -248,6 +309,8 @@ class SubsidyController extends Controller
             'delivery_start_date' => 'nullable|date',
             'delivery_end_date' => 'nullable|date|after_or_equal:delivery_start_date',
             'items_per_hectare' => 'sometimes|numeric|min:0.01|max:100000',
+            'secondary_items_per_hectare' => 'sometimes|nullable|numeric|min:0.01|max:100000',
+            'bag_size_kg' => 'sometimes|nullable|numeric|min:0.01|max:1000',
             'max_hectares_limit' => 'sometimes|numeric|min:0.01|max:9999',
             'min_hectares_limit' => 'nullable|numeric|min:0|max:9999',
             'target_barangays' => 'nullable|array',
@@ -275,6 +338,8 @@ class SubsidyController extends Controller
             'delivery_start_date',
             'delivery_end_date',
             'items_per_hectare',
+            'secondary_items_per_hectare',
+            'bag_size_kg',
             'max_hectares_limit',
             'min_hectares_limit',
             'target_barangays',
@@ -292,6 +357,12 @@ class SubsidyController extends Controller
         }
         if (array_key_exists('items_per_hectare', $validated)) {
             $updates['items_per_hectare'] = $validated['items_per_hectare'];
+        }
+        if (array_key_exists('secondary_items_per_hectare', $validated)) {
+            $updates['secondary_items_per_hectare'] = $validated['secondary_items_per_hectare'];
+        }
+        if (array_key_exists('bag_size_kg', $validated)) {
+            $updates['bag_size_kg'] = $validated['bag_size_kg'];
         }
         if (array_key_exists('max_hectares_limit', $validated)) {
             $updates['max_hectares_limit'] = $validated['max_hectares_limit'];
@@ -312,11 +383,6 @@ class SubsidyController extends Controller
         }
 
         $program->update($updates);
-
-        // Keep dual-unit secondary rate aligned when bags/ha changes on Hybrid seed.
-        if (isset($updates['items_per_hectare']) && $program->secondary_unit) {
-            $program->update(['secondary_items_per_hectare' => $updates['items_per_hectare']]);
-        }
 
         $fresh = $program->fresh()->load('varieties');
         $this->logReportAudit('subsidy_program.updated', $fresh, [
@@ -939,9 +1005,10 @@ class SubsidyController extends Controller
                 return ['error' => $shortfall, 'code' => 409];
             }
 
-            // Variety stock: validate and deduct the chosen variety's stock first.
+            // Variety stock is counted in bags. Deduct bags, then roll program kg/bags.
             $variety = null;
             $hasVarieties = SubsidyProgramVariety::where('program_id', $id)->exists();
+            $bagsOut = $this->bagAllocation($program, $allocation, $allocationSecondary);
             if ($hasVarieties) {
                 if (empty($validated['variety_id'])) {
                     return ['error' => 'Please select a seed variety to release.', 'code' => 422];
@@ -953,17 +1020,14 @@ class SubsidyController extends Controller
                 if (! $variety) {
                     return ['error' => 'The selected variety does not belong to this program.', 'code' => 422];
                 }
-                if ((float) $variety->remaining_quantity < $allocation) {
-                    return ['error' => "Not enough stock for {$variety->variety_name} (only {$variety->remaining_quantity} left).", 'code' => 409];
+                if ((float) $variety->remaining_quantity < $bagsOut) {
+                    return ['error' => "Not enough stock for {$variety->variety_name} (only {$variety->remaining_quantity} bags left).", 'code' => 409];
                 }
-                $variety->remaining_quantity = (float) $variety->remaining_quantity - $allocation;
+                $variety->remaining_quantity = (float) $variety->remaining_quantity - $bagsOut;
                 $variety->save();
             }
 
-            $program->remaining_quantity -= $allocation;
-            if ($allocationSecondary !== null && $program->secondary_unit) {
-                $program->secondary_remaining_quantity = (float) ($program->secondary_remaining_quantity ?? 0) - $allocationSecondary;
-            }
+            $this->applyProgramStockDeduction($program, $allocation, $allocationSecondary, $bagsOut);
             $program->save();
 
             $photoPath = $this->storeBase64Image($validated['photo_proof_base64'] ?? null, 'subsidy-claims');
@@ -1311,12 +1375,16 @@ class SubsidyController extends Controller
                 'item_released' => $program->program_name,
                 'seed_class' => $program->seed_class,
                 'item_type' => $program->item_type,
-                'unit' => $program->unit_of_measurement,
+                'unit' => $program->item_type === SubsidyCatalog::SEED && $program->secondary_unit
+                    ? 'bags'
+                    : $program->unit_of_measurement,
                 'total_farm_size' => $totalFarmSize,
                 'eligible_size' => $eligibleSize,
-                'quantity' => $allocation,
-                'allocated_bags' => $allocation,
-                'inventory_remaining' => (float) $program->remaining_quantity,
+                'quantity' => $this->bagAllocation($program, $allocation, $allocationSecondary),
+                'allocated_bags' => $this->bagAllocation($program, $allocation, $allocationSecondary),
+                'inventory_remaining' => $program->item_type === SubsidyCatalog::SEED && $program->secondary_unit
+                    ? (float) ($program->secondary_remaining_quantity ?? 0)
+                    : (float) $program->remaining_quantity,
                 'unit_secondary' => $program->secondary_unit,
                 'quantity_secondary' => $allocationSecondary,
                 'inventory_remaining_secondary' => $program->secondary_unit
@@ -1498,9 +1566,10 @@ class SubsidyController extends Controller
                 return ['error' => $shortfall, 'code' => 409, 'outcome' => 'failed'];
             }
 
-            // Variety stock decrement (mirrors claimBeneficiary logic).
+            // Variety stock is counted in bags.
             $variety = null;
             $hasVarieties = SubsidyProgramVariety::where('program_id', $programId)->exists();
+            $bagsOut = $this->bagAllocation($program, $allocation, $allocationSecondary);
             if ($hasVarieties) {
                 $varietyId = $item['variety_id'] ?? null;
                 if (! $varietyId) {
@@ -1513,17 +1582,14 @@ class SubsidyController extends Controller
                 if (! $variety) {
                     return ['error' => 'The selected variety does not belong to this program.', 'code' => 422, 'outcome' => 'failed'];
                 }
-                if ((float) $variety->remaining_quantity < $allocation) {
-                    return ['error' => "Not enough stock for {$variety->variety_name} (only {$variety->remaining_quantity} left).", 'code' => 409, 'outcome' => 'failed'];
+                if ((float) $variety->remaining_quantity < $bagsOut) {
+                    return ['error' => "Not enough stock for {$variety->variety_name} (only {$variety->remaining_quantity} bags left).", 'code' => 409, 'outcome' => 'failed'];
                 }
-                $variety->remaining_quantity = (float) $variety->remaining_quantity - $allocation;
+                $variety->remaining_quantity = (float) $variety->remaining_quantity - $bagsOut;
                 $variety->save();
             }
 
-            $program->remaining_quantity -= $allocation;
-            if ($allocationSecondary !== null && $program->secondary_unit) {
-                $program->secondary_remaining_quantity = (float) ($program->secondary_remaining_quantity ?? 0) - $allocationSecondary;
-            }
+            $this->applyProgramStockDeduction($program, $allocation, $allocationSecondary, $bagsOut);
             $program->save();
 
             $photoPath = $this->storeBase64Image($item['photo_proof_base64'] ?? null, 'subsidy-claims');
@@ -1706,6 +1772,7 @@ class SubsidyController extends Controller
             'min_hectares_limit' => (float) ($p->min_hectares_limit ?? 0),
             'items_per_hectare' => (float) $p->items_per_hectare,
             'secondary_items_per_hectare' => $p->secondary_items_per_hectare !== null ? (float) $p->secondary_items_per_hectare : null,
+            'bag_size_kg' => $this->resolvedBagSizeKg($p),
             'status' => $p->status,
             'delivery_start_date' => optional($p->delivery_start_date)->toDateString(),
             'delivery_end_date' => optional($p->delivery_end_date)->toDateString(),
@@ -1720,6 +1787,7 @@ class SubsidyController extends Controller
             'is_low_stock' => $this->isLowStock($p),
             'beneficiaries_count' => (int) ($p->beneficiaries_count ?? 0),
             'claimed_count' => (int) ($p->claimed_count ?? 0),
+            'claimed_bags' => $this->claimedBagsForProgram($p),
             'varieties' => $varieties,
             'created_at' => optional($p->created_at)->toIso8601String(),
         ];
@@ -1791,11 +1859,20 @@ class SubsidyController extends Controller
             }
             $total += $qty;
 
+            $storedUnit = $unit ?: null;
+            if ($program->item_type === SubsidyCatalog::SEED) {
+                $storedUnit = 'bags';
+            }
+
             SubsidyProgramVariety::updateOrCreate(
                 ['program_id' => $program->id, 'variety_name' => $name],
                 [
-                    'unit'               => $unit ?: null,
-                    'bags_per_hectare'   => $rate ?: $program->items_per_hectare,
+                    'unit'               => $storedUnit,
+                    'bags_per_hectare'   => $rate ?: (
+                        $program->secondary_items_per_hectare !== null
+                            ? (float) $program->secondary_items_per_hectare
+                            : (float) $program->items_per_hectare
+                    ),
                     'target_fca'         => isset($v['target_fca']) ? (trim((string) $v['target_fca']) ?: null) : null,
                     'target_barangays'   => $v['target_barangays'] ?? null,
                     'total_quantity'     => $qty,
@@ -1808,8 +1885,20 @@ class SubsidyController extends Controller
         }
 
         if (! $hasClaims) {
-            $program->total_quantity     = $total;
-            $program->remaining_quantity = $total;
+            $bagSize = $this->resolvedBagSizeKg($program) ?? 0.0;
+            if ($program->item_type === SubsidyCatalog::SEED && $bagSize > 0 && $program->bag_size_kg === null) {
+                $program->bag_size_kg = $bagSize;
+            }
+            if ($program->item_type === SubsidyCatalog::SEED && $program->secondary_unit && $bagSize > 0) {
+                // Variety qty is bags. Primary program stock is kilograms.
+                $program->secondary_total_quantity = $total;
+                $program->secondary_remaining_quantity = $total;
+                $program->total_quantity = $total * $bagSize;
+                $program->remaining_quantity = $total * $bagSize;
+            } else {
+                $program->total_quantity = $total;
+                $program->remaining_quantity = $total;
+            }
             $program->save();
         }
     }
@@ -1882,6 +1971,25 @@ class SubsidyController extends Controller
      */
     private function stockShortfallMessage(SubsidyProgram $program, int $allocation, ?int $allocationSecondary): ?string
     {
+        $bagsOut = $this->bagAllocation($program, $allocation, $allocationSecondary);
+        $bagSize = $this->resolvedBagSizeKg($program) ?? 0.0;
+        $hasVarietyStock = $program->varieties()->where('remaining_quantity', '>', 0)->exists();
+
+        if ($program->item_type === SubsidyCatalog::SEED && $program->secondary_unit && $bagSize > 0) {
+            $kgNeeded = $bagsOut * $bagSize;
+            if ((float) $program->remaining_quantity + 0.0000001 < $kgNeeded) {
+                return "Insufficient stock. Only {$program->remaining_quantity} kg remaining, but this farmer needs {$kgNeeded} kg ({$bagsOut} bags). Log a delivery first.";
+            }
+
+            $secondaryRemaining = (float) ($program->secondary_remaining_quantity ?? 0);
+            // Older Hybrid rows may still show 0 bags while varieties hold the bag count.
+            if ($secondaryRemaining + 0.0000001 < $bagsOut && ! ($hasVarietyStock && $secondaryRemaining <= 0)) {
+                return "Insufficient stock. Only {$secondaryRemaining} bags remaining, but this farmer is allocated {$bagsOut}. Log a delivery first.";
+            }
+
+            return null;
+        }
+
         if ((float) $program->remaining_quantity < $allocation) {
             return "Insufficient stock. Only {$program->remaining_quantity} {$program->unit_of_measurement} remaining, but this farmer is allocated {$allocation}. Log a delivery first.";
         }
@@ -1894,6 +2002,70 @@ class SubsidyController extends Controller
         }
 
         return null;
+    }
+
+    /** Bags handed over for this claim (secondary for Hybrid dual-unit, primary otherwise). */
+    private function bagAllocation(SubsidyProgram $program, int $allocation, ?int $allocationSecondary): int
+    {
+        if ($program->item_type === SubsidyCatalog::SEED && $program->secondary_unit && $allocationSecondary !== null) {
+            return max(0, $allocationSecondary);
+        }
+
+        return max(0, $allocation);
+    }
+
+    private function resolvedBagSizeKg(SubsidyProgram $program): ?float
+    {
+        if ($program->bag_size_kg !== null) {
+            return (float) $program->bag_size_kg;
+        }
+        if ($program->item_type !== SubsidyCatalog::SEED) {
+            return null;
+        }
+
+        return $program->seed_class === SubsidyCatalog::HYBRID ? 15.0 : 20.0;
+    }
+
+    private function applyProgramStockDeduction(
+        SubsidyProgram $program,
+        int $allocation,
+        ?int $allocationSecondary,
+        int $bagsOut
+    ): void {
+        $bagSize = $this->resolvedBagSizeKg($program) ?? 0.0;
+
+        if ($program->item_type === SubsidyCatalog::SEED && $program->secondary_unit && $bagSize > 0) {
+            $kgOut = $bagsOut * $bagSize;
+            $program->remaining_quantity = max(0, (float) $program->remaining_quantity - $kgOut);
+            $secondaryRemaining = (float) ($program->secondary_remaining_quantity ?? 0);
+            if ($secondaryRemaining > 0) {
+                $program->secondary_remaining_quantity = max(0, $secondaryRemaining - $bagsOut);
+            }
+
+            return;
+        }
+
+        $program->remaining_quantity = max(0, (float) $program->remaining_quantity - $allocation);
+        if ($allocationSecondary !== null && $program->secondary_unit) {
+            $program->secondary_remaining_quantity = max(
+                0,
+                (float) ($program->secondary_remaining_quantity ?? 0) - $allocationSecondary
+            );
+        }
+    }
+
+    private function claimedBagsForProgram(SubsidyProgram $program): float
+    {
+        $query = DB::table('tbl_subsidy_beneficiaries')
+            ->where('program_id', $program->id)
+            ->where('status', 'Claimed');
+        SubsidyBeneficiary::applyNotDeleted($query);
+
+        if ($program->item_type === SubsidyCatalog::SEED && $program->secondary_unit) {
+            return (float) ($query->sum('calculated_allocation_secondary') ?? 0);
+        }
+
+        return (float) ($query->sum('calculated_allocation') ?? 0);
     }
 
     /**
@@ -2001,7 +2173,9 @@ class SubsidyController extends Controller
         $secondary = $claimed
             ? ($row->claimed_allocation_secondary !== null ? (int) $row->claimed_allocation_secondary : null)
             : ($live['secondary'] ?? null);
+        $bags = $this->bagAllocation($program, $primary, $secondary);
         $priority = FarmerPriority::flags((bool) $row->is_pwd, $row->birthdate ?? null);
+        $seedBags = $program->item_type === SubsidyCatalog::SEED;
 
         return [
             'farmer_id' => $row->id,
@@ -2013,9 +2187,11 @@ class SubsidyController extends Controller
             'barangay' => $row->farm_brgy ?: $row->permanent_brgy,
             'farm_brgy' => $row->farm_brgy,
             'farm_area' => $area,
-            'allocated_bags' => $primary,
-            'calculated_allocation' => $primary,
-            'calculated_allocation_secondary' => $secondary,
+            'allocated_bags' => $bags,
+            'calculated_allocation' => $seedBags ? $bags : $primary,
+            'calculated_allocation_secondary' => $seedBags && $program->secondary_unit
+                ? $primary
+                : $secondary,
             'variety_name' => $claimed ? $row->variety_name : null,
             'claimed_at' => $claimed ? $row->claimed_at : null,
             'status' => $claimed ? 'Claimed' : 'Unclaimed',
@@ -2449,13 +2625,19 @@ class SubsidyController extends Controller
      */
     private function farmAreaSql(): string
     {
-        return 'CASE WHEN COALESCE(plots.area, 0) > 0 THEN plots.area ELSE COALESCE(planted.area, 0) END';
+        // Plot → planted → RSBSA masterlist total on the farmer row.
+        return 'CASE'
+            .' WHEN COALESCE(plots.area, 0) > 0 THEN plots.area'
+            .' WHEN COALESCE(planted.area, 0) > 0 THEN planted.area'
+            .' ELSE COALESCE(farmers.total_farm_area_ha, 0)'
+            .' END';
     }
 
     /**
      * Crop-area helpers: RSBSA farm plots + active planting logs.
      * `Both` sums rice + corn parcels / planting logs.
      * Planted fallback uses the latest Active log per plot (not lifetime SUM).
+     * Masterlist farmers without plots use farmers.total_farm_area_ha.
      */
     private function cropAreaForFarmer(string $farmerId, string $targetCrop, ?string $hvccCommodity = null): float
     {
@@ -2469,7 +2651,15 @@ class SubsidyController extends Controller
             return $plotHa;
         }
 
-        return $this->latestPlantedAreaForFarmer($farmerId, $targetCrop, $hvccCommodity);
+        $plantedHa = $this->latestPlantedAreaForFarmer($farmerId, $targetCrop, $hvccCommodity);
+        if ($plantedHa > 0) {
+            return $plantedHa;
+        }
+
+        return (float) (DB::table('farmers')
+            ->where('id', $farmerId)
+            ->whereNull('deleted_at')
+            ->value('total_farm_area_ha') ?? 0);
     }
 
     /**
