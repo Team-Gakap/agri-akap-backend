@@ -6,11 +6,9 @@ use App\Models\DamageAssessment;
 use App\Models\Farmer;
 use App\Models\FarmPlot;
 use App\Models\PestMonitoring;
-use App\Models\SubsidyBeneficiary;
 use App\Models\SubsidyProgram;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 /**
  * One-shot slim snapshot for technician offline search / scan / dispatch queues.
@@ -78,7 +76,7 @@ class OfflineFieldCacheController extends Controller
             ->values()
             ->all();
 
-        $programs = SubsidyProgram::query()
+        $programModels = SubsidyProgram::query()
             ->where('status', 'Active')
             ->with(['varieties' => fn ($q) => $q->orderBy('sort_order')->orderBy('variety_name')])
             ->withCount([
@@ -86,45 +84,19 @@ class OfflineFieldCacheController extends Controller
                 'beneficiaries as claimed_count' => fn ($q) => $q->where('status', 'Claimed'),
             ])
             ->orderByDesc('created_at')
-            ->get()
+            ->get();
+
+        $programs = $programModels
             ->map(fn (SubsidyProgram $p) => $this->serializeProgram($p))
             ->values()
             ->all();
 
-        $programIds = array_column($programs, 'id');
+        $subsidy = app(SubsidyController::class);
         $beneficiaries = [];
-        if ($programIds) {
-            $query = DB::table('tbl_subsidy_beneficiaries')
-                ->join('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
-                ->whereIn('tbl_subsidy_beneficiaries.program_id', $programIds)
-                ->whereNull('farmers.deleted_at');
-            SubsidyBeneficiary::applyNotDeleted($query, 'tbl_subsidy_beneficiaries.deleted_at');
-            $beneficiaries = $query
-                ->orderBy('farmers.surname')
-                ->orderBy('farmers.first_name')
-                ->get([
-                    'tbl_subsidy_beneficiaries.id as beneficiary_id',
-                    'tbl_subsidy_beneficiaries.program_id',
-                    'tbl_subsidy_beneficiaries.farmer_rsbsa_no as rsbsa_no',
-                    'tbl_subsidy_beneficiaries.status',
-                    'farmers.id as farmer_id',
-                    'farmers.surname',
-                    'farmers.first_name',
-                    'farmers.middle_name',
-                ])
-                ->map(fn ($row) => [
-                    'id' => $row->beneficiary_id,
-                    'beneficiary_id' => $row->beneficiary_id,
-                    'program_id' => $row->program_id,
-                    'farmer_id' => $row->farmer_id,
-                    'rsbsa_no' => $row->rsbsa_no,
-                    'surname' => $row->surname,
-                    'first_name' => $row->first_name,
-                    'middle_name' => $row->middle_name,
-                    'status' => $row->status,
-                ])
-                ->values()
-                ->all();
+        foreach ($programModels as $program) {
+            foreach ($subsidy->cachedTargetRows($program) as $row) {
+                $beneficiaries[] = $row;
+            }
         }
 
         $pest = PestMonitoring::query()

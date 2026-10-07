@@ -17,6 +17,7 @@ use App\Support\HvccCatalog;
 use App\Support\WalkInOverride;
 use App\Traits\DecodesBase64Image;
 use App\Traits\LogsReportAudit;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -674,6 +675,135 @@ class SubsidyController extends Controller
     /**
      * Return a compact, spreadsheet-ready masterlist for one program.
      */
+    /**
+     * Live target list from the farmer registry. Claimed releases are joined in.
+     * Unclaimed farmers are not stored as beneficiary rows.
+     */
+    public function targetBeneficiaries(Request $request, string $id): JsonResponse
+    {
+        $program = SubsidyProgram::query()->with('varieties')->withCount([
+            'beneficiaries',
+            'beneficiaries as claimed_count' => fn ($q) => $q->where('status', 'Claimed'),
+        ])->findOrFail($id);
+
+        $validated = $request->validate([
+            'search' => 'nullable|string|max:120',
+            'barangay' => 'nullable|string|max:120',
+            'status' => 'nullable|string|in:Claimed,Unclaimed',
+            'page' => 'nullable|integer|min:1',
+            'per_page' => 'nullable|integer|min:1|max:200',
+            'all' => 'nullable|boolean',
+        ]);
+
+        $filters = ['search' => $validated['search'] ?? null];
+        if (! empty($validated['barangay'])) {
+            $filters['barangays'] = [$validated['barangay']];
+        }
+        $minHa = (float) ($program->min_hectares_limit ?? 0);
+        if ($minHa > 0) {
+            $filters['min_ha'] = $minHa;
+        }
+
+        $query = $this->targetBeneficiaryQuery($program, $filters);
+        $claimedCount = (clone $query)->whereNotNull('claims.claim_id')->count();
+        $totalCount = (clone $query)->count();
+
+        $status = $validated['status'] ?? null;
+        if ($status === 'Claimed') {
+            $query->whereNotNull('claims.claim_id');
+        } elseif ($status === 'Unclaimed') {
+            $query->whereNull('claims.claim_id');
+        }
+
+        $query->orderBy('farmers.surname')->orderBy('farmers.first_name');
+
+        $wantsAll = $request->boolean('all');
+        if ($wantsAll) {
+            $rows = $query->limit(8000)->get();
+            $pageRows = $rows->map(fn ($row) => $this->mapTargetBeneficiary($program, $row))->values();
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Target beneficiaries loaded.',
+                'data' => [
+                    'program' => $this->serializeProgram($program),
+                    'beneficiaries' => $pageRows,
+                    'meta' => [
+                        'total' => $totalCount,
+                        'claimed' => $claimedCount,
+                        'unclaimed' => max(0, $totalCount - $claimedCount),
+                        'page' => 1,
+                        'per_page' => $pageRows->count(),
+                        'last_page' => 1,
+                    ],
+                ],
+            ]);
+        }
+
+        $perPage = (int) ($validated['per_page'] ?? 50);
+        $paginator = $query->paginate($perPage)->withQueryString();
+        $paginator->setCollection(
+            $paginator->getCollection()->map(fn ($row) => $this->mapTargetBeneficiary($program, $row))
+        );
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Target beneficiaries loaded.',
+            'data' => [
+                'program' => $this->serializeProgram($program),
+                'beneficiaries' => $paginator->items(),
+                'meta' => [
+                    'total' => $totalCount,
+                    'claimed' => $claimedCount,
+                    'unclaimed' => max(0, $totalCount - $claimedCount),
+                    'page' => $paginator->currentPage(),
+                    'per_page' => $paginator->perPage(),
+                    'last_page' => $paginator->lastPage(),
+                ],
+            ],
+        ]);
+    }
+
+    /**
+     * Slim eligibility rows for the technician offline cache. Not inserted as claims.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function cachedTargetRows(SubsidyProgram $program): array
+    {
+        $filters = [];
+        $minHa = (float) ($program->min_hectares_limit ?? 0);
+        if ($minHa > 0) {
+            $filters['min_ha'] = $minHa;
+        }
+
+        return $this->targetBeneficiaryQuery($program, $filters)
+            ->orderBy('farmers.surname')
+            ->orderBy('farmers.first_name')
+            ->limit(8000)
+            ->get()
+            ->map(function ($row) use ($program) {
+                $mapped = $this->mapTargetBeneficiary($program, $row);
+                $claimed = $mapped['status'] === 'Claimed';
+                $cacheId = $claimed && ! empty($row->claim_id)
+                    ? (string) $row->claim_id
+                    : 'live:'.$program->id.':'.$row->id;
+
+                return [
+                    'id' => $cacheId,
+                    'beneficiary_id' => $claimed ? (string) $row->claim_id : $cacheId,
+                    'program_id' => $program->id,
+                    'farmer_id' => $row->id,
+                    'rsbsa_no' => $row->rsbsa_no,
+                    'surname' => $row->surname,
+                    'first_name' => $row->first_name,
+                    'middle_name' => $row->middle_name,
+                    'status' => $mapped['status'],
+                ];
+            })
+            ->all();
+    }
+
     public function masterlist(string $id): JsonResponse
     {
         $program = SubsidyProgram::query()->findOrFail($id);
@@ -1060,13 +1190,32 @@ class SubsidyController extends Controller
         SubsidyBeneficiary::applyNotDeleted($beneficiaryQuery);
         $beneficiary = $beneficiaryQuery->first();
 
+        $beneficiaryId = null;
         if (! $beneficiary) {
-            return response()->json([
-                'status' => 'error',
-                'eligible' => false,
-                'message' => 'This farmer is not on the masterlist for this program.',
-            ], 404);
-        }
+            if (! $this->farmerMatchesTargetList($program, $farmer)) {
+                return response()->json([
+                    'status' => 'error',
+                    'eligible' => false,
+                    'message' => 'This farmer is not eligible for this program.',
+                ], 404);
+            }
+
+            $previewArea = $this->cropAreaForFarmer($farmer->id, (string) $program->target_crop, $program->hvcc_commodity);
+            $live = $this->allocationForArea($program, $previewArea);
+            if ($live === null) {
+                $minHa = (float) ($program->min_hectares_limit ?? 0);
+
+                return response()->json([
+                    'status' => 'error',
+                    'eligible' => false,
+                    'message' => "This farmer's {$program->target_crop} area ({$previewArea} ha) is below the program minimum of {$minHa} ha.",
+                ], 400);
+            }
+
+            $allocation = $live['primary'];
+            $allocationSecondary = $live['secondary'];
+        } else {
+            $beneficiaryId = $beneficiary->id;
 
         if ($beneficiary->status === 'Claimed') {
             return response()->json([
@@ -1102,6 +1251,7 @@ class SubsidyController extends Controller
         $allocationSecondary = $beneficiary->calculated_allocation_secondary !== null
             ? (int) $beneficiary->calculated_allocation_secondary
             : null;
+        }
 
         $shortfall = $this->stockShortfallMessage($program, $allocation, $allocationSecondary);
         if ($shortfall) {
@@ -1152,7 +1302,7 @@ class SubsidyController extends Controller
             'data' => [
                 'farmer_id' => $farmer->id,
                 'program_id' => $program->id,
-                'beneficiary_id' => $beneficiary->id,
+                'beneficiary_id' => $beneficiaryId,
                 'farmer_name' => trim($farmer->surname.', '.$farmer->first_name.' '.$farmer->middle_name),
                 'rsbsa_no' => $farmer->rsbsa_no,
                 'mobile_number' => $farmer->mobile_number,
@@ -1202,6 +1352,8 @@ class SubsidyController extends Controller
             'override_reason_code' => 'nullable|string|max:32',
             'override_justification' => 'nullable|string|max:500',
             'variety_id' => 'nullable|uuid',
+            'drop_off_point' => 'nullable|string|max:150',
+            'fca_name' => 'nullable|string|max:150',
         ]);
 
         $result = $this->executeClaim($id, $validated, $request->user()?->id);
@@ -1238,7 +1390,8 @@ class SubsidyController extends Controller
 
         $farmer = $this->resolveFarmer($item['farmer_id'] ?? null, $item['rsbsa_no'] ?? null);
 
-        $result = DB::transaction(function () use ($programId, $item, $farmer, $technicianId) {
+        try {
+            $result = DB::transaction(function () use ($programId, $item, $farmer, $technicianId) {
             $program = SubsidyProgram::where('id', $programId)->lockForUpdate()->first();
 
             if (! $program) {
@@ -1268,8 +1421,39 @@ class SubsidyController extends Controller
 
             $beneficiary = $beneficiaryQuery->lockForUpdate()->first();
 
+            $liveClaim = false;
             if (! $beneficiary) {
-                return ['error' => 'This farmer is not on the masterlist for this program.', 'code' => 404, 'outcome' => 'failed'];
+                if (! empty($item['beneficiary_id']) || ! $farmer) {
+                    return ['error' => 'This farmer is not eligible for this program.', 'code' => 404, 'outcome' => 'failed'];
+                }
+
+                $exclusion = ! empty($farmer->subsidy_exclusion_reason)
+                    ? (string) $farmer->subsidy_exclusion_reason
+                    : SubsidyExclusionRules::matchedLabel($farmer->enlistment_remarks);
+                if ($exclusion !== null) {
+                    return ['error' => 'This farmer is excluded from subsidies: '.$exclusion, 'code' => 409, 'outcome' => 'failed'];
+                }
+
+                if (! $this->farmerMatchesTargetList($program, $farmer)) {
+                    return ['error' => 'This farmer is not eligible for this program.', 'code' => 404, 'outcome' => 'failed'];
+                }
+
+                $liveArea = $this->cropAreaForFarmer($farmer->id, (string) $program->target_crop, $program->hvcc_commodity);
+                $liveAlloc = $this->allocationForArea($program, $liveArea);
+                if ($liveAlloc === null) {
+                    return ['error' => "This farmer's {$program->target_crop} area is below the program minimum.", 'code' => 400, 'outcome' => 'failed'];
+                }
+
+                $beneficiary = (object) [
+                    'id' => null,
+                    'farmer_id' => $farmer->id,
+                    'farmer_rsbsa_no' => $farmer->rsbsa_no,
+                    'calculated_allocation' => $liveAlloc['primary'],
+                    'calculated_allocation_secondary' => $liveAlloc['secondary'],
+                    'status' => 'Unclaimed',
+                    'source_farm_area' => $liveArea,
+                ];
+                $liveClaim = true;
             }
 
             if ($beneficiary->status === 'Claimed') {
@@ -1359,9 +1543,57 @@ class SubsidyController extends Controller
                 $claimUpdate['override_reason_code'] = $override['reason_code'];
                 $claimUpdate['is_walkin'] = true;
             }
-            DB::table('tbl_subsidy_beneficiaries')
-                ->where('id', $beneficiary->id)
-                ->update($claimUpdate);
+
+            if ($liveClaim) {
+                $farmBrgy = $claimFarmer?->farm_brgy ?: $claimFarmer?->permanent_brgy;
+                $dropOff = trim((string) ($item['drop_off_point'] ?? '')) ?: $farmBrgy;
+                $fcaName = trim((string) ($item['fca_name'] ?? ''));
+                if ($fcaName === '' && $variety) {
+                    $fcaName = trim((string) ($variety->target_fca ?? ''));
+                }
+
+                try {
+                    $created = SubsidyBeneficiary::create([
+                        'program_id' => $program->id,
+                        'farmer_id' => $claimFarmer?->id,
+                        'farmer_rsbsa_no' => $claimFarmer?->rsbsa_no,
+                        'is_walkin' => ! empty($claimUpdate['is_walkin']) || (bool) ($claimFarmer?->is_temporary ?? false),
+                        'variety_id' => $variety?->id,
+                        'calculated_allocation' => $allocation,
+                        'calculated_allocation_secondary' => $allocationSecondary,
+                        'source_farm_area' => $beneficiary->source_farm_area,
+                        'source_farm_barangay' => $farmBrgy,
+                        'source_farm_municipality' => $claimFarmer?->farm_city ?: 'Echague',
+                        'source_farmer_barangay' => $claimFarmer?->permanent_brgy,
+                        'source_farmer_municipality' => $claimFarmer?->permanent_city,
+                        'drop_off_point' => $dropOff,
+                        'fca_name' => $fcaName !== '' ? $fcaName : null,
+                        'status' => 'Claimed',
+                        'priority_tier' => $claimFarmer
+                            ? $this->priorityTierForFarmer($claimFarmer, (float) $beneficiary->source_farm_area)
+                            : null,
+                        'selection_mode' => 'field_release',
+                        'claimed_at' => $claimUpdate['claimed_at'],
+                        'claimed_by' => $claimUpdate['claimed_by'],
+                        'photo_proof_path' => $photoPath,
+                        'override_by_admin_id' => $claimUpdate['override_by_admin_id'] ?? null,
+                        'override_timestamp' => $claimUpdate['override_timestamp'] ?? null,
+                        'override_justification' => $claimUpdate['override_justification'] ?? null,
+                        'override_reason_code' => $claimUpdate['override_reason_code'] ?? null,
+                    ]);
+                } catch (QueryException $e) {
+                    if (str_contains($e->getMessage(), 'subsidy_program_farmer_unique') || str_contains($e->getMessage(), 'Duplicate entry')) {
+                        throw new \RuntimeException('DUPLICATE_CLAIM');
+                    }
+                    throw $e;
+                }
+
+                $beneficiary = $created;
+            } else {
+                DB::table('tbl_subsidy_beneficiaries')
+                    ->where('id', $beneficiary->id)
+                    ->update($claimUpdate);
+            }
 
             return [
                 'program'     => $program->fresh(),
@@ -1370,6 +1602,17 @@ class SubsidyController extends Controller
                 'variety'     => $variety,
             ];
         });
+        } catch (\RuntimeException $e) {
+            if ($e->getMessage() !== 'DUPLICATE_CLAIM') {
+                throw $e;
+            }
+
+            return [
+                'outcome' => 'duplicate',
+                'code' => 409,
+                'message' => 'This farmer has already claimed their allocation for this program.',
+            ];
+        }
 
         if (isset($result['error'])) {
             return [
@@ -1672,6 +1915,117 @@ class SubsidyController extends Controller
      *     rsbsa_nos?: ?array
      * }  $filters
      */
+    /**
+     * Eligible registry farmers for this campaign, with any Claimed release joined on.
+     *
+     * @param  array<string, mixed>  $filters
+     */
+    private function targetBeneficiaryQuery(SubsidyProgram $program, array $filters = []): \Illuminate\Database\Query\Builder
+    {
+        $query = $this->eligibleFarmerQuery($program, $filters);
+        $this->applySubsidyExclusion($query);
+
+        $claims = DB::table('tbl_subsidy_beneficiaries as b')
+            ->leftJoin('tbl_subsidy_program_varieties as v', 'v.id', '=', 'b.variety_id')
+            ->where('b.program_id', $program->id)
+            ->where('b.status', 'Claimed')
+            ->whereNull('b.deleted_at')
+            ->select([
+                'b.id as claim_id',
+                'b.farmer_rsbsa_no',
+                'b.claimed_at',
+                'b.calculated_allocation as claimed_allocation',
+                'b.calculated_allocation_secondary as claimed_allocation_secondary',
+                'v.variety_name',
+            ]);
+
+        $query->leftJoinSub($claims, 'claims', function ($join) {
+            $join->on('claims.farmer_rsbsa_no', '=', 'farmers.rsbsa_no');
+        });
+
+        $query->addSelect([
+            'claims.claim_id',
+            'claims.claimed_at',
+            'claims.claimed_allocation',
+            'claims.claimed_allocation_secondary',
+            'claims.variety_name',
+        ]);
+
+        return $query;
+    }
+
+    /**
+     * Drop farmers the remarks rules mark as Deceased, OFW, No Farm, or Inactive.
+     */
+    private function applySubsidyExclusion(\Illuminate\Database\Query\Builder $query): void
+    {
+        $query->where(function ($q) {
+            $q->whereNull('farmers.subsidy_exclusion_reason')
+                ->orWhere('farmers.subsidy_exclusion_reason', '');
+        });
+
+        foreach (array_keys(SubsidyExclusionRules::KEYWORDS) as $keyword) {
+            $query->whereRaw(
+                "REPLACE(UPPER(COALESCE(farmers.enlistment_remarks, '')), ' ', '') NOT LIKE ?",
+                ['%'.$keyword.'%']
+            );
+        }
+    }
+
+    private function farmerMatchesTargetList(SubsidyProgram $program, Farmer $farmer): bool
+    {
+        if (! $farmer->rsbsa_no) {
+            return false;
+        }
+
+        $filters = ['farmer_ids' => [$farmer->id]];
+        $minHa = (float) ($program->min_hectares_limit ?? 0);
+        if ($minHa > 0) {
+            $filters['min_ha'] = $minHa;
+        }
+
+        return $this->targetBeneficiaryQuery($program, $filters)->exists();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function mapTargetBeneficiary(SubsidyProgram $program, object $row): array
+    {
+        $area = (float) $row->farm_area;
+        $live = $this->allocationForArea($program, $area);
+        $claimed = ! empty($row->claim_id);
+        $primary = $claimed && $row->claimed_allocation !== null
+            ? (int) $row->claimed_allocation
+            : (int) ($live['primary'] ?? 0);
+        $secondary = $claimed
+            ? ($row->claimed_allocation_secondary !== null ? (int) $row->claimed_allocation_secondary : null)
+            : ($live['secondary'] ?? null);
+        $priority = FarmerPriority::flags((bool) $row->is_pwd, $row->birthdate ?? null);
+
+        return [
+            'farmer_id' => $row->id,
+            'beneficiary_id' => $claimed ? (string) $row->claim_id : null,
+            'rsbsa_no' => $row->rsbsa_no,
+            'last_name' => $row->surname,
+            'first_name' => $row->first_name,
+            'middle_name' => $row->middle_name,
+            'barangay' => $row->farm_brgy ?: $row->permanent_brgy,
+            'farm_brgy' => $row->farm_brgy,
+            'farm_area' => $area,
+            'allocated_bags' => $primary,
+            'calculated_allocation' => $primary,
+            'calculated_allocation_secondary' => $secondary,
+            'variety_name' => $claimed ? $row->variety_name : null,
+            'claimed_at' => $claimed ? $row->claimed_at : null,
+            'status' => $claimed ? 'Claimed' : 'Unclaimed',
+            'priority_tier' => $this->priorityTierForFarmer($row, $area),
+            'is_pwd' => $priority['is_pwd'],
+            'is_senior' => $priority['is_senior'],
+            'priority_label' => $priority['priority_label'],
+        ];
+    }
+
     private function eligibleFarmerQuery(SubsidyProgram $program, array $filters = []): \Illuminate\Database\Query\Builder
     {
         $crop = ! empty($filters['commodity']) ? (string) $filters['commodity'] : (string) $program->target_crop;

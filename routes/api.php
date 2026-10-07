@@ -220,6 +220,8 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:admin');
     Route::post('/subsidies/{id}/manual-select', [SubsidyController::class, 'manualSelect'])
         ->middleware('role:admin');
+    Route::get('/subsidies/{id}/target-beneficiaries', [SubsidyController::class, 'targetBeneficiaries'])
+        ->middleware('role:admin');
     Route::get('/subsidies/{id}/masterlist', [SubsidyController::class, 'masterlist'])
         ->middleware('role:admin');
     Route::post('/subsidies/{id}/verify-farmer', [SubsidyController::class, 'verifyFarmer'])
