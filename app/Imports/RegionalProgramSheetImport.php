@@ -321,8 +321,18 @@ class RegionalProgramSheetImport implements ToCollection, WithHeadingRow
             'no_middle_name' => empty($data['middle_name']),
             'no_ext_name' => empty($data['suffix_and_extension']),
             'permanent_brgy' => $data['farmer_address_1'] ?: ($existing->permanent_brgy ?? 'Unknown'),
+            'permanent_city' => $data['farmer_address_2'] ?: ($existing->permanent_city ?? 'Echague'),
+            'farm_brgy' => $data['farm_address_1'] ?: ($existing->farm_brgy ?? $data['farmer_address_1'] ?? 'Unknown'),
+            'farm_city' => $data['farm_address_2'] ?: ($existing->farm_city ?? 'Echague'),
             'total_farm_area_ha' => $data['farm_area'],
+            'subsidy_exclusion_reason' => $data['subsidy_exclusion_reason'] ?? null,
         ];
+        if (! empty($data['mobile_number'])) {
+            $profile['mobile_number'] = $data['mobile_number'];
+        }
+        if (! empty($data['sex'])) {
+            $profile['sex'] = $data['sex'];
+        }
 
         if ($existing) {
             if ($existing->trashed()) {

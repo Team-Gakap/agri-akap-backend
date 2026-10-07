@@ -21,25 +21,29 @@ class ReportsController extends Controller
 
     /**
      * GET /reports/subsidies
-     * Returns all claimed subsidy beneficiaries joined with their program data.
+     * Claimed releases from program beneficiaries, filtered by date, variety,
+     * farm barangay, and subsidy line (Hybrid / RCEF).
      */
     public function subsidies(Request $request): JsonResponse
     {
         $request->validate([
-            'program_id' => ['nullable', 'string'],
             'variety_id' => ['nullable', 'string'],
             'barangay'   => ['nullable', 'string'],
-            'crop_type'  => ['nullable', 'string'],
+            'drop_off_point' => ['nullable', 'string'],
             'seed_class' => ['nullable', 'string'],
-            'item_type'  => ['nullable', 'string'],
             'date_from'  => ['nullable', 'date'],
             'date_to'    => ['nullable', 'date'],
         ]);
 
+        $barangay = $this->scopedBarangay($request);
+
         $query = SubsidyBeneficiary::query()
             ->where('tbl_subsidy_beneficiaries.status', 'Claimed')
             ->join('tbl_subsidy_programs', 'tbl_subsidy_programs.id', '=', 'tbl_subsidy_beneficiaries.program_id')
-            ->leftJoin('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
+            ->leftJoin('farmers', function ($join) {
+                $join->on('farmers.id', '=', 'tbl_subsidy_beneficiaries.farmer_id')
+                    ->orOn('farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no');
+            })
             ->leftJoin('tbl_subsidy_program_varieties', 'tbl_subsidy_program_varieties.id', '=', 'tbl_subsidy_beneficiaries.variety_id')
             ->select([
                 'tbl_subsidy_beneficiaries.id',
@@ -48,6 +52,9 @@ class ReportsController extends Controller
                 'tbl_subsidy_beneficiaries.calculated_allocation_secondary',
                 'tbl_subsidy_beneficiaries.claimed_at',
                 'tbl_subsidy_beneficiaries.photo_proof_path',
+                'tbl_subsidy_beneficiaries.source_farm_barangay',
+                'tbl_subsidy_beneficiaries.drop_off_point',
+                'tbl_subsidy_beneficiaries.fca_name',
                 'tbl_subsidy_programs.program_name',
                 'tbl_subsidy_programs.target_crop',
                 'tbl_subsidy_programs.seed_class',
@@ -56,36 +63,35 @@ class ReportsController extends Controller
                 'tbl_subsidy_programs.secondary_unit',
                 'tbl_subsidy_program_varieties.variety_name',
                 'tbl_subsidy_program_varieties.unit as variety_unit',
+                'tbl_subsidy_beneficiaries.variety_id',
                 'farmers.surname',
                 'farmers.first_name',
                 'farmers.middle_name',
+                'farmers.farm_brgy',
                 'farmers.permanent_brgy',
             ])
-            ->orderBy('tbl_subsidy_beneficiaries.claimed_at', 'desc');
+            ->orderByDesc('tbl_subsidy_beneficiaries.claimed_at');
         SubsidyBeneficiary::applyNotDeleted($query);
 
-        if ($request->filled('program_id')) {
-            $query->where('tbl_subsidy_beneficiaries.program_id', $request->program_id);
-        }
         if ($request->filled('variety_id')) {
             $query->where('tbl_subsidy_beneficiaries.variety_id', $request->variety_id);
         }
-        if ($request->filled('crop_type')) {
-            $crop = (string) $request->crop_type;
-            $query->where(function ($q) use ($crop) {
-                $q->where('tbl_subsidy_programs.target_crop', $crop)
-                    ->orWhereRaw('LOWER(tbl_subsidy_programs.target_crop) = ?', ['both']);
+        if ($request->filled('seed_class')) {
+            $seedClass = (string) $request->seed_class;
+            if (strcasecmp($seedClass, 'RCEF') === 0) {
+                $seedClass = 'Inbred';
+            }
+            $query->where('tbl_subsidy_programs.seed_class', $seedClass);
+        }
+        if ($barangay !== null) {
+            $query->where(function ($q) use ($barangay) {
+                $q->where('tbl_subsidy_beneficiaries.source_farm_barangay', $barangay)
+                    ->orWhere('farmers.farm_brgy', $barangay)
+                    ->orWhere('farmers.permanent_brgy', $barangay);
             });
         }
-        if ($request->filled('seed_class')) {
-            $query->where('tbl_subsidy_programs.seed_class', $request->seed_class);
-        }
-        if ($request->filled('item_type')) {
-            $query->where('tbl_subsidy_programs.item_type', $request->item_type);
-        }
-        $barangay = $this->scopedBarangay($request);
-        if ($barangay !== null) {
-            $query->where('farmers.permanent_brgy', $barangay);
+        if ($request->filled('drop_off_point')) {
+            $query->where('tbl_subsidy_beneficiaries.drop_off_point', $request->drop_off_point);
         }
         if ($request->filled('date_from')) {
             $query->whereDate('tbl_subsidy_beneficiaries.claimed_at', '>=', $request->date_from);
@@ -96,6 +102,11 @@ class ReportsController extends Controller
 
         $rows = $query->limit(3000)->get()->map(function ($row) {
             $names = $this->splitFarmerName($row->surname ?? '', $row->first_name ?? '', $row->middle_name ?? '');
+            $unit = $row->variety_unit ?: ($row->unit_of_measurement ?? 'Bags');
+            $qty = (float) ($row->calculated_allocation ?? 0);
+            $seedClass = $row->seed_class;
+            $subsidyLine = $seedClass === 'Inbred' ? 'RCEF' : ($seedClass === 'Hybrid' ? 'Hybrid' : ($seedClass ?? ''));
+            $farmBrgy = $row->source_farm_barangay ?: ($row->farm_brgy ?: ($row->permanent_brgy ?? ''));
 
             return [
                 'id'            => $row->id,
@@ -104,14 +115,17 @@ class ReportsController extends Controller
                 'first_name'    => $names['first_name'],
                 'middle_name'   => $names['middle_name'],
                 'farmer_name'   => $names['display'],
-                'barangay'      => $row->permanent_brgy ?? '',
+                'barangay'      => $farmBrgy,
+                'drop_off_point'=> $row->drop_off_point ?: $farmBrgy,
+                'fca_name'      => $row->fca_name,
                 'program_name'  => $row->program_name ?? '',
                 'target_crop'   => $row->target_crop ?? '',
-                'seed_class'    => $row->seed_class,
+                'seed_class'    => $seedClass,
+                'subsidy_line'  => $subsidyLine,
                 'item_type'     => $row->item_type,
-                'item_received' => $this->formatItemReceived($row),
-                'quantity'      => (float) ($row->calculated_allocation ?? 0),
-                'unit'          => $row->unit_of_measurement ?? 'Bags',
+                'item_received' => $qty.' '.$unit.($row->variety_name ? ' · '.$row->variety_name : ''),
+                'quantity'      => $qty,
+                'unit'          => $unit,
                 'quantity_secondary' => $row->calculated_allocation_secondary !== null
                     ? (float) $row->calculated_allocation_secondary
                     : null,

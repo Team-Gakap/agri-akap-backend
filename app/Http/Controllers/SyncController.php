@@ -35,6 +35,7 @@ class SyncController extends Controller
     public function __construct(
         private DistributionController $distributions,
         private SubsidyController $subsidies,
+        private SeedVarietyController $seedVarieties,
         private PolygonIntegrityService $polygonIntegrity,
         private FarmAreaBudgetService $farmAreaBudget,
     ) {
@@ -235,10 +236,14 @@ class SyncController extends Controller
 
         $source = $item['source'] ?? 'program';
         $programId = is_string($item['program_id'] ?? null) ? $item['program_id'] : null;
-        if ($source !== 'subsidy' && $programId) {
+        if ($source !== 'subsidy' && $source !== 'seed_variety' && $programId) {
             if (! Program::whereKey($programId)->exists() && SubsidyProgram::whereKey($programId)->exists()) {
                 $source = 'subsidy';
             }
+        }
+
+        if ($source === 'seed_variety') {
+            return $this->syncSeedVarietyClaim($item, $clientId, $technicianId);
         }
 
         if ($source === 'subsidy') {
@@ -303,6 +308,37 @@ class SyncController extends Controller
                 $clientId,
                 'failed',
                 $e->getMessage() !== '' ? $e->getMessage() : 'Server error while releasing subsidy.',
+            );
+        }
+    }
+
+    /** Offline claim against an Active program variety (one claim per program cycle). */
+    private function syncSeedVarietyClaim(array $item, ?string $clientId, string $technicianId): array
+    {
+        $validator = Validator::make($item, [
+            'variety_id' => 'required|uuid|exists:tbl_subsidy_program_varieties,id',
+            'farmer_id' => 'nullable|uuid|exists:farmers,id',
+            'rsbsa_no' => 'nullable|string|max:64',
+            'drop_off_point' => 'nullable|string|max:150',
+            'fca_name' => 'nullable|string|max:150',
+            'offline_sync_hash' => 'nullable|string|max:64',
+        ]);
+
+        if ($validator->fails()) {
+            return $this->itemResult($clientId, 'failed', $validator->errors()->first());
+        }
+
+        try {
+            $result = $this->seedVarieties->executeClaim($item, $technicianId);
+
+            return $this->itemResult($clientId, $result['outcome'] ?? 'failed', $result['message'] ?? 'Seed release could not be saved.');
+        } catch (\Throwable $e) {
+            Log::error('Offline seed variety claim sync failed: '.$e->getMessage());
+
+            return $this->itemResult(
+                $clientId,
+                'failed',
+                $e->getMessage() !== '' ? $e->getMessage() : 'Server error while releasing seed.',
             );
         }
     }

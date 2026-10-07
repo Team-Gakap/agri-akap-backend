@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Imports\FarmersImport;
 use App\Imports\RegionalMonthlyExtractionImport;
 use App\Models\SubsidyImportBatch;
 use App\Models\SubsidyProgram;
@@ -115,32 +116,7 @@ class SubsidyImportController extends Controller
             ], 409);
         }
 
-        $remarks = AuditRemarks::require($request, 'A justification is required before committing a regional masterlist import.');
-
-        $validated = $request->validate([
-            'sheets' => 'required|array|min:1',
-            'sheets.*.index' => 'required|integer|min:0',
-            'sheets.*.sheet_name' => 'required|string|max:100',
-            'sheets.*.mode' => ['required', Rule::in(['catalog', 'legacy', 'skip'])],
-            'sheets.*.program_name' => 'nullable|string|max:255',
-            'sheets.*.seed_class' => ['nullable', Rule::in(SubsidyCatalog::seedClasses())],
-            'sheets.*.item_type' => ['nullable', Rule::in(['seed', 'abono', 'liquid_fertilizer', 'wettable', 'cash'])],
-            'sheets.*.unit_of_measurement' => 'nullable|string|max:64',
-            'sheets.*.target_crop' => ['nullable', Rule::in(['Rice', 'Corn', 'Both', 'HVCC'])],
-            'sheets.*.max_hectares_limit' => 'nullable|numeric|min:0.01|max:9999',
-            'sheets.*.min_hectares_limit' => 'nullable|numeric|min:0|max:9999',
-            'sheets.*.items_per_hectare' => 'nullable|numeric|min:0.01|max:100000',
-            'sheets.*.secondary_items_per_hectare' => 'nullable|numeric|min:0.01|max:100000',
-            'sheets.*.total_quantity' => 'nullable|numeric|min:0|max:1000000',
-            'sheets.*.secondary_total_quantity' => 'nullable|numeric|min:0|max:1000000',
-            'sheets.*.reorder_level' => 'nullable|numeric|min:0|max:1000000',
-            'sheets.*.secondary_reorder_level' => 'nullable|numeric|min:0|max:1000000',
-            // Variety breakdown (optional). When provided, total_quantity is the sum.
-            'sheets.*.varieties'                    => 'nullable|array',
-            'sheets.*.varieties.*.variety_name'     => 'required_with:sheets.*.varieties|string|max:120',
-            'sheets.*.varieties.*.quantity'         => 'required_with:sheets.*.varieties|numeric|min:0|max:1000000',
-            'sheets.*.varieties.*.unit'             => 'nullable|string|max:64',
-        ]);
+        $remarks = AuditRemarks::require($request, 'A justification is required before committing a masterlist import.');
 
         $absolutePath = Storage::disk('local')->path($batch->stored_path);
         if (! is_file($absolutePath)) {
@@ -150,122 +126,63 @@ class SubsidyImportController extends Controller
             ], 422);
         }
 
-        try {
-            $inspected = collect($this->inspectWorkbook($absolutePath))->keyBy('index');
-        } catch (\Throwable $e) {
-            Log::error('Subsidy workbook re-read failed: '.$e->getMessage());
-
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Could not read the stored workbook.',
-            ], 422);
-        }
-
-        $configsByIndex = [];
-        foreach ($validated['sheets'] as $sheet) {
-            $index = (int) $sheet['index'];
-            $detected = $inspected->get($index);
-            if (! $detected) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => "Sheet index {$index} is not in this workbook.",
-                ], 422);
-            }
-
-            if ($sheet['mode'] === 'skip') {
-                continue;
-            }
-
-            $missing = $detected['header_match']['missing'] ?? [];
-            if ($missing !== []) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'Sheet "'.$detected['name'].'" is missing required columns: '.implode(', ', $missing).'.',
-                ], 422);
-            }
-
-            $error = $this->validateSheetConfig($sheet, $detected['name']);
-            if ($error !== null) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => $error,
-                ], 422);
-            }
-
-            $config = $sheet;
-            $config['sheet_name'] = $detected['name'];
-            $config['month_year'] = $batch->month_year;
-            $configsByIndex[$index] = $config;
-        }
-
-        if ($configsByIndex === []) {
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Map at least one sheet before committing the import.',
-            ], 422);
-        }
-
         $batch->update(['status' => 'processing', 'error_message' => null]);
 
         try {
-            $import = new RegionalMonthlyExtractionImport($configsByIndex, $batch->id);
+            // Farmer-registry only — does not create subsidy programs or beneficiaries.
+            $import = new FarmersImport;
             Excel::import($import, $absolutePath);
-            $import->sheets();
         } catch (\Throwable $e) {
             $batch->update([
                 'status' => 'failed',
                 'error_message' => Str::limit($e->getMessage(), 2000, ''),
             ]);
-            Log::error('Subsidy workbook commit failed: '.$e->getMessage());
+            Log::error('Masterlist farmer import failed: '.$e->getMessage());
 
             return response()->json([
                 'status' => 'error',
-                'message' => 'Import failed. Check the workbook and the sheet mapping, then try again.',
+                'message' => 'Import failed. Check the workbook columns and try again.',
                 'error' => app()->isLocal() ? $e->getMessage() : null,
             ], 422);
         }
 
         $batch->update(['status' => 'completed']);
 
-        // Sync variety rows for each imported program (uses the sheet config).
-        foreach ($import->importers as $importer) {
-            if ($importer->programId === null) {
-                continue;
-            }
-            $sheetVarieties = $configsByIndex[$importer->sheetIndex]['varieties'] ?? [];
-            if (! empty($sheetVarieties)) {
-                $this->syncVarieties($importer->programId, $sheetVarieties);
-            }
-        }
-
-        $results = collect($import->importers)->map(fn ($importer) => [
-            'program_id' => $importer->programId,
-            'program_name' => $importer->programName,
-            'created' => $importer->rowsCreated,
-            'updated' => $importer->rowsUpdated,
-            'waitlisted' => $importer->rowsWaitlisted,
-            'excluded' => $importer->rowsExcluded,
-            'skipped' => $importer->rowsSkipped,
-            'duplicates_in_file' => $importer->duplicatesInFile,
-        ])->values();
+        $result = [
+            'created' => $import->created,
+            'updated' => $import->updated,
+            'skipped' => $import->skipped,
+            'excluded' => $import->excluded,
+        ];
 
         $this->logReportAudit('subsidy_import_batch.committed', $batch, [
             'after' => [
                 'filename' => $batch->original_filename,
                 'month_year' => $batch->month_year,
-                'sheets' => $results,
+                'farmers' => $result,
             ],
             'remarks' => $remarks,
         ]);
 
         return response()->json([
             'status' => 'success',
-            'message' => 'Regional masterlist imported.',
+            'message' => 'Masterlist imported into the Farmer Registry. No subsidy program was created.',
             'data' => [
                 'batch' => $batch->fresh(),
-                'sheets' => $results,
+                'farmers' => $result,
+                // Keep sheets shape empty so older UIs do not crash.
+                'sheets' => [],
             ],
         ]);
+    }
+
+    /**
+     * @deprecated Program sheets are no longer created on masterlist upload.
+     * Kept temporarily so older admin clients that still POST sheet configs do not 500.
+     */
+    public function commitLegacyPrograms(Request $request, string $batchId): JsonResponse
+    {
+        return $this->commit($request, $batchId);
     }
 
     /**
@@ -273,45 +190,6 @@ class SubsidyImportController extends Controller
      */
     private function validateSheetConfig(array $sheet, string $sheetName): ?string
     {
-        if (empty($sheet['target_crop'])) {
-            return "Choose a target crop for \"{$sheetName}\".";
-        }
-        if (empty($sheet['max_hectares_limit']) || (float) $sheet['max_hectares_limit'] <= 0) {
-            return "Max hectares must be greater than 0 for \"{$sheetName}\".";
-        }
-        if (isset($sheet['min_hectares_limit'], $sheet['max_hectares_limit'])
-            && (float) $sheet['min_hectares_limit'] > (float) $sheet['max_hectares_limit']) {
-            return "Min hectares cannot exceed max hectares for \"{$sheetName}\".";
-        }
-        if (empty($sheet['items_per_hectare']) || (float) $sheet['items_per_hectare'] <= 0) {
-            return "Enter a per-hectare rate for \"{$sheetName}\".";
-        }
-        if (! isset($sheet['total_quantity']) || (float) $sheet['total_quantity'] < 0) {
-            return "Enter opening stock for \"{$sheetName}\".";
-        }
-
-        if ($sheet['mode'] === 'catalog') {
-            $seedClass = $sheet['seed_class'] ?? null;
-            $itemType = $sheet['item_type'] ?? null;
-            if (! SubsidyCatalog::isValidCombo($seedClass, $itemType)) {
-                return "\"{$sheetName}\" needs a valid seed class and item type from the MAO catalog.";
-            }
-            if (SubsidyCatalog::isDualUnit($seedClass, $itemType) && empty($sheet['secondary_items_per_hectare'])) {
-                $unit = SubsidyCatalog::secondaryUnit($seedClass, $itemType);
-
-                return "\"{$sheetName}\" needs a {$unit}/ha rate as well.";
-            }
-
-            return null;
-        }
-
-        if (trim((string) ($sheet['program_name'] ?? '')) === '') {
-            return "Enter a program name for \"{$sheetName}\".";
-        }
-        if (trim((string) ($sheet['unit_of_measurement'] ?? '')) === '') {
-            return "Enter a unit of measurement for \"{$sheetName}\".";
-        }
-
         return null;
     }
 

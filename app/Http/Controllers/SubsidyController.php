@@ -7,6 +7,7 @@ use App\Models\SubsidyBeneficiary;
 use App\Models\SubsidyProgram;
 use App\Models\SubsidyProgramVariety;
 use App\Support\OfficialBarangays;
+use App\Support\SubsidyAllocation;
 use App\Support\SubsidyCatalog;
 use App\Support\AuditRemarks;
 use App\Support\HvccCatalog;
@@ -82,12 +83,18 @@ class SubsidyController extends Controller
             'secondary_reorder_level' => 'nullable|numeric|min:0|max:1000000',
             'target_barangays' => 'nullable|array',
             'target_barangays.*' => Rule::in(OfficialBarangays::names()),
+            'delivery_start_date' => 'nullable|date',
+            'delivery_end_date' => 'nullable|date|after_or_equal:delivery_start_date',
             // Optional per-variety breakdown (e.g. LP 937: 550, JACKPOT: 1090 …).
             // total_quantity is auto-computed as the sum when varieties are provided.
             'varieties'                  => 'nullable|array',
             'varieties.*.variety_name'   => 'required_with:varieties|string|max:120',
             'varieties.*.quantity'       => 'required_with:varieties|numeric|min:0|max:1000000',
             'varieties.*.unit'           => 'nullable|string|max:64',
+            'varieties.*.bags_per_hectare' => 'nullable|numeric|min:0.01|max:100000',
+            'varieties.*.target_fca' => 'nullable|string|max:150',
+            'varieties.*.target_barangays' => 'nullable|array',
+            'varieties.*.target_barangays.*' => 'string|max:100',
         ]);
 
         $targetBarangays = $validated['target_barangays'] ?? null;
@@ -151,6 +158,8 @@ class SubsidyController extends Controller
             'secondary_total_quantity' => $secondaryTotalQuantity,
             'secondary_remaining_quantity' => $secondaryTotalQuantity,
             'secondary_reorder_level' => $isDualUnit ? ($validated['secondary_reorder_level'] ?? null) : null,
+            'delivery_start_date' => $validated['delivery_start_date'] ?? null,
+            'delivery_end_date' => $validated['delivery_end_date'] ?? null,
         ]);
 
         // Persist variety rows if provided.
@@ -454,7 +463,7 @@ class SubsidyController extends Controller
                 'last_name' => $farmer->surname,
                 'first_name' => $farmer->first_name,
                 'middle_name' => $farmer->middle_name,
-                'barangay' => $farmer->permanent_brgy,
+                'barangay' => $farmer->farm_brgy ?: $farmer->permanent_brgy,
                 'mobile_number' => $farmer->mobile_number,
                 'farm_area' => round((float) $farmer->farm_area, 4),
                 'is_pwd' => (bool) $farmer->is_pwd,
@@ -586,7 +595,7 @@ class SubsidyController extends Controller
                 'farmers.surname as last_name',
                 'farmers.first_name',
                 'farmers.middle_name',
-                'farmers.permanent_brgy as barangay',
+                DB::raw('COALESCE(farmers.farm_brgy, farmers.permanent_brgy) as barangay'),
                 'farmers.mobile_number',
                 'farmers.is_pwd',
                 'farmers.is_temporary',
@@ -1302,7 +1311,10 @@ class SubsidyController extends Controller
             ->map(fn ($v) => [
                 'id'                 => $v->id,
                 'variety_name'       => $v->variety_name,
+                'target_fca'         => $v->target_fca,
+                'target_barangays'   => $v->target_barangays ?? [],
                 'unit'               => $v->unit,
+                'bags_per_hectare'   => $v->bags_per_hectare !== null ? (float) $v->bags_per_hectare : (float) $p->items_per_hectare,
                 'total_quantity'     => (float) $v->total_quantity,
                 'remaining_quantity' => (float) $v->remaining_quantity,
                 'reorder_level'      => $v->reorder_level !== null ? (float) $v->reorder_level : null,
@@ -1322,6 +1334,8 @@ class SubsidyController extends Controller
             'items_per_hectare' => (float) $p->items_per_hectare,
             'secondary_items_per_hectare' => $p->secondary_items_per_hectare !== null ? (float) $p->secondary_items_per_hectare : null,
             'status' => $p->status,
+            'delivery_start_date' => optional($p->delivery_start_date)->toDateString(),
+            'delivery_end_date' => optional($p->delivery_end_date)->toDateString(),
             'unit_of_measurement' => $p->unit_of_measurement,
             'secondary_unit' => $p->secondary_unit,
             'total_quantity' => (float) $p->total_quantity,
@@ -1351,6 +1365,10 @@ class SubsidyController extends Controller
             'varieties.*.variety_name'   => 'required|string|max:120',
             'varieties.*.quantity'       => 'required|numeric|min:0|max:1000000',
             'varieties.*.unit'           => 'nullable|string|max:64',
+            'varieties.*.bags_per_hectare' => 'nullable|numeric|min:0.01|max:100000',
+            'varieties.*.target_fca' => 'nullable|string|max:150',
+            'varieties.*.target_barangays' => 'nullable|array',
+            'varieties.*.target_barangays.*' => 'string|max:100',
         ]);
 
         $program = SubsidyProgram::query()->findOrFail($id);
@@ -1389,6 +1407,7 @@ class SubsidyController extends Controller
             $name = trim((string) ($v['variety_name'] ?? ''));
             $qty  = (float) ($v['quantity'] ?? 0);
             $unit = isset($v['unit']) ? trim((string) $v['unit']) : null;
+            $rate = isset($v['bags_per_hectare']) ? (float) $v['bags_per_hectare'] : null;
             if ($name === '' || $qty < 0) {
                 continue;
             }
@@ -1398,6 +1417,9 @@ class SubsidyController extends Controller
                 ['program_id' => $program->id, 'variety_name' => $name],
                 [
                     'unit'               => $unit ?: null,
+                    'bags_per_hectare'   => $rate ?: $program->items_per_hectare,
+                    'target_fca'         => isset($v['target_fca']) ? (trim((string) $v['target_fca']) ?: null) : null,
+                    'target_barangays'   => $v['target_barangays'] ?? null,
                     'total_quantity'     => $qty,
                     'remaining_quantity' => $hasClaims
                         ? DB::raw('remaining_quantity')
@@ -1501,6 +1523,7 @@ class SubsidyController extends Controller
                 'farmers.first_name',
                 'farmers.middle_name',
                 'farmers.permanent_brgy',
+                'farmers.farm_brgy',
                 'farmers.mobile_number',
                 'farmers.is_pwd',
                 'farmers.birthdate',
@@ -1512,7 +1535,13 @@ class SubsidyController extends Controller
         $this->applyBarangayScope($query, $program);
 
         if (! empty($filters['barangays'])) {
-            $query->whereIn('farmers.permanent_brgy', $filters['barangays']);
+            $query->where(function ($q) use ($filters) {
+                $q->whereIn('farmers.farm_brgy', $filters['barangays'])
+                    ->orWhere(function ($inner) use ($filters) {
+                        $inner->whereNull('farmers.farm_brgy')
+                            ->whereIn('farmers.permanent_brgy', $filters['barangays']);
+                    });
+            });
         }
 
         if (! empty($filters['rsbsa_nos'])) {
@@ -1780,14 +1809,18 @@ class SubsidyController extends Controller
             return null;
         }
 
-        $eligibleArea = min($farmArea, (float) $program->max_hectares_limit);
-        $allocation = (int) floor(($eligibleArea * (float) $program->items_per_hectare) + 0.0000001);
+        $cap = (float) $program->max_hectares_limit;
+        $rate = (float) $program->items_per_hectare;
+        $allocation = SubsidyAllocation::bagsForArea($farmArea, $rate, $cap > 0 ? $cap : null);
         $allocation = $this->cashCappedAllocation($program, $allocation);
 
         $allocationSecondary = null;
         if ($program->secondary_unit !== null) {
-            $allocationSecondary = (int) floor(
-                ($eligibleArea * (float) $program->secondary_items_per_hectare) + 0.0000001
+            $secondaryRate = (float) $program->secondary_items_per_hectare;
+            $allocationSecondary = SubsidyAllocation::bagsForArea(
+                $farmArea,
+                $secondaryRate,
+                $cap > 0 ? $cap : null
             );
         }
 
@@ -1989,7 +2022,13 @@ class SubsidyController extends Controller
     {
         $barangays = $program->target_barangays;
         if (is_array($barangays) && count($barangays) > 0) {
-            $query->whereIn('farmers.permanent_brgy', $barangays);
+            $query->where(function ($q) use ($barangays) {
+                $q->whereIn('farmers.farm_brgy', $barangays)
+                    ->orWhere(function ($inner) use ($barangays) {
+                        $inner->whereNull('farmers.farm_brgy')
+                            ->whereIn('farmers.permanent_brgy', $barangays);
+                    });
+            });
         }
     }
 

@@ -3,15 +3,8 @@
 namespace App\Support;
 
 /**
- * Determines whether a masterlist row's REMARKS value disqualifies that
- * farmer from receiving a subsidy in this particular program/batch.
- *
- * Exclusion is per-batch only — a farmer marked DECEASED in one upload can
- * still appear as eligible in a different program's masterlist (user decision).
- *
- * To extend the list: add an entry to KEYWORDS.  Matching is case-insensitive
- * and whitespace-insensitive, so "IN ACTIVE", "INACTIVE", and "in active" all
- * resolve to the same canonical keyword "INACTIVE".
+ * Exclusion is stored on the farmer when the masterlist remarks match.
+ * A later upload with a blank remark clears the exclusion for that RSBSA.
  */
 class SubsidyExclusionRules
 {

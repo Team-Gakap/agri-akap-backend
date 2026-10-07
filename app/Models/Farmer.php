@@ -25,6 +25,9 @@ class Farmer extends Model
         'permanent_house_no', 'permanent_street', 'permanent_brgy',
         'permanent_city', 'permanent_province', 'permanent_region',
 
+        // Farm location (distribution / drop-off barangay)
+        'farm_brgy', 'farm_city',
+
         // Provincial Address
         'provincial_house_no', 'provincial_street', 'provincial_brgy',
         'provincial_city', 'provincial_province', 'provincial_region',
@@ -49,6 +52,7 @@ class Farmer extends Model
         'association_1', 'association_2', 'association_3', 'associations', 'livelihood_type',
         'livelihood_detail', 'other_livelihood_type', 'other_livelihood_detail',
         'total_farm_area_ha',
+        'subsidy_exclusion_reason',
     ];
 
     protected $casts = [
@@ -100,8 +104,10 @@ class Farmer extends Model
               ->orWhere('first_name', 'like', $term)
               ->orWhere('surname', 'like', $term)
               ->orWhere('middle_name', 'like', $term)
-              ->orWhere('permanent_brgy', 'like', $term) // Helpful for geographic filtering
-              ->orWhere('permanent_city', 'like', $term);
+              ->orWhere('permanent_brgy', 'like', $term)
+              ->orWhere('farm_brgy', 'like', $term)
+              ->orWhere('permanent_city', 'like', $term)
+              ->orWhere('farm_city', 'like', $term);
         });
     }
 
