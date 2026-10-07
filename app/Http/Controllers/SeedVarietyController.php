@@ -7,7 +7,9 @@ use App\Models\SubsidyBeneficiary;
 use App\Models\SubsidyProgram;
 use App\Models\SubsidyProgramVariety;
 use App\Support\AuditRemarks;
+use App\Support\FarmerPriority;
 use App\Support\SubsidyAllocation;
+use App\Support\SubsidyExclusionRules;
 use App\Traits\LogsReportAudit;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -226,12 +228,13 @@ class SeedVarietyController extends Controller
             ], 404);
         }
 
-        if (! empty($farmer->subsidy_exclusion_reason)) {
+        $exclusion = $this->exclusionReasonFor($farmer);
+        if ($exclusion !== null) {
             return response()->json([
                 'status' => 'error',
                 'eligible' => false,
-                'message' => 'This farmer is excluded from subsidies: '.$farmer->subsidy_exclusion_reason,
-                'data' => ['exclusion_reason' => $farmer->subsidy_exclusion_reason],
+                'message' => 'This farmer is excluded from subsidies: '.$exclusion,
+                'data' => ['exclusion_reason' => $exclusion],
             ], 409);
         }
 
@@ -285,6 +288,8 @@ class SeedVarietyController extends Controller
             ->sortByDesc(fn ($row) => $row['recommended'] ? 1 : 0)
             ->values();
 
+        $priority = FarmerPriority::flags((bool) $farmer->is_pwd, $farmer->birthdate);
+
         return response()->json([
             'status' => 'success',
             'eligible' => true,
@@ -300,6 +305,9 @@ class SeedVarietyController extends Controller
                 'total_farm_size' => $area,
                 'eligible_size' => $area,
                 'allocated_bags' => SubsidyAllocation::bagsForArea($area, 1.0, null),
+                'is_pwd' => $priority['is_pwd'],
+                'is_senior' => $priority['is_senior'],
+                'priority_label' => $priority['priority_label'],
                 'varieties' => $varieties,
                 'source' => 'seed_variety',
             ],
@@ -349,11 +357,12 @@ class SeedVarietyController extends Controller
             return ['outcome' => 'failed', 'code' => 404, 'message' => 'No registered farmer matches that ID / RSBSA.'];
         }
 
-        if (! empty($farmer->subsidy_exclusion_reason)) {
+        $exclusion = $this->exclusionReasonFor($farmer);
+        if ($exclusion !== null) {
             return [
                 'outcome' => 'failed',
                 'code' => 409,
-                'message' => 'This farmer is excluded from subsidies: '.$farmer->subsidy_exclusion_reason,
+                'message' => 'This farmer is excluded from subsidies: '.$exclusion,
             ];
         }
 
@@ -535,5 +544,17 @@ class SeedVarietyController extends Controller
         }
 
         return null;
+    }
+
+    /**
+     * Stored masterlist exclusion, or a disqualifying remark typed on the farmer record.
+     */
+    private function exclusionReasonFor(Farmer $farmer): ?string
+    {
+        if (! empty($farmer->subsidy_exclusion_reason)) {
+            return (string) $farmer->subsidy_exclusion_reason;
+        }
+
+        return SubsidyExclusionRules::matchedLabel($farmer->enlistment_remarks);
     }
 }

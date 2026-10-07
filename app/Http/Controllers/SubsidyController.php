@@ -6,9 +6,11 @@ use App\Models\Farmer;
 use App\Models\SubsidyBeneficiary;
 use App\Models\SubsidyProgram;
 use App\Models\SubsidyProgramVariety;
+use App\Support\FarmerPriority;
 use App\Support\OfficialBarangays;
 use App\Support\SubsidyAllocation;
 use App\Support\SubsidyCatalog;
+use App\Support\SubsidyExclusionRules;
 use App\Support\AuditRemarks;
 use App\Support\HvccCatalog;
 use App\Support\WalkInOverride;
@@ -224,6 +226,102 @@ class SubsidyController extends Controller
             'status' => 'success',
             'message' => $message,
             'data' => $program->fresh(),
+        ]);
+    }
+
+    /**
+     * Edit campaign header fields (admin only): name, delivery window, rates,
+     * and target barangays. Stock totals, seed_class, and item_type stay immutable.
+     * Rate changes apply only to future claims.
+     */
+    public function update(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'program_name' => 'sometimes|string|max:255',
+            'delivery_start_date' => 'nullable|date',
+            'delivery_end_date' => 'nullable|date|after_or_equal:delivery_start_date',
+            'items_per_hectare' => 'sometimes|numeric|min:0.01|max:100000',
+            'max_hectares_limit' => 'sometimes|numeric|min:0.01|max:9999',
+            'min_hectares_limit' => 'nullable|numeric|min:0|max:9999',
+            'target_barangays' => 'nullable|array',
+            'target_barangays.*' => Rule::in(OfficialBarangays::names()),
+        ]);
+
+        $program = SubsidyProgram::query()->findOrFail($id);
+        $remarks = AuditRemarks::require($request, 'A justification is required before editing a subsidy campaign.');
+
+        $maxHa = array_key_exists('max_hectares_limit', $validated)
+            ? (float) $validated['max_hectares_limit']
+            : (float) $program->max_hectares_limit;
+        $minHa = array_key_exists('min_hectares_limit', $validated)
+            ? (float) ($validated['min_hectares_limit'] ?? 0)
+            : (float) ($program->min_hectares_limit ?? 0);
+        if ($minHa > $maxHa) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Minimum hectares cannot exceed the maximum hectares cap.',
+            ], 422);
+        }
+
+        $before = $program->only([
+            'program_name',
+            'delivery_start_date',
+            'delivery_end_date',
+            'items_per_hectare',
+            'max_hectares_limit',
+            'min_hectares_limit',
+            'target_barangays',
+        ]);
+
+        $updates = [];
+        if (array_key_exists('program_name', $validated)) {
+            $updates['program_name'] = trim((string) $validated['program_name']);
+        }
+        if (array_key_exists('delivery_start_date', $validated)) {
+            $updates['delivery_start_date'] = $validated['delivery_start_date'];
+        }
+        if (array_key_exists('delivery_end_date', $validated)) {
+            $updates['delivery_end_date'] = $validated['delivery_end_date'];
+        }
+        if (array_key_exists('items_per_hectare', $validated)) {
+            $updates['items_per_hectare'] = $validated['items_per_hectare'];
+        }
+        if (array_key_exists('max_hectares_limit', $validated)) {
+            $updates['max_hectares_limit'] = $validated['max_hectares_limit'];
+        }
+        if (array_key_exists('min_hectares_limit', $validated)) {
+            $updates['min_hectares_limit'] = $validated['min_hectares_limit'] ?? 0;
+        }
+        if (array_key_exists('target_barangays', $validated)) {
+            $targets = $validated['target_barangays'];
+            $updates['target_barangays'] = (is_array($targets) && count($targets) > 0) ? $targets : null;
+        }
+
+        if ($updates === []) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'No campaign fields to update.',
+            ], 422);
+        }
+
+        $program->update($updates);
+
+        // Keep dual-unit secondary rate aligned when bags/ha changes on Hybrid seed.
+        if (isset($updates['items_per_hectare']) && $program->secondary_unit) {
+            $program->update(['secondary_items_per_hectare' => $updates['items_per_hectare']]);
+        }
+
+        $fresh = $program->fresh()->load('varieties');
+        $this->logReportAudit('subsidy_program.updated', $fresh, [
+            'before' => $before,
+            'after' => $fresh->only(array_keys($before)),
+            'remarks' => $remarks,
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Subsidy campaign updated.',
+            'data' => $this->serializeProgram($fresh),
         ]);
     }
 
@@ -931,6 +1029,18 @@ class SubsidyController extends Controller
             ], 404);
         }
 
+        $exclusion = ! empty($farmer->subsidy_exclusion_reason)
+            ? (string) $farmer->subsidy_exclusion_reason
+            : SubsidyExclusionRules::matchedLabel($farmer->enlistment_remarks);
+        if ($exclusion !== null) {
+            return response()->json([
+                'status' => 'error',
+                'eligible' => false,
+                'message' => 'This farmer is excluded from subsidies: '.$exclusion,
+                'data' => ['exclusion_reason' => $exclusion],
+            ], 409);
+        }
+
         $requiresOverride = (bool) $farmer->is_temporary || ! $farmer->rsbsa_no;
 
         $beneficiaryQuery = DB::table('tbl_subsidy_beneficiaries')
@@ -1009,6 +1119,8 @@ class SubsidyController extends Controller
         $cap = (float) ($program->max_hectares_limit ?? $totalFarmSize);
         $eligibleSize = $cap > 0 ? min($totalFarmSize, $cap) : $totalFarmSize;
 
+        $farmBrgy = $farmer->farm_brgy ?: $farmer->permanent_brgy;
+
         // Include available varieties so the technician UI can render the variety picker.
         $varieties = $program->varieties()
             ->where('remaining_quantity', '>', 0)
@@ -1020,7 +1132,12 @@ class SubsidyController extends Controller
                 'variety_name'       => $v->variety_name,
                 'unit'               => $v->unit ?? $program->unit_of_measurement,
                 'remaining_quantity' => (float) $v->remaining_quantity,
-            ])->values();
+                'recommended'        => $v->isRecommendedFor($farmBrgy),
+            ])
+            ->sortByDesc(fn ($row) => $row['recommended'] ? 1 : 0)
+            ->values();
+
+        $priority = FarmerPriority::flags((bool) $farmer->is_pwd, $farmer->birthdate);
 
         return response()->json([
             'status' => 'success',
@@ -1031,7 +1148,10 @@ class SubsidyController extends Controller
                 'program_id' => $program->id,
                 'beneficiary_id' => $beneficiary->id,
                 'farmer_name' => trim($farmer->surname.', '.$farmer->first_name.' '.$farmer->middle_name),
+                'rsbsa_no' => $farmer->rsbsa_no,
                 'mobile_number' => $farmer->mobile_number,
+                'barangay' => $farmBrgy,
+                'farm_brgy' => $farmer->farm_brgy,
                 'item_released' => $program->program_name,
                 'seed_class' => $program->seed_class,
                 'item_type' => $program->item_type,
@@ -1039,6 +1159,7 @@ class SubsidyController extends Controller
                 'total_farm_size' => $totalFarmSize,
                 'eligible_size' => $eligibleSize,
                 'quantity' => $allocation,
+                'allocated_bags' => $allocation,
                 'inventory_remaining' => (float) $program->remaining_quantity,
                 'unit_secondary' => $program->secondary_unit,
                 'quantity_secondary' => $allocationSecondary,
@@ -1050,6 +1171,9 @@ class SubsidyController extends Controller
                 'source' => 'subsidy',
                 'requires_override' => $requiresOverride,
                 'is_temporary' => (bool) $farmer->is_temporary,
+                'is_pwd' => $priority['is_pwd'],
+                'is_senior' => $priority['is_senior'],
+                'priority_label' => $priority['priority_label'],
                 // Non-empty only when the program has per-variety stock breakdown.
                 // Technician must pick one before confirming release.
                 'varieties' => $varieties,
@@ -1864,15 +1988,7 @@ class SubsidyController extends Controller
 
     private function isSeniorCitizen(mixed $birthdate): bool
     {
-        if ($birthdate === null || $birthdate === '') {
-            return false;
-        }
-
-        try {
-            return Carbon::parse($birthdate)->age >= 60;
-        } catch (\Throwable) {
-            return false;
-        }
+        return FarmerPriority::isSeniorCitizen($birthdate);
     }
 
     /**

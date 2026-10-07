@@ -196,6 +196,8 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:admin,technician,barangay_official');
     Route::post('/subsidies', [SubsidyController::class, 'store'])
         ->middleware('role:admin');
+    Route::patch('/subsidies/{id}', [SubsidyController::class, 'update'])
+        ->middleware('role:admin');
     Route::post('/subsidies/{id}/restock', [SubsidyController::class, 'restock'])
         ->middleware('role:admin');
     Route::patch('/subsidies/{id}/config', [SubsidyController::class, 'updateConfig'])
