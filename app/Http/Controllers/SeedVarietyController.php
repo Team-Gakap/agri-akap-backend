@@ -264,7 +264,7 @@ class SeedVarietyController extends Controller
                 $program = $v->program;
                 $rate = (float) ($v->bags_per_hectare ?? $program?->items_per_hectare ?? 1);
                 $cap = (float) ($program?->max_hectares_limit ?? 0);
-                $qty = SubsidyAllocation::bagsForArea($area, $rate, $cap > 0 ? $cap : null);
+                $qty = SubsidyAllocation::seedQuantity($area, $rate, $cap > 0 ? $cap : null, true);
                 $already = in_array($v->program_id, $claimedProgramIds, true);
                 $recommended = $v->isRecommendedFor($farmBrgy);
 
@@ -304,7 +304,7 @@ class SeedVarietyController extends Controller
                 'mobile_number' => $farmer->mobile_number,
                 'total_farm_size' => $area,
                 'eligible_size' => $area,
-                'allocated_bags' => SubsidyAllocation::bagsForArea($area, 1.0, null),
+                'allocated_bags' => SubsidyAllocation::seedQuantity($area, 1.0, null, true),
                 'is_pwd' => $priority['is_pwd'],
                 'is_senior' => $priority['is_senior'],
                 'priority_label' => $priority['priority_label'],
@@ -434,8 +434,8 @@ class SeedVarietyController extends Controller
 
                 $rate = (float) ($variety->bags_per_hectare ?? $program->items_per_hectare ?? 1);
                 $cap = (float) ($program->max_hectares_limit ?? 0);
-                // Smallholder minimum 1 bag; larger farms round(ha × rate); single variety only.
-                $qty = (float) SubsidyAllocation::bagsForArea($area, $rate, $cap > 0 ? $cap : null);
+                // Below 1 ha is 1 bag. At or above 1 ha is floor(ha) × bags/ha. One variety only.
+                $qty = (float) SubsidyAllocation::seedQuantity($area, $rate, $cap > 0 ? $cap : null, true);
 
                 if ((float) $variety->remaining_quantity < $qty) {
                     return [

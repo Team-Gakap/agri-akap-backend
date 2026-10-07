@@ -96,7 +96,7 @@ class RsbsaMasterlistColumns
             'sex' => ['sex', 'gender'],
             'is_pwd' => ['pwd', 'is_pwd', 'person_with_disability'],
             'is_4ps' => ['4_ps', '4ps', 'is_4ps_beneficiary', 'four_ps'],
-            'is_indigenous' => ['indigenous', 'is_icc_ip', 'icc_ip'],
+            'is_indigenous' => ['indigenous', 'indegenous', 'is_icc_ip', 'icc_ip'],
             'remarks' => [
                 'remarks',
                 'remark',

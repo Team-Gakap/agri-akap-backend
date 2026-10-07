@@ -10,6 +10,7 @@ use App\Http\Controllers\DistributionController;
 use App\Http\Controllers\ExecutiveReportingController;
 use App\Http\Controllers\FacebookWeatherCardController;
 use App\Http\Controllers\FarmerController;
+use App\Http\Controllers\FcaController;
 use App\Http\Controllers\FarmPlotController;
 use App\Http\Controllers\HarvestLogController;
 use App\Http\Controllers\IntelligenceController;
@@ -191,6 +192,13 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:admin,technician');
     Route::post('/seed-varieties/claim', [SeedVarietyController::class, 'claim'])
         ->middleware('role:admin,technician');
+
+    Route::get('/fcas', [FcaController::class, 'index'])
+        ->middleware('role:admin');
+    Route::post('/fcas', [FcaController::class, 'store'])
+        ->middleware('role:admin');
+    Route::patch('/fcas/{id}', [FcaController::class, 'update'])
+        ->middleware('role:admin');
 
     Route::get('/subsidies', [SubsidyController::class, 'index'])
         ->middleware('role:admin,technician,barangay_official');

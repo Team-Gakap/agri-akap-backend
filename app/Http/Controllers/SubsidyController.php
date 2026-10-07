@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Farmer;
+use App\Models\Fca;
 use App\Models\SubsidyBeneficiary;
 use App\Models\SubsidyProgram;
 use App\Models\SubsidyProgramVariety;
@@ -131,6 +132,11 @@ class SubsidyController extends Controller
         // When a variety breakdown is provided, the sum of variety quantities becomes
         // the opening stock; the manual total_quantity field is ignored / overridden.
         $rawVarieties = $validated['varieties'] ?? [];
+        $canonical = $this->canonicalizeVarietyFcas($rawVarieties);
+        if ($canonical instanceof JsonResponse) {
+            return $canonical;
+        }
+        $rawVarieties = $canonical;
         $varietyDerivedTotal = count($rawVarieties) > 0
             ? (float) array_sum(array_column($rawVarieties, 'quantity'))
             : null;
@@ -1498,10 +1504,15 @@ class SubsidyController extends Controller
         $program = SubsidyProgram::query()->findOrFail($id);
         $remarks = AuditRemarks::require($request, 'A justification is required when updating variety breakdown.');
 
-        $this->syncProgramVarieties($program, $validated['varieties']);
+        $canonical = $this->canonicalizeVarietyFcas($validated['varieties']);
+        if ($canonical instanceof JsonResponse) {
+            return $canonical;
+        }
+
+        $this->syncProgramVarieties($program, $canonical);
 
         $this->logReportAudit('subsidy_program.varieties_updated', $program->fresh(), [
-            'after' => ['varieties' => $validated['varieties']],
+            'after' => ['varieties' => $canonical],
             'remarks' => $remarks,
         ]);
 
@@ -1573,6 +1584,53 @@ class SubsidyController extends Controller
             && (float) ($program->secondary_remaining_quantity ?? 0) <= (float) $program->secondary_reorder_level;
 
         return $primaryLow || $secondaryLow;
+    }
+
+    /**
+     * Rewrite variety FCA names to the registered spelling.
+     * A blank FCA is allowed. A name that is not an active FCA is rejected.
+     *
+     * @param  array<int, array<string, mixed>>  $varieties
+     * @return array<int, array<string, mixed>>|JsonResponse
+     */
+    private function canonicalizeVarietyFcas(array $varieties): array|JsonResponse
+    {
+        $wanted = [];
+        foreach ($varieties as $row) {
+            $name = trim((string) ($row['target_fca'] ?? ''));
+            if ($name !== '') {
+                $wanted[mb_strtolower($name)] = $name;
+            }
+        }
+
+        $byLower = [];
+        if ($wanted !== []) {
+            $byLower = Fca::query()
+                ->where('is_active', true)
+                ->get(['name'])
+                ->mapWithKeys(fn (Fca $fca) => [mb_strtolower($fca->name) => $fca->name])
+                ->all();
+        }
+
+        $missing = [];
+        foreach ($wanted as $lower => $original) {
+            if (! array_key_exists($lower, $byLower)) {
+                $missing[] = $original;
+            }
+        }
+        if ($missing !== []) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Choose an FCA from the registered list: '.implode(', ', $missing).'.',
+            ], 422);
+        }
+
+        foreach ($varieties as $index => $row) {
+            $name = trim((string) ($row['target_fca'] ?? ''));
+            $varieties[$index]['target_fca'] = $name === '' ? null : $byLower[mb_strtolower($name)];
+        }
+
+        return $varieties;
     }
 
     /**
@@ -1934,18 +1992,20 @@ class SubsidyController extends Controller
         }
 
         $cap = (float) $program->max_hectares_limit;
+        $maxHa = $cap > 0 ? $cap : null;
+        $seed = $program->item_type === SubsidyCatalog::SEED;
         $rate = (float) $program->items_per_hectare;
-        $allocation = SubsidyAllocation::bagsForArea($farmArea, $rate, $cap > 0 ? $cap : null);
+        $allocation = $seed
+            ? SubsidyAllocation::seedQuantity($farmArea, $rate, $maxHa, SubsidyAllocation::isBagUnit($program->unit_of_measurement))
+            : SubsidyAllocation::bagsForArea($farmArea, $rate, $maxHa);
         $allocation = $this->cashCappedAllocation($program, $allocation);
 
         $allocationSecondary = null;
         if ($program->secondary_unit !== null) {
             $secondaryRate = (float) $program->secondary_items_per_hectare;
-            $allocationSecondary = SubsidyAllocation::bagsForArea(
-                $farmArea,
-                $secondaryRate,
-                $cap > 0 ? $cap : null
-            );
+            $allocationSecondary = $seed
+                ? SubsidyAllocation::seedQuantity($farmArea, $secondaryRate, $maxHa, SubsidyAllocation::isBagUnit($program->secondary_unit))
+                : SubsidyAllocation::bagsForArea($farmArea, $secondaryRate, $maxHa);
         }
 
         if ($allocation < 1 && ($allocationSecondary === null || $allocationSecondary < 1)) {
