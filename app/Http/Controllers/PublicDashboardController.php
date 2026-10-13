@@ -274,7 +274,14 @@ class PublicDashboardController extends Controller
         $claimed = 0;
         $enrolled = 0;
 
-        if (Schema::hasTable('tbl_subsidy_beneficiaries') && Schema::hasTable('tbl_subsidy_programs')) {
+        $target = app(SubsidyController::class)->activeTargetUptake(
+            isset($filters['barangay']) ? (string) $filters['barangay'] : null,
+            isset($filters['commodity']) ? (string) $filters['commodity'] : null,
+        );
+        if ($target['programs'] > 0) {
+            $claimed = $target['claimed'];
+            $enrolled = $target['enrolled'];
+        } elseif (Schema::hasTable('tbl_subsidy_beneficiaries') && Schema::hasTable('tbl_subsidy_programs')) {
             $enrolledQuery = DB::table('tbl_subsidy_beneficiaries')
                 ->join('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
                 ->join('tbl_subsidy_programs', 'tbl_subsidy_programs.id', '=', 'tbl_subsidy_beneficiaries.program_id')

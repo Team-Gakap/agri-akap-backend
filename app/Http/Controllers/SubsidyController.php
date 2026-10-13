@@ -634,7 +634,7 @@ class SubsidyController extends Controller
                 'last_name' => $farmer->surname,
                 'first_name' => $farmer->first_name,
                 'middle_name' => $farmer->middle_name,
-                'barangay' => $farmer->farm_brgy ?: $farmer->permanent_brgy,
+                'barangay' => $farmer->permanent_brgy ?: 'Unspecified',
                 'mobile_number' => $farmer->mobile_number,
                 'farm_area' => round((float) $farmer->farm_area, 4),
                 'is_pwd' => (bool) $farmer->is_pwd,
@@ -895,7 +895,7 @@ class SubsidyController extends Controller
                 'farmers.surname as last_name',
                 'farmers.first_name',
                 'farmers.middle_name',
-                DB::raw('COALESCE(farmers.farm_brgy, farmers.permanent_brgy) as barangay'),
+                DB::raw("COALESCE(NULLIF(TRIM(farmers.permanent_brgy), ''), 'Unspecified') as barangay"),
                 'farmers.mobile_number',
                 'farmers.is_pwd',
                 'farmers.is_temporary',
@@ -2185,7 +2185,7 @@ class SubsidyController extends Controller
             'last_name' => $row->surname,
             'first_name' => $row->first_name,
             'middle_name' => $row->middle_name,
-            'barangay' => $row->farm_brgy ?: $row->permanent_brgy,
+            'barangay' => $row->permanent_brgy ?: 'Unspecified',
             'farm_brgy' => $row->farm_brgy,
             'permanent_brgy' => $row->permanent_brgy,
             'farm_area' => $area,
@@ -2249,10 +2249,7 @@ class SubsidyController extends Controller
         $this->applyBarangayScope($query, $program);
 
         if (! empty($filters['barangays'])) {
-            $query->where(function ($q) use ($filters) {
-                $q->whereIn('farmers.farm_brgy', $filters['barangays'])
-                    ->orWhereIn('farmers.permanent_brgy', $filters['barangays']);
-            });
+            $query->whereIn('farmers.permanent_brgy', $filters['barangays']);
         }
 
         if (! empty($filters['rsbsa_nos'])) {
@@ -2741,10 +2738,7 @@ class SubsidyController extends Controller
     {
         $barangays = $program->target_barangays;
         if (is_array($barangays) && count($barangays) > 0) {
-            $query->where(function ($q) use ($barangays) {
-                $q->whereIn('farmers.farm_brgy', $barangays)
-                    ->orWhereIn('farmers.permanent_brgy', $barangays);
-            });
+            $query->whereIn('farmers.permanent_brgy', $barangays);
         }
     }
 
@@ -2791,6 +2785,69 @@ class SubsidyController extends Controller
 
         return $query->whereRaw("LOWER({$column}) like ?", ['%'.$crop.'%'])
             ->whereRaw("LOWER({$column}) not like ?", ['%hvcc%']);
+    }
+
+    /**
+     * Claimed versus eligible farmers on Active programs.
+     * Uses the same target list as the subsidy screen.
+     *
+     * @return array{programs: int, claimed: int, enrolled: int, top_campaign: array{name: string, percent: float}|null}
+     */
+    public function activeTargetUptake(?string $barangay = null, ?string $commodity = null): array
+    {
+        $empty = [
+            'programs' => 0,
+            'claimed' => 0,
+            'enrolled' => 0,
+            'top_campaign' => null,
+        ];
+
+        $programs = SubsidyProgram::query()
+            ->where('status', 'Active')
+            ->when($commodity, fn ($query) => $query->where('target_crop', $commodity))
+            ->get();
+
+        if ($programs->isEmpty()) {
+            return $empty;
+        }
+
+        $claimed = 0;
+        $enrolled = 0;
+        $topCampaign = null;
+        $topEnrolled = 0;
+        $filters = $barangay ? ['barangays' => [$barangay]] : [];
+
+        foreach ($programs as $program) {
+            $query = $this->targetBeneficiaryQuery($program, $filters);
+            $programEnrolled = (int) (clone $query)->count();
+            $programClaimed = (int) (clone $query)->whereNotNull('claims.claim_id')->count();
+            $enrolled += $programEnrolled;
+            $claimed += $programClaimed;
+
+            if ($programEnrolled <= 0) {
+                continue;
+            }
+
+            $percent = round(($programClaimed / $programEnrolled) * 100, 1);
+            $isBetter = $topCampaign === null
+                || $percent > $topCampaign['percent']
+                || ($percent === $topCampaign['percent'] && $programEnrolled > $topEnrolled);
+
+            if ($isBetter) {
+                $topCampaign = [
+                    'name' => (string) ($program->program_name ?: 'Unnamed program'),
+                    'percent' => $percent,
+                ];
+                $topEnrolled = $programEnrolled;
+            }
+        }
+
+        return [
+            'programs' => $programs->count(),
+            'claimed' => $claimed,
+            'enrolled' => $enrolled,
+            'top_campaign' => $topCampaign,
+        ];
     }
 
     /** Dexie queues ISO-8601 (`...Z`); MySQL timestamp needs a Carbon instance. */

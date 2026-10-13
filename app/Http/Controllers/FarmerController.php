@@ -12,6 +12,7 @@ use App\Services\CropStageService;
 use App\Services\FarmAreaBudgetService;
 use App\Services\SmsService;
 use App\Support\AuditRemarks;
+use App\Support\HvccCatalog;
 use App\Support\OfficialBarangays;
 use App\Support\OfficialLocations;
 use App\Traits\ResolvesEncodingBarangay;
@@ -89,20 +90,15 @@ class FarmerController extends Controller
             ], 403);
         }
 
-        // Barangay crop forms: only farmers with a matching farm-plot commodity
+        // Crop forms: matching plot, or a farmer whose plots are still unspecified.
+        // A farmer who only grows a different crop stays off this list.
         if ($commodity !== '') {
-            $query->whereHas('farmPlots', function ($q) use ($commodity) {
-                $q->whereRaw("LOWER(TRIM(COALESCE(commodity, ''))) != ?", ['unspecified'])
-                    ->where('commodity', '!=', '');
-                $key = Str::lower($commodity);
-                if (in_array($key, ['high-value', 'high-value crops', 'hvc', 'hvcc'], true)) {
-                    $q->where(function ($inner) {
-                        $inner->whereRaw('LOWER(commodity) like ?', ['%high-value%'])
-                            ->orWhereRaw('LOWER(commodity) like ?', ['%hvc%']);
-                    });
-                    return;
-                }
-                $q->whereRaw('LOWER(commodity) = ?', [$key]);
+            $query->where(function ($outer) use ($commodity) {
+                $outer->whereHas('farmPlots', function ($q) use ($commodity) {
+                    HvccCatalog::wherePlotCommodityMatches($q, 'commodity', $commodity);
+                })->orWhereDoesntHave('farmPlots', function ($q) {
+                    $q->whereRaw("LOWER(TRIM(COALESCE(commodity, ''))) not in ('', 'unspecified')");
+                });
             });
         }
 
@@ -851,8 +847,8 @@ class FarmerController extends Controller
     }
 
     /**
-     * Match the barangay shown in the registry (home or farm) without requiring
-     * farm_brgy to be null before the home address counts.
+     * Registry and encode search filter the farmer's home address.
+     * Farm location is a separate column and does not pull the farmer into this barangay.
      */
     private function constrainBarangay($query, string $barangay): void
     {
@@ -862,10 +858,7 @@ class FarmerController extends Controller
         }
 
         $placeholders = implode(',', array_fill(0, count($names), '?'));
-        $query->where(function ($inner) use ($names, $placeholders) {
-            $inner->whereRaw("LOWER(TRIM(farm_brgy)) IN ($placeholders)", $names)
-                ->orWhereRaw("LOWER(TRIM(permanent_brgy)) IN ($placeholders)", $names);
-        });
+        $query->whereRaw("LOWER(TRIM(permanent_brgy)) IN ($placeholders)", $names);
     }
 
     private function decorateFarmer(Farmer $farmer, ?float $mappedHa = null): Farmer
@@ -920,13 +913,11 @@ class FarmerController extends Controller
             ], 403));
         }
 
-        $farmBrgy = trim((string) ($farmer->farm_brgy ?? ''));
         $homeBrgy = trim((string) ($farmer->permanent_brgy ?? ''));
-        $match = strcasecmp($farmBrgy !== '' ? $farmBrgy : $homeBrgy, $assigned) === 0;
-        if (! $match) {
+        if (strcasecmp($homeBrgy, $assigned) !== 0) {
             abort(response()->json([
                 'status' => 'error',
-                'message' => 'You can only manage farmers whose farm is in your assigned barangay.',
+                'message' => 'You can only manage farmers whose address is in your assigned barangay.',
             ], 403));
         }
     }

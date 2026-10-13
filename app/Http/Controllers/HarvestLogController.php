@@ -65,7 +65,7 @@ class HarvestLogController extends Controller
             'variety' => ['required', 'string', 'max:128'],
             'area_harvested' => ['required', 'numeric', 'min:0'],
             'total_yield' => ['required', 'numeric', 'min:0'],
-            'yield_unit' => ['nullable', Rule::in(['Metric Tons'])],
+            'yield_unit' => ['nullable', Rule::in(['Kilograms', 'Metric Tons'])],
             'date_harvested' => ['required', 'date'],
             'farm_location' => ['nullable', 'string', 'max:255'],
             'barangay_name' => ['nullable', 'string', 'max:255'],
@@ -128,7 +128,7 @@ class HarvestLogController extends Controller
             'area_harvested' => $validated['area_harvested'],
             'num_hills_trees' => $validated['num_hills_trees'] ?? null,
             'total_yield' => $validated['total_yield'],
-            'yield_unit' => 'Metric Tons',
+            'yield_unit' => 'Kilograms',
             'date_harvested' => $validated['date_harvested'],
             'farm_location' => $validated['farm_location'] ?? $encodingBarangay ?? $farmer->permanent_brgy,
         ]);
@@ -159,7 +159,7 @@ class HarvestLogController extends Controller
             'variety' => ['sometimes', 'required', 'string', 'max:128'],
             'area_harvested' => ['sometimes', 'required', 'numeric', 'min:0'],
             'total_yield' => ['sometimes', 'required', 'numeric', 'min:0'],
-            'yield_unit' => ['nullable', Rule::in(['Metric Tons'])],
+            'yield_unit' => ['nullable', Rule::in(['Kilograms', 'Metric Tons'])],
             'date_harvested' => ['sometimes', 'required', 'date'],
             'farm_location' => ['nullable', 'string', 'max:255'],
         ]);

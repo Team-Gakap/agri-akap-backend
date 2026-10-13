@@ -600,7 +600,7 @@ class SyncController extends Controller
                 'variety' => $item['variety'],
                 'area_harvested' => $item['area_harvested'],
                 'total_yield' => $item['total_yield'],
-                'yield_unit' => 'Metric Tons',
+                'yield_unit' => 'Kilograms',
                 'date_harvested' => $item['date_harvested'],
                 'farm_location' => $item['farm_location'] ?? $farmer?->permanent_brgy,
             ]);

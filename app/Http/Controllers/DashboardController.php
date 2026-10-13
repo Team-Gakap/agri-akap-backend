@@ -428,6 +428,13 @@ class DashboardController extends Controller
             $claimed = (int) $claimedQuery->count();
         }
 
+        $target = app(SubsidyController::class)->activeTargetUptake();
+        if ($target['programs'] > 0) {
+            $claimed = $target['claimed'];
+            $enrolled = $target['enrolled'];
+            $topCampaign = $target['top_campaign'];
+        }
+
         $uptake = $enrolled > 0 ? round(($claimed / $enrolled) * 100, 1) : 0.0;
 
         $out['claimed'] = $claimed;

@@ -99,6 +99,30 @@ class HvccCatalog
     }
 
     /**
+     * Masterlist labels such as Rice/Palay and Palay are the Rice form crop.
+     * Corn, maize, and mais are the Corn form crop.
+     */
+    public static function stapleCrop(?string $value): ?string
+    {
+        $key = self::normalize($value);
+        $compact = str_replace([' ', '/', '_', '-'], '', $key);
+        if ($compact === '') {
+            return null;
+        }
+
+        if (in_array($compact, ['rice', 'palay', 'ricepalay'], true)
+            || (str_contains($key, 'rice') && str_contains($key, 'palay') && ! str_contains($key, 'hvcc'))) {
+            return 'rice';
+        }
+
+        if (in_array($compact, ['corn', 'maize', 'mais', 'cornmaize'], true)) {
+            return 'corn';
+        }
+
+        return null;
+    }
+
+    /**
      * A farm plot matches the encoder's crop when the commodity equals the
      * selected type, or (for HVCC) the specific commodity / a generic high-value plot.
      */
@@ -118,7 +142,57 @@ class HvccCatalog
                 || str_contains($plot, 'hvc');
         }
 
+        $plotStaple = self::stapleCrop($plotCommodity);
+        $cropStaple = self::stapleCrop($cropType);
+        if ($plotStaple !== null && $cropStaple !== null) {
+            return $plotStaple === $cropStaple;
+        }
+
         return $plot === $crop;
+    }
+
+    /**
+     * SQL counterpart of plotMatches for a commodity column.
+     */
+    public static function wherePlotCommodityMatches($query, string $column, string $cropType): void
+    {
+        $staple = self::stapleCrop($cropType);
+        if ($staple === 'rice') {
+            $query->where(function ($inner) use ($column) {
+                $inner->whereRaw(
+                    "REPLACE(REPLACE(REPLACE(REPLACE(LOWER(TRIM({$column})), ' ', ''), '/', ''), '_', ''), '-', '') in (?, ?, ?)",
+                    ['rice', 'palay', 'ricepalay']
+                )->orWhere(function ($both) use ($column) {
+                    $both->whereRaw("LOWER({$column}) like ?", ['%rice%'])
+                        ->whereRaw("LOWER({$column}) like ?", ['%palay%'])
+                        ->whereRaw("LOWER({$column}) not like ?", ['%hvcc%']);
+                });
+            });
+
+            return;
+        }
+
+        if ($staple === 'corn') {
+            $query->whereRaw(
+                "REPLACE(REPLACE(REPLACE(REPLACE(LOWER(TRIM({$column})), ' ', ''), '/', ''), '_', ''), '-', '') in (?, ?, ?)",
+                ['corn', 'maize', 'mais']
+            );
+
+            return;
+        }
+
+        $key = self::normalize($cropType);
+        if (in_array($key, ['hvcc', 'high-value', 'high-value crops', 'hvc'], true)) {
+            $query->where(function ($inner) use ($column) {
+                $inner->whereRaw("LOWER({$column}) like ?", ['%high-value%'])
+                    ->orWhereRaw("LOWER({$column}) like ?", ['%hvc%'])
+                    ->orWhereRaw("LOWER(TRIM({$column})) = ?", ['hvcc']);
+            });
+
+            return;
+        }
+
+        $query->whereRaw("LOWER(TRIM({$column})) = ?", [$key]);
     }
 
     /**
