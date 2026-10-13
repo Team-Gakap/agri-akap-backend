@@ -26,7 +26,7 @@ class Farmer extends Model
         'permanent_city', 'permanent_province', 'permanent_region',
 
         // Farm location (distribution / drop-off barangay)
-        'farm_brgy', 'farm_city',
+        'farm_brgy', 'farm_city', 'farm_psgc',
 
         // Provincial Address
         'provincial_house_no', 'provincial_street', 'provincial_brgy',

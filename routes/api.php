@@ -282,6 +282,8 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:barangay_official,admin');
     Route::get('/dashboard/map-data', [DashboardController::class, 'mapData'])
         ->middleware('role:admin,technician');
+    Route::get('/dashboard/barangay-stats', [DashboardController::class, 'barangayStats'])
+        ->middleware('role:admin,technician');
     Route::get('/dashboard/forecast', [DashboardController::class, 'forecast'])
         ->middleware('role:admin');
     Route::get('/dashboard/risk-index', [DashboardController::class, 'riskIndex'])

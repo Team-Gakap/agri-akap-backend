@@ -98,6 +98,8 @@ class RsbsaMasterlistColumns
             'is_pwd' => ['pwd', 'is_pwd', 'person_with_disability'],
             'is_4ps' => ['4_ps', '4ps', 'is_4ps_beneficiary', 'four_ps'],
             'is_indigenous' => ['indigenous', 'indegenous', 'is_icc_ip', 'icc_ip'],
+            'farm_geocode' => ['farm_geo_code', 'farm_geocode', 'farm_psgc'],
+            'farmer_geocode' => ['farmer_geo_code', 'farmer_geocode', 'farmer_psgc'],
             // Both remark columns are populated independently on the DA sheet.
             'barangay_remarks' => ['barangay_remarks'],
             'remarks' => [
@@ -209,6 +211,7 @@ class RsbsaMasterlistColumns
             'is_icc_ip' => self::parseYesNo($get('is_indigenous')),
             'subsidy_exclusion_reason' => $exclusion,
             'remarks_raw' => $remarks,
+            'farm_psgc' => self::normalizePsgc($get('farm_geocode') ?? $get('farmer_geocode')),
         ];
     }
 
@@ -217,6 +220,42 @@ class RsbsaMasterlistColumns
      * 63-prefixed numbers are converted to the local 09… form. An already-local 11-digit
      * number is left unchanged.
      */
+    /**
+     * Excel drops the leading 0 on a 10-digit PSGC (203112033).
+     * Pad to 10 digits and prefix PH so it matches GeoJSON adm4_pcode.
+     */
+    public static function normalizePsgc(mixed $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_int($value) || is_float($value)) {
+            $digits = sprintf('%.0f', $value);
+        } else {
+            $text = trim((string) $value);
+            if ($text === '' || strcasecmp($text, '#N/A') === 0 || strcasecmp($text, 'N/A') === 0) {
+                return null;
+            }
+            if (str_starts_with(strtoupper($text), 'PH')) {
+                $text = substr($text, 2);
+            }
+            $digits = (is_numeric($text) && preg_match('/e/i', $text))
+                ? sprintf('%.0f', (float) $text)
+                : (preg_replace('/\D+/', '', $text) ?? '');
+        }
+
+        $digits = ltrim($digits, '0') === '' ? '' : $digits;
+        if ($digits === '') {
+            return null;
+        }
+        if (strlen($digits) > 10) {
+            $digits = substr($digits, -10);
+        }
+
+        return 'PH'.str_pad($digits, 10, '0', STR_PAD_LEFT);
+    }
+
     public static function normalizeMobile(mixed $value): string
     {
         if ($value === null || $value === '') {

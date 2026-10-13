@@ -104,6 +104,7 @@ class FarmersImport implements ToCollection, WithHeadingRow, WithChunkReading
                 'permanent_region' => $data['permanent_region'],
                 'farm_brgy' => $data['farm_brgy'],
                 'farm_city' => $data['farm_city'],
+                'farm_psgc' => $data['farm_psgc'] ?? null,
                 'mobile_number' => $data['mobile_number'],
                 'is_mobile_owner' => 1,
                 'mothers_maiden_first_name' => 'N/A',
@@ -122,36 +123,47 @@ class FarmersImport implements ToCollection, WithHeadingRow, WithChunkReading
             ];
         }
 
-        DB::transaction(function () use ($upsertRows) {
+        $profileColumns = [
+            'surname',
+            'first_name',
+            'middle_name',
+            'ext_name',
+            'no_middle_name',
+            'no_ext_name',
+            'sex',
+            'birthdate',
+            'permanent_brgy',
+            'permanent_city',
+            'permanent_province',
+            'permanent_region',
+            'farm_brgy',
+            'farm_city',
+            'mobile_number',
+            'total_farm_area_ha',
+            'is_pwd',
+            'is_4ps_beneficiary',
+            'is_icc_ip',
+            'subsidy_exclusion_reason',
+            'deleted_at',
+            'updated_at',
+        ];
+
+        DB::transaction(function () use ($upsertRows, $profileColumns) {
             foreach (array_chunk($upsertRows, 200) as $chunk) {
-                DB::table('farmers')->upsert(
+                // farm_psgc is written on insert. A blank cell must not clear a stored code.
+                DB::table('farmers')->upsert($chunk, ['rsbsa_no'], $profileColumns);
+
+                $coded = array_values(array_filter(
                     $chunk,
-                    ['rsbsa_no'],
-                    [
-                        'surname',
-                        'first_name',
-                        'middle_name',
-                        'ext_name',
-                        'no_middle_name',
-                        'no_ext_name',
-                        'sex',
-                        'birthdate',
-                        'permanent_brgy',
-                        'permanent_city',
-                        'permanent_province',
-                        'permanent_region',
-                        'farm_brgy',
-                        'farm_city',
-                        'mobile_number',
-                        'total_farm_area_ha',
-                        'is_pwd',
-                        'is_4ps_beneficiary',
-                        'is_icc_ip',
-                        'subsidy_exclusion_reason',
-                        'deleted_at',
-                        'updated_at',
-                    ]
-                );
+                    fn (array $row) => ! empty($row['farm_psgc'])
+                ));
+                if ($coded !== []) {
+                    DB::table('farmers')->upsert(
+                        $coded,
+                        ['rsbsa_no'],
+                        array_merge($profileColumns, ['farm_psgc'])
+                    );
+                }
             }
         });
 

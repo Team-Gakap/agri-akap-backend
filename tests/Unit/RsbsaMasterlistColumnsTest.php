@@ -55,6 +55,21 @@ class RsbsaMasterlistColumnsTest extends TestCase
         $this->assertNull($student['subsidy_exclusion_reason']);
     }
 
+    public function test_farm_geocode_pads_to_geojson_psgc(): void
+    {
+        $this->assertSame('PH0203112033', RsbsaMasterlistColumns::normalizePsgc(203112033));
+        $this->assertSame('PH0203112033', RsbsaMasterlistColumns::normalizePsgc('0203112033'));
+        $this->assertSame('PH0203112033', RsbsaMasterlistColumns::normalizePsgc('PH0203112033'));
+        $this->assertNull(RsbsaMasterlistColumns::normalizePsgc(null));
+        $this->assertNull(RsbsaMasterlistColumns::normalizePsgc(''));
+        $this->assertNull(RsbsaMasterlistColumns::normalizePsgc('#N/A'));
+
+        $row = RsbsaMasterlistColumns::extractFarmerRow($this->row([
+            'FARM GEOCODE' => 203112033,
+        ]));
+        $this->assertSame('PH0203112033', $row['farm_psgc']);
+    }
+
     public function test_blank_remarks_clear_exclusion_and_inactive_spacing_matches(): void
     {
         $row = RsbsaMasterlistColumns::extractFarmerRow($this->row([

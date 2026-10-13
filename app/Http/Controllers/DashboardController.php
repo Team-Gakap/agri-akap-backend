@@ -1349,6 +1349,20 @@ class DashboardController extends Controller
      * Returns geotagged farm plots, damage points, and pest outbreaks.
      * Optional filters: ?barangay=&commodity=&layer=(farms|damage|pests)
      */
+    /**
+     * Barangay aggregates keyed by farm PSGC (GeoJSON adm4_pcode), with a name fallback.
+     */
+    public function barangayStats(Request $request): JsonResponse
+    {
+        $barangay = trim((string) $request->query('barangay', ''));
+        $municipality = $this->municipalityPsgcPrefix($request->query('municipality'));
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $this->barangayStatRows($barangay !== '' ? $barangay : null, $municipality),
+        ]);
+    }
+
     public function mapData(Request $request): JsonResponse
     {
         $barangay = $request->query('barangay');
@@ -1643,6 +1657,171 @@ class DashboardController extends Controller
     }
 
     /**
+     * @return list<array{psgc: ?string, barangay: string, farmer_count: int, pest_count: int, subsidy_count: int}>
+     */
+    private function barangayStatRows(?string $barangay, ?string $municipalityPrefix): array
+    {
+        $buckets = [];
+        $touch = function (?string $psgc, string $name) use (&$buckets): string {
+            $psgc = strtoupper(trim((string) $psgc));
+            $psgc = $psgc !== '' ? $psgc : null;
+            $name = trim($name) !== '' ? trim($name) : 'Unspecified';
+            $key = $psgc ? 'psgc:'.$psgc : 'name:'.Str::lower($name);
+            if (! isset($buckets[$key])) {
+                $buckets[$key] = [
+                    'psgc' => $psgc,
+                    'barangay' => $name,
+                    'farmer_count' => 0,
+                    'pest_count' => 0,
+                    'subsidy_count' => 0,
+                ];
+            }
+
+            return $key;
+        };
+
+        $addByName = function (string $name, string $field, int $count) use (&$buckets, &$touch, $barangay, $municipalityPrefix): void {
+            $name = trim($name) !== '' ? trim($name) : 'Unspecified';
+            if ($barangay && strcasecmp($name, $barangay) !== 0) {
+                return;
+            }
+            $wanted = Str::lower($name);
+            $matched = null;
+            foreach ($buckets as $key => $bucket) {
+                if (Str::lower($bucket['barangay']) !== $wanted) {
+                    continue;
+                }
+                if ($municipalityPrefix && ($bucket['psgc'] === null || ! str_starts_with((string) $bucket['psgc'], $municipalityPrefix))) {
+                    continue;
+                }
+                $matched = $key;
+                if ($bucket['psgc']) {
+                    break;
+                }
+            }
+            if ($matched === null) {
+                if ($municipalityPrefix) {
+                    return;
+                }
+                $matched = $touch(null, $name);
+            }
+            $buckets[$matched][$field] += $count;
+        };
+
+        $farmerQuery = DB::table('farmers')->whereNull('deleted_at');
+        if ($barangay) {
+            $farmerQuery->where(function ($query) use ($barangay) {
+                $query->where('farm_brgy', $barangay)->orWhere('permanent_brgy', $barangay);
+            });
+        }
+        if ($municipalityPrefix && Schema::hasColumn('farmers', 'farm_psgc')) {
+            $farmerQuery->where('farm_psgc', 'like', $municipalityPrefix.'%');
+        }
+
+        $hasPsgc = Schema::hasColumn('farmers', 'farm_psgc');
+        $farmerRows = $farmerQuery
+            ->select(array_filter([
+                $hasPsgc ? 'farm_psgc' : null,
+                'farm_brgy',
+                'permanent_brgy',
+            ]))
+            ->selectRaw('COUNT(*) as farmer_count')
+            ->groupBy(array_filter([
+                $hasPsgc ? 'farm_psgc' : null,
+                'farm_brgy',
+                'permanent_brgy',
+            ]))
+            ->get();
+
+        foreach ($farmerRows as $row) {
+            $name = trim((string) ($row->farm_brgy ?: $row->permanent_brgy ?: '')) ?: 'Unspecified';
+            $key = $touch($hasPsgc ? $row->farm_psgc : null, $name);
+            $buckets[$key]['farmer_count'] += (int) $row->farmer_count;
+        }
+
+        if (Schema::hasTable('pest_outbreaks')) {
+            $pests = DB::table('pest_outbreaks')
+                ->join('farm_plots', 'farm_plots.id', '=', 'pest_outbreaks.farm_plot_id')
+                ->whereIn('pest_outbreaks.status', ['Active', 'Reported'])
+                ->selectRaw('farm_plots.location_brgy as barangay, COUNT(*) as pest_count')
+                ->groupBy('farm_plots.location_brgy')
+                ->get();
+            foreach ($pests as $row) {
+                $addByName((string) $row->barangay, 'pest_count', (int) $row->pest_count);
+            }
+        }
+
+        if (Schema::hasTable('pest_monitoring') && Schema::hasColumn('pest_monitoring', 'is_outbreak')) {
+            $monitored = DB::table('pest_monitoring')
+                ->leftJoin('farm_plots', 'farm_plots.id', '=', 'pest_monitoring.farm_plot_id')
+                ->where('pest_monitoring.is_outbreak', 1)
+                ->whereNull('pest_monitoring.deleted_at')
+                ->selectRaw('farm_plots.location_brgy as plot_brgy, pest_monitoring.farm_location as farm_location, COUNT(*) as pest_count')
+                ->groupBy('farm_plots.location_brgy', 'pest_monitoring.farm_location')
+                ->get();
+            foreach ($monitored as $row) {
+                $addByName((string) ($row->plot_brgy ?: $row->farm_location ?: ''), 'pest_count', (int) $row->pest_count);
+            }
+        }
+
+        if (Schema::hasTable('tbl_subsidy_beneficiaries')) {
+            $claims = DB::table('tbl_subsidy_beneficiaries as beneficiaries')
+                ->join('farmers', 'farmers.id', '=', 'beneficiaries.farmer_id')
+                ->where('beneficiaries.status', 'Claimed')
+                ->whereNull('beneficiaries.deleted_at')
+                ->whereNull('farmers.deleted_at')
+                ->selectRaw('farmers.farm_psgc as psgc, farmers.farm_brgy as farm_brgy, farmers.permanent_brgy as permanent_brgy, COUNT(*) as subsidy_count')
+                ->groupBy('farmers.farm_psgc', 'farmers.farm_brgy', 'farmers.permanent_brgy')
+                ->get();
+            foreach ($claims as $row) {
+                if ($municipalityPrefix && ($row->psgc === null || ! str_starts_with(strtoupper((string) $row->psgc), $municipalityPrefix))) {
+                    continue;
+                }
+                $name = trim((string) ($row->farm_brgy ?: $row->permanent_brgy ?: '')) ?: 'Unspecified';
+                $key = $touch($row->psgc, $name);
+                $buckets[$key]['subsidy_count'] += (int) $row->subsidy_count;
+            }
+        }
+
+        if (Schema::hasTable('tbl_seed_releases')) {
+            $releases = DB::table('tbl_seed_releases')
+                ->whereNull('voided_at')
+                ->where('status', 'Claimed')
+                ->selectRaw('farm_barangay as barangay, COUNT(*) as subsidy_count')
+                ->groupBy('farm_barangay')
+                ->get();
+            foreach ($releases as $row) {
+                $addByName((string) $row->barangay, 'subsidy_count', (int) $row->subsidy_count);
+            }
+        }
+
+        $rows = array_values($buckets);
+        usort($rows, fn (array $a, array $b) => strcasecmp($a['barangay'], $b['barangay']));
+
+        return $rows;
+    }
+
+    private function municipalityPsgcPrefix(mixed $value): ?string
+    {
+        $text = trim((string) $value);
+        if ($text === '') {
+            return null;
+        }
+        if (strcasecmp($text, 'Echague') === 0) {
+            return 'PH0203112';
+        }
+        if (str_starts_with(strtoupper($text), 'PH')) {
+            return strtoupper($text);
+        }
+        $digits = preg_replace('/\D+/', '', $text) ?? '';
+        if ($digits === '') {
+            return null;
+        }
+
+        return 'PH'.str_pad($digits, 7, '0', STR_PAD_LEFT);
+    }
+
+    /**
      * 72h climate snapshot for every cached barangay (choropleth + inspector).
      *
      * @return array<int, array<string, mixed>>
@@ -1653,11 +1832,9 @@ class DashboardController extends Controller
             return [];
         }
 
-        $farmerCounts = Farmer::query()
-            ->selectRaw("COALESCE(NULLIF(permanent_brgy, ''), 'Unspecified') as barangay")
-            ->selectRaw('COUNT(*) as farmer_count')
-            ->groupByRaw('1')
-            ->pluck('farmer_count', 'barangay');
+        $farmerCounts = collect($this->barangayStatRows(null, null))
+            ->groupBy(fn (array $row) => Str::lower(trim($row['barangay'])))
+            ->map(fn ($rows) => (int) $rows->sum('farmer_count'));
 
         $farmerIndex = [];
         foreach ($farmerCounts as $name => $count) {
