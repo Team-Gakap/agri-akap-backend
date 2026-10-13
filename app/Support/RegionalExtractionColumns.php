@@ -107,7 +107,7 @@ class RegionalExtractionColumns
             'farm_address_1' => $farmer['farm_brgy'],
             'farm_address_2' => $farmer['farm_city'],
             'farm_area' => $farmer['total_farm_area_ha'],
-            'commodity' => null,
+            'commodity' => $farmer['commodity'] ?? null,
             'remarks' => $farmer['remarks_raw'],
             'mobile_number' => $farmer['mobile_number'],
             'sex' => $farmer['sex'],

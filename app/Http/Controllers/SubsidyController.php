@@ -1372,6 +1372,7 @@ class SubsidyController extends Controller
                 'mobile_number' => $farmer->mobile_number,
                 'barangay' => $farmBrgy,
                 'farm_brgy' => $farmer->farm_brgy,
+                'permanent_brgy' => $farmer->permanent_brgy,
                 'item_released' => $program->program_name,
                 'seed_class' => $program->seed_class,
                 'item_type' => $program->item_type,
@@ -2186,6 +2187,7 @@ class SubsidyController extends Controller
             'middle_name' => $row->middle_name,
             'barangay' => $row->farm_brgy ?: $row->permanent_brgy,
             'farm_brgy' => $row->farm_brgy,
+            'permanent_brgy' => $row->permanent_brgy,
             'farm_area' => $area,
             'allocated_bags' => $bags,
             'calculated_allocation' => $seedBags ? $bags : $primary,
@@ -2249,10 +2251,7 @@ class SubsidyController extends Controller
         if (! empty($filters['barangays'])) {
             $query->where(function ($q) use ($filters) {
                 $q->whereIn('farmers.farm_brgy', $filters['barangays'])
-                    ->orWhere(function ($inner) use ($filters) {
-                        $inner->whereNull('farmers.farm_brgy')
-                            ->whereIn('farmers.permanent_brgy', $filters['barangays']);
-                    });
+                    ->orWhereIn('farmers.permanent_brgy', $filters['barangays']);
             });
         }
 
@@ -2744,10 +2743,7 @@ class SubsidyController extends Controller
         if (is_array($barangays) && count($barangays) > 0) {
             $query->where(function ($q) use ($barangays) {
                 $q->whereIn('farmers.farm_brgy', $barangays)
-                    ->orWhere(function ($inner) use ($barangays) {
-                        $inner->whereNull('farmers.farm_brgy')
-                            ->whereIn('farmers.permanent_brgy', $barangays);
-                    });
+                    ->orWhereIn('farmers.permanent_brgy', $barangays);
             });
         }
     }

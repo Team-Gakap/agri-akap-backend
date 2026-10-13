@@ -12,6 +12,9 @@ use Illuminate\Support\Facades\Log;
  */
 class SmsService
 {
+    /** Gateway CSV payloads stay under typical Semaphore / iProg per-request limits. */
+    public const BULK_CHUNK_SIZE = 250;
+
     public function __construct(private SystemSettingService $settings)
     {
     }
@@ -70,19 +73,63 @@ class SmsService
     {
         $provider = $this->provider();
 
-        $numbers = array_values(array_filter(array_map('trim', $numbers)));
-        $csv = implode(',', $numbers);
+        $numbers = array_values(array_filter(array_map(
+            static fn ($number) => trim((string) $number),
+            $numbers
+        ), static fn ($number) => $number !== ''));
 
-        if ($csv === '') {
+        if ($numbers === []) {
             return $this->result(false, $provider, 0, 'No recipients provided.');
         }
+
+        $chunks = array_chunk($numbers, self::BULK_CHUNK_SIZE);
+        if (count($chunks) === 1) {
+            return $this->dispatchChunk($provider, $chunks[0], $message);
+        }
+
+        $sent = 0;
+        $failed = 0;
+        $chunkResults = [];
+        $lastProvider = $provider;
+
+        foreach ($chunks as $index => $chunk) {
+            $result = $this->dispatchChunk($provider, $chunk, $message);
+            $chunkResults[] = [
+                'chunk' => $index + 1,
+                'recipients' => count($chunk),
+                'success' => (bool) ($result['success'] ?? false),
+                'raw' => $result['raw'] ?? null,
+            ];
+            $lastProvider = (string) ($result['provider'] ?? $provider);
+            if (! empty($result['success'])) {
+                $sent += (int) ($result['recipients'] ?? count($chunk));
+            } else {
+                $failed += count($chunk);
+            }
+        }
+
+        return $this->result($failed === 0 && $sent > 0, $lastProvider, $sent, [
+            'chunks' => $chunkResults,
+            'sent' => $sent,
+            'failed' => $failed,
+        ]);
+    }
+
+    /**
+     * @param  array<int, string>  $numbers
+     * @return array{success:bool, provider:string, recipients:int, raw:mixed}
+     */
+    private function dispatchChunk(string $provider, array $numbers, string $message): array
+    {
+        $csv = implode(',', $numbers);
 
         try {
             return $provider === SystemSettingService::PROVIDER_SEMAPHORE
                 ? $this->sendViaSemaphore($csv, $message, count($numbers))
                 : $this->sendViaIprog($csv, $message, count($numbers));
         } catch (\Throwable $e) {
-            Log::error("SMS ({$provider}) dispatch failed: " . $e->getMessage());
+            Log::error("SMS ({$provider}) dispatch failed: ".$e->getMessage());
+
             return $this->result(false, $provider, count($numbers), $e->getMessage());
         }
     }

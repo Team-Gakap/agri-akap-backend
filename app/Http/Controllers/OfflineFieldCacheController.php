@@ -29,7 +29,7 @@ class OfflineFieldCacheController extends Controller
 
         $farmers = Farmer::query()
             ->with(['farmPlots' => function ($q) {
-                $q->select('id', 'farmer_id', 'commodity', 'size_ha', 'location_brgy')
+                $q->select('id', 'farmer_id', 'commodity', 'size_ha', 'deleted_at', 'location_brgy')
                     ->whereNull('deleted_at');
             }])
             ->orderBy('surname')

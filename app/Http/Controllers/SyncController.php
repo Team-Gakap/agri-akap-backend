@@ -17,6 +17,7 @@ use App\Models\SubsidyProgram;
 use App\Services\FarmAreaBudgetService;
 use App\Services\PolygonIntegrityService;
 use App\Services\SystemAuditLogger;
+use App\Support\CropPlotClaimer;
 use App\Traits\AssertsPlotAreaCap;
 use App\Traits\DecodesBase64Image;
 use Illuminate\Http\JsonResponse;
@@ -507,6 +508,11 @@ class SyncController extends Controller
         }
 
         $plotId = $this->usablePlotId($item['farm_plot_id'] ?? null);
+        $claimedPlot = $this->claimSyncedPlot($farmerId, $plotId, $item['crop_type'] ?? null, $item['hvcc_commodity'] ?? null);
+        if ($claimedPlot['error']) {
+            return $this->itemResult($clientId, 'failed', $claimedPlot['error']);
+        }
+        $plotId = $claimedPlot['plot_id'];
 
         $areaError = $this->plotAreaExceedsCap($plotId, (float) $item['area_planted']);
         if ($areaError) {
@@ -567,6 +573,11 @@ class SyncController extends Controller
         }
 
         $plotId = $this->usablePlotId($item['farm_plot_id'] ?? null);
+        $claimedPlot = $this->claimSyncedPlot($farmerId, $plotId, $item['crop_type'] ?? null, $item['hvcc_commodity'] ?? null);
+        if ($claimedPlot['error']) {
+            return $this->itemResult($clientId, 'failed', $claimedPlot['error']);
+        }
+        $plotId = $claimedPlot['plot_id'];
 
         $areaError = $this->plotAreaExceedsCap($plotId, (float) $item['area_harvested']);
         if ($areaError) {
@@ -626,6 +637,11 @@ class SyncController extends Controller
         }
 
         $plotId = $this->usablePlotId($item['farm_plot_id'] ?? null);
+        $claimedPlot = $this->claimSyncedPlot($farmerId, $plotId, $item['crop_type'] ?? null, $item['hvcc_commodity'] ?? null);
+        if ($claimedPlot['error']) {
+            return $this->itemResult($clientId, 'failed', $claimedPlot['error']);
+        }
+        $plotId = $claimedPlot['plot_id'];
 
         $areaError = $this->plotAreaExceedsCap($plotId, (float) $item['area_ha']);
         if ($areaError) {
@@ -1437,6 +1453,28 @@ class SyncController extends Controller
     }
 
     /** Keep a plot FK only when the plot still exists (not missing / not soft-deleted). */
+    /**
+     * @return array{plot_id: ?string, error: ?string}
+     */
+    private function claimSyncedPlot(?string $farmerId, ?string $plotId, ?string $cropType, ?string $hvcc): array
+    {
+        if (! $farmerId || trim((string) $cropType) === '') {
+            return ['plot_id' => $plotId, 'error' => null];
+        }
+
+        $farmer = Farmer::find($farmerId);
+        if (! $farmer) {
+            return ['plot_id' => $plotId, 'error' => null];
+        }
+
+        $claimed = CropPlotClaimer::claim($farmer, $plotId, (string) $cropType, $hvcc);
+        if (isset($claimed['error'])) {
+            return ['plot_id' => null, 'error' => $claimed['error']];
+        }
+
+        return ['plot_id' => $claimed['plot']->id, 'error' => null];
+    }
+
     private function usablePlotId(mixed $farmPlotId): ?string
     {
         $plotId = $this->nullableUuid($farmPlotId);

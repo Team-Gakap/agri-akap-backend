@@ -87,6 +87,7 @@ class RsbsaMasterlistColumns
                 'area',
                 'ch',
             ],
+            'commodity' => ['commodity', 'crop', 'primary_commodity'],
             'birthdate' => [
                 'birthdate',
                 'birthday',
@@ -97,6 +98,8 @@ class RsbsaMasterlistColumns
             'is_pwd' => ['pwd', 'is_pwd', 'person_with_disability'],
             'is_4ps' => ['4_ps', '4ps', 'is_4ps_beneficiary', 'four_ps'],
             'is_indigenous' => ['indigenous', 'indegenous', 'is_icc_ip', 'icc_ip'],
+            // Both remark columns are populated independently on the DA sheet.
+            'barangay_remarks' => ['barangay_remarks'],
             'remarks' => [
                 'remarks',
                 'remark',
@@ -165,7 +168,7 @@ class RsbsaMasterlistColumns
             $farmArea = max(0.0, round((float) $farmAreaRaw, 4));
         }
 
-        $remarks = $get('remarks');
+        $remarks = self::combineRemarks($get('barangay_remarks'), $get('remarks'));
         $exclusion = SubsidyExclusionRules::matchedLabel($remarks);
 
         $sexRaw = $get('sex');
@@ -177,13 +180,7 @@ class RsbsaMasterlistColumns
             }
         }
 
-        $mobile = $get('mobile_number');
-        if ($mobile === null || $mobile === '') {
-            $mobile = self::DEFAULT_MOBILE;
-        } else {
-            $digits = preg_replace('/\D+/', '', $mobile) ?? '';
-            $mobile = $digits !== '' ? $digits : self::DEFAULT_MOBILE;
-        }
+        $mobile = self::normalizeMobile($get('mobile_number'));
 
         // Home address stays as written; do not force Echague onto residence.
         $permanentBrgy = $residenceBrgy ?: $farmBrgy;
@@ -206,12 +203,65 @@ class RsbsaMasterlistColumns
             'farm_city' => $farmCity,
             'mobile_number' => $mobile,
             'total_farm_area_ha' => $farmArea,
+            'commodity' => $get('commodity'),
             'is_pwd' => self::parseYesNo($get('is_pwd')),
             'is_4ps_beneficiary' => self::parseYesNo($get('is_4ps')),
             'is_icc_ip' => self::parseYesNo($get('is_indigenous')),
             'subsidy_exclusion_reason' => $exclusion,
             'remarks_raw' => $remarks,
         ];
+    }
+
+    /**
+     * Excel stores CONTACT NO as a number, so the leading 0 is dropped (955… → 10 digits).
+     * 63-prefixed numbers are converted to the local 09… form. An already-local 11-digit
+     * number is left unchanged.
+     */
+    public static function normalizeMobile(mixed $value): string
+    {
+        if ($value === null || $value === '') {
+            return self::DEFAULT_MOBILE;
+        }
+
+        if (is_int($value) || is_float($value)) {
+            $digits = sprintf('%.0f', $value);
+        } else {
+            $text = trim((string) $value);
+            if ($text === '' || strcasecmp($text, '#N/A') === 0 || strcasecmp($text, 'N/A') === 0) {
+                return self::DEFAULT_MOBILE;
+            }
+            $digits = (is_numeric($text) && preg_match('/e/i', $text))
+                ? sprintf('%.0f', (float) $text)
+                : (preg_replace('/\D+/', '', $text) ?? '');
+        }
+
+        if ($digits === '') {
+            return self::DEFAULT_MOBILE;
+        }
+
+        if (strlen($digits) === 12 && str_starts_with($digits, '63')) {
+            return '0'.substr($digits, 2);
+        }
+
+        if (strlen($digits) === 10 && str_starts_with($digits, '9')) {
+            return '0'.$digits;
+        }
+
+        return $digits;
+    }
+
+    private static function combineRemarks(?string $barangayRemarks, ?string $otherRemarks): ?string
+    {
+        $parts = array_values(array_filter(
+            [$barangayRemarks, $otherRemarks],
+            fn (?string $part) => $part !== null && trim($part) !== ''
+        ));
+
+        if ($parts === []) {
+            return null;
+        }
+
+        return implode(' ', $parts);
     }
 
     private static function parseYesNo(?string $value): bool

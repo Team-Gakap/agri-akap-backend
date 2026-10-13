@@ -16,11 +16,14 @@ class SubsidyExclusionRules
      * tested against.  Values are the display-friendly label.
      */
     public const KEYWORDS = [
-        'DECEASED'  => 'Deceased',
-        'OFW'       => 'OFW',
-        'NOFARM'    => 'No Farm',
-        'INACTIVE'  => 'Inactive',
-        'INACTIVE1' => 'Inactive',  // alternate spelling seen in DA sheets
+        'DECEASED'    => 'Deceased',
+        'OFW'         => 'OFW',
+        'NOFARMSOLD'  => 'No Farm',
+        'NOFARM'      => 'No Farm',
+        'DOUBLEENTRY' => 'Double Entry',
+        'INACTIVE'    => 'Inactive',
+        'INACTIVE1'   => 'Inactive',  // alternate spelling seen in DA sheets
+        // STUDENT and NOT RESIDENCE stay claim-eligible: they are not subsidy disqualifiers.
     ];
 
     /**

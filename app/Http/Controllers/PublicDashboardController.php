@@ -140,6 +140,7 @@ class PublicDashboardController extends Controller
     private function filteredFarmers(array $filters)
     {
         return Farmer::query()
+            ->with('rffaPlots')
             ->when($filters['barangay'] ?? null, fn ($query, $barangay) => $query->where('permanent_brgy', $barangay))
             ->when($filters['commodity'] ?? null, fn ($query, $commodity) => $query->whereHas(
                 'farmPlots',

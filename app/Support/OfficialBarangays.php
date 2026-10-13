@@ -65,6 +65,48 @@ final class OfficialBarangays
         return $trimmed;
     }
 
+    /**
+     * Names that should match a registry filter: the typed value, its official
+     * label, and the short PSGC alias when one exists.
+     *
+     * @return list<string>
+     */
+    public static function equivalentNames(string $name): array
+    {
+        $trimmed = trim($name);
+        if ($trimmed === '') {
+            return [];
+        }
+
+        $aliases = [
+            'Cabugao' => 'Cabugao (Poblacion)',
+            'San Manuel' => 'San Manuel (formerly Atelan)',
+            'Silauan Norte' => 'Silauan Norte (Poblacion)',
+            'Silauan Sur' => 'Silauan Sur (Poblacion)',
+            'Soyung' => 'Soyung (Poblacion)',
+            'Taggappan' => 'Taggappan (Poblacion)',
+        ];
+
+        $names = [$trimmed, self::normalizePsgcName($trimmed)];
+        foreach ($aliases as $short => $official) {
+            if (strcasecmp($trimmed, $short) === 0 || strcasecmp($trimmed, $official) === 0) {
+                $names[] = $short;
+                $names[] = $official;
+            }
+        }
+
+        $unique = [];
+        foreach ($names as $candidate) {
+            $candidate = trim($candidate);
+            if ($candidate === '') {
+                continue;
+            }
+            $unique[strtolower($candidate)] = $candidate;
+        }
+
+        return array_values($unique);
+    }
+
     public static function isEchagueCity(?string $city): bool
     {
         return $city !== null && strcasecmp(trim($city), 'Echague') === 0;

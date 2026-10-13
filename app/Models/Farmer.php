@@ -73,6 +73,14 @@ class Farmer extends Model
     protected $appends = ['is_rffa_eligible'];
 
     /**
+     * Slim plot columns for list JSON. Hidden so registry responses do not
+     * embed parcels; the accessor still reads the loaded relation.
+     *
+     * @var list<string>
+     */
+    protected $hidden = ['rffaPlots'];
+
+    /**
      * Get all subsidy claims for this farmer.
      */
     public function distributions(): HasMany
@@ -86,6 +94,21 @@ class Farmer extends Model
     public function farmPlots(): HasMany
     {
         return $this->hasMany(FarmPlot::class, 'farmer_id');
+    }
+
+    /**
+     * Plot columns required for RFFA eligibility, without polygon/POINT payloads.
+     */
+    public function rffaPlots(): HasMany
+    {
+        return $this->hasMany(FarmPlot::class, 'farmer_id')
+            ->select([
+                'farm_plots.id',
+                'farm_plots.farmer_id',
+                'farm_plots.commodity',
+                'farm_plots.size_ha',
+                'farm_plots.deleted_at',
+            ]);
     }
 
     /**
@@ -107,7 +130,13 @@ class Farmer extends Model
               ->orWhere('permanent_brgy', 'like', $term)
               ->orWhere('farm_brgy', 'like', $term)
               ->orWhere('permanent_city', 'like', $term)
-              ->orWhere('farm_city', 'like', $term);
+              ->orWhere('farm_city', 'like', $term)
+              ->orWhereRaw(
+                  "CONCAT(surname, ', ', first_name, ' ', COALESCE(middle_name, '')) LIKE ?",
+                  [$term]
+              )
+              ->orWhereRaw("CONCAT(first_name, ' ', surname) LIKE ?", [$term])
+              ->orWhereRaw("CONCAT(surname, ' ', first_name) LIKE ?", [$term]);
         });
     }
 
@@ -116,29 +145,29 @@ class Farmer extends Model
      *
      * A farmer is eligible for the Rice Farmers Financial Assistance (RFFA)
      * program when ALL of the following criteria are met:
-     *   1. They have at least one active farm plot where commodity = 'Rice'
+     *   1. They have at least one active farm plot whose commodity contains "rice"
+     *      (Rice, Rice/Palay). HVCC labels are excluded.
      *   2. The sum of ALL their farm plot areas is ≤ 2.0 hectares
      *
      * @return bool
      */
     public function getIsRffaEligibleAttribute(): bool
     {
-        // Eager-load farm plots if not already loaded to avoid N+1.
-        if (! $this->relationLoaded('farmPlots')) {
-            $this->load('farmPlots');
-        }
-
-        $plots = $this->farmPlots;
+        $plots = $this->plotsForRffa();
 
         // No plots → not eligible.
         if ($plots->isEmpty()) {
             return false;
         }
 
-        // Check criterion 1: at least one Rice plot.
+        // Rice, Rice/Palay, and RICE all qualify. HVCC names that merely contain "rice" do not.
         $hasRice = $plots->contains(function ($plot) {
-            return ! $plot->deleted_at &&
-                   strcasecmp(trim((string) $plot->commodity), 'Rice') === 0;
+            if ($plot->deleted_at) {
+                return false;
+            }
+            $commodity = strtolower(trim((string) $plot->commodity));
+
+            return str_contains($commodity, 'rice') && ! str_contains($commodity, 'hvcc');
         });
 
         if (! $hasRice) {
@@ -149,5 +178,25 @@ class Farmer extends Model
         $totalHa = $plots->where('deleted_at', null)->sum('size_ha');
 
         return $totalHa > 0 && $totalHa <= 2.0;
+    }
+
+    /**
+     * Prefer an already-loaded plot relation. Otherwise one slim query, cached
+     * on rffaPlots so a list page does not pull POINT columns per farmer.
+     */
+    private function plotsForRffa(): \Illuminate\Support\Collection
+    {
+        if ($this->relationLoaded('rffaPlots')) {
+            return $this->rffaPlots;
+        }
+
+        if ($this->relationLoaded('farmPlots')) {
+            return $this->farmPlots;
+        }
+
+        $plots = $this->rffaPlots()->get();
+        $this->setRelation('rffaPlots', $plots);
+
+        return $plots;
     }
 }

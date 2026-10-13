@@ -3,8 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Models\Farmer;
-use App\Models\FarmPlot;
 use App\Models\StandingCropLog;
+use App\Support\CropPlotClaimer;
 use App\Support\HvccCatalog;
 use App\Traits\AssertsPlotAreaCap;
 use App\Traits\LogsReportAudit;
@@ -89,15 +89,19 @@ class StandingCropLogController extends Controller
             ], 403);
         }
 
-        if (! empty($validated['farm_plot_id'])) {
-            $plot = FarmPlot::findOrFail($validated['farm_plot_id']);
-            if ($plot->farmer_id !== $farmer->id) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'Selected farm plot does not belong to this farmer.',
-                ], 422);
-            }
+        $claimed = CropPlotClaimer::claim(
+            $farmer,
+            $validated['farm_plot_id'] ?? null,
+            (string) $validated['crop_type'],
+            $validated['hvcc_commodity'] ?? null,
+        );
+        if (isset($claimed['error'])) {
+            return response()->json([
+                'status' => 'error',
+                'message' => $claimed['error'],
+            ], 422);
         }
+        $validated['farm_plot_id'] = $claimed['plot']->id;
 
         $areaError = $this->assertAreaWithinPlot(
             $validated['farm_plot_id'] ?? null,

@@ -73,7 +73,9 @@ class ReportExportController extends Controller
             'PWD', '4Ps', 'Livelihood', 'Farm Plots',
         ];
 
-        $rows = Farmer::withCount('farmPlots')
+        $rows = Farmer::query()
+            ->with('rffaPlots')
+            ->withCount('farmPlots')
             ->when($f['barangay'], fn ($q) => $q->where('permanent_brgy', $f['barangay']))
             ->when($f['search'] ?? null, function ($q, $term) {
                 $q->search($term);

@@ -2,6 +2,7 @@
 
 namespace App\Imports;
 
+use App\Support\ImportedFarmPlot;
 use App\Support\RsbsaMasterlistColumns;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -62,6 +63,10 @@ class FarmersImport implements ToCollection, WithHeadingRow, WithChunkReading
         }
 
         $rsbsaList = array_column($payload, 'rsbsa_no');
+        $commodityByRsbsa = [];
+        foreach ($payload as $data) {
+            $commodityByRsbsa[$data['rsbsa_no']] = $data['commodity'] ?? null;
+        }
         $existingKeys = DB::table('farmers')
             ->whereIn('rsbsa_no', $rsbsaList)
             ->pluck('rsbsa_no')
@@ -149,5 +154,7 @@ class FarmersImport implements ToCollection, WithHeadingRow, WithChunkReading
                 );
             }
         });
+
+        ImportedFarmPlot::insertMissingByRsbsa($rsbsaList, $commodityByRsbsa);
     }
 }

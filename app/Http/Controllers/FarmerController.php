@@ -52,7 +52,9 @@ class FarmerController extends Controller
         $barangay = $request->query('barangay');
         $commodity = trim((string) $request->query('commodity', ''));
 
-        $query = Farmer::withCount('farmPlots')
+        $query = Farmer::query()
+            ->with('rffaPlots')
+            ->withCount('farmPlots')
             ->withSum('farmPlots as mapped_area_ha', 'size_ha')
             ->withCount([
                 'farmPlots as georef_plots_count' => function ($q) {
@@ -71,32 +73,15 @@ class FarmerController extends Controller
                     'message' => 'No barangay assignment on this account.',
                 ], 403);
             }
-            $query->where(function ($q) use ($assigned) {
-                $q->where('farm_brgy', $assigned)
-                    ->orWhere(function ($inner) use ($assigned) {
-                        $inner->whereNull('farm_brgy')->where('permanent_brgy', $assigned);
-                    });
-            });
+            $this->constrainBarangay($query, (string) $assigned);
         } elseif ($user?->isMunicipalAdmin()) {
-            // Full registry — optional farm-barangay filter still allowed
-            $query->when($barangay, function ($q, $b) {
-                $q->where(function ($inner) use ($b) {
-                    $inner->where('farm_brgy', $b)
-                        ->orWhere(function ($fallback) use ($b) {
-                            $fallback->whereNull('farm_brgy')->where('permanent_brgy', $b);
-                        });
-                });
-            });
+            if (is_string($barangay) && trim($barangay) !== '') {
+                $this->constrainBarangay($query, $barangay);
+            }
         } elseif ($role === 'technician') {
-            // Field search across Echague; keep farm-barangay filter optional
-            $query->when($barangay, function ($q, $b) {
-                $q->where(function ($inner) use ($b) {
-                    $inner->where('farm_brgy', $b)
-                        ->orWhere(function ($fallback) use ($b) {
-                            $fallback->whereNull('farm_brgy')->where('permanent_brgy', $b);
-                        });
-                });
-            });
+            if (is_string($barangay) && trim($barangay) !== '') {
+                $this->constrainBarangay($query, $barangay);
+            }
         } else {
             return response()->json([
                 'status' => 'error',
@@ -107,8 +92,10 @@ class FarmerController extends Controller
         // Barangay crop forms: only farmers with a matching farm-plot commodity
         if ($commodity !== '') {
             $query->whereHas('farmPlots', function ($q) use ($commodity) {
+                $q->whereRaw("LOWER(TRIM(COALESCE(commodity, ''))) != ?", ['unspecified'])
+                    ->where('commodity', '!=', '');
                 $key = Str::lower($commodity);
-                if (in_array($key, ['high-value', 'high-value crops', 'hvc'], true)) {
+                if (in_array($key, ['high-value', 'high-value crops', 'hvc', 'hvcc'], true)) {
                     $q->where(function ($inner) {
                         $inner->whereRaw('LOWER(commodity) like ?', ['%high-value%'])
                             ->orWhereRaw('LOWER(commodity) like ?', ['%hvc%']);
@@ -189,7 +176,7 @@ class FarmerController extends Controller
             $this->decorateFarmer($farmer);
             // is_rffa_eligible loads farmPlots; drop them so binary POINT coords
             // and full polygons are not dumped into the masterlist JSON.
-            $farmer->makeHidden(['farmPlots', 'farm_plots']);
+            $farmer->makeHidden(['farmPlots', 'farm_plots', 'rffaPlots', 'rffa_plots']);
 
             return $farmer;
         });
@@ -861,6 +848,24 @@ class FarmerController extends Controller
                 : 'SMS could not be sent. Check the gateway configuration.',
             'data' => ['farmer_id' => $farmer->id],
         ], $result['success'] ? 200 : 502);
+    }
+
+    /**
+     * Match the barangay shown in the registry (home or farm) without requiring
+     * farm_brgy to be null before the home address counts.
+     */
+    private function constrainBarangay($query, string $barangay): void
+    {
+        $names = array_map('strtolower', OfficialBarangays::equivalentNames($barangay));
+        if ($names === []) {
+            return;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($names), '?'));
+        $query->where(function ($inner) use ($names, $placeholders) {
+            $inner->whereRaw("LOWER(TRIM(farm_brgy)) IN ($placeholders)", $names)
+                ->orWhereRaw("LOWER(TRIM(permanent_brgy)) IN ($placeholders)", $names);
+        });
     }
 
     private function decorateFarmer(Farmer $farmer, ?float $mappedHa = null): Farmer

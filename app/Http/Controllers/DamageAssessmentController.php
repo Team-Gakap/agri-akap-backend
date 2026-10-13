@@ -12,6 +12,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use App\Support\CalamityTypes;
+use App\Support\CropPlotClaimer;
 use App\Support\HvccCatalog;
 use App\Support\AuditRemarks;
 
@@ -137,8 +138,9 @@ class DamageAssessmentController extends Controller
 
         $validated = $request->validate([
             'id' => 'nullable|uuid',
-            'farm_plot_id' => 'required|exists:farm_plots,id',
+            'farm_plot_id' => 'nullable|uuid|exists:farm_plots,id',
             'farmer_id' => 'nullable|exists:farmers,id',
+            'crop_type' => 'nullable|string|max:64',
             'calamity_type' => ['required', CalamityTypes::rule()],
             'calamity_name' => 'nullable|string|max:255',
             'crop_stage' => ['nullable', Rule::in(['Seedling', 'Vegetative', 'Reproductive', 'Maturity', 'Harvested'])],
@@ -176,6 +178,40 @@ class DamageAssessmentController extends Controller
         }
 
         $farmer = Farmer::find($validated['farmer_id']);
+        if (! $farmer) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'A farmer is required to file this assessment.',
+            ], 422);
+        }
+
+        $cropType = trim((string) ($validated['crop_type'] ?? ''));
+        if ($cropType === '' && ! empty($validated['hvcc_commodity'])) {
+            $cropType = 'HVCC';
+        }
+        if ($cropType !== '') {
+            $claimed = CropPlotClaimer::claim(
+                $farmer,
+                $validated['farm_plot_id'] ?? null,
+                $cropType,
+                $validated['hvcc_commodity'] ?? null,
+            );
+            if (isset($claimed['error'])) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => $claimed['error'],
+                ], 422);
+            }
+            $validated['farm_plot_id'] = $claimed['plot']->id;
+        }
+
+        if (empty($validated['farm_plot_id'])) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Select a farm plot before saving this assessment.',
+            ], 422);
+        }
+
         $barangayResult = $this->resolveEncodingBarangay($request, $farmer);
         if ($barangayResult instanceof JsonResponse) {
             return $barangayResult;

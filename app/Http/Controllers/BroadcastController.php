@@ -69,7 +69,7 @@ class BroadcastController extends Controller
         [$query, $barangays, $commodity] = $this->audienceQuery($validated);
         $barangayLabel = empty($barangays) ? 'All' : implode(', ', $barangays);
 
-        $farmers = $query->get(['id', 'first_name', 'surname', 'permanent_brgy', 'mobile_number']);
+        $farmers = $query->get(['id', 'first_name', 'surname', 'permanent_brgy', 'farm_brgy', 'mobile_number']);
         $phoneNumbers = $farmers->pluck('mobile_number')->filter()->values()->all();
         $recipientCount = count($phoneNumbers);
 
@@ -88,6 +88,7 @@ class BroadcastController extends Controller
             $recipientCount = (int) ($result['recipients'] ?? $recipientCount);
         } else {
             $result = $this->sms->sendBulk($phoneNumbers, $template);
+            $recipientCount = (int) ($result['recipients'] ?? $recipientCount);
         }
 
         $status = $result['success']
@@ -153,7 +154,11 @@ class BroadcastController extends Controller
         }
 
         if (! empty($barangays)) {
-            $query->whereIn('permanent_brgy', $barangays);
+            $placeholders = implode(',', array_fill(0, count($barangays), '?'));
+            $query->whereRaw(
+                "COALESCE(NULLIF(TRIM(farm_brgy), ''), permanent_brgy) IN ($placeholders)",
+                $barangays
+            );
         }
 
         $commodity = trim((string) ($validated['target_commodity'] ?? ''));
@@ -225,7 +230,7 @@ class BroadcastController extends Controller
 
         return strtr($template, [
             '{Farmer_Name}' => $name,
-            '{Barangay}' => (string) ($farmer->permanent_brgy ?: 'your barangay'),
+            '{Barangay}' => (string) ($farmer->farm_brgy ?: $farmer->permanent_brgy ?: 'your barangay'),
             '{Program_Name}' => $program,
             '{Distribution_Date}' => $date,
         ]);
