@@ -21,11 +21,8 @@ class HarvestLog extends Model
         'farm_plot_id',
         'technician_id',
         'crop_type',
-        'crop_category',
-        'hvcc_commodity',
         'variety',
         'area_harvested',
-        'num_hills_trees',
         'total_yield',
         'yield_unit',
         'date_harvested',
@@ -35,7 +32,6 @@ class HarvestLog extends Model
     protected $casts = [
         'date_harvested' => 'date',
         'area_harvested' => 'decimal:4',
-        'num_hills_trees' => 'integer',
         'total_yield' => 'decimal:2',
     ];
 

@@ -140,7 +140,7 @@ class UpdateFarmerRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'plots.*.commodity.in' => 'Select a valid commodity (Rice, Corn, High-Value Crops).',
+            'plots.*.commodity.in' => 'Select a valid commodity (Rice, Corn).',
             'plots.*.land_owner_first_name.required_if' => 'Landowner first name is required for tenant- or lessee-tilled parcels.',
             'plots.*.land_owner_surname.required_if' => 'Landowner surname is required for tenant- or lessee-tilled parcels.',
         ];

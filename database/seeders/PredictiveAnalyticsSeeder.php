@@ -39,12 +39,9 @@ class PredictiveAnalyticsSeeder extends Seeder
             $farmer = $this->farmer($index, $barangay);
             $plot = $this->plot($farmer, $barangay, $index);
 
-            $this->seedCrop($farmer, $barangay, 'Rice', 'NSIC Rc 222', null, $index, $wetYears, 8 + ($index % 10), 4200);
+            $this->seedCrop($farmer, $barangay, 'Rice', 'NSIC Rc 222', $index, $wetYears, 8 + ($index % 10), 4200);
             if ($index % 3 === 0) {
-                $this->seedCrop($farmer, $barangay, 'Corn', 'Dekalb 6919', null, $index + 100, $wetYears, 4 + ($index % 6), 4800);
-            }
-            if ($index % 7 === 0) {
-                $this->seedCrop($farmer, $barangay, 'High Value', 'Native', 'Eggplant', $index + 200, $wetYears, 1.5 + ($index % 3), 3200);
+                $this->seedCrop($farmer, $barangay, 'Corn', 'Dekalb 6919', $index + 100, $wetYears, 4 + ($index % 6), 4800);
             }
 
             $this->seedRisk($technician, $farmer, $plot, $barangay, $index, $today);
@@ -102,7 +99,6 @@ class PredictiveAnalyticsSeeder extends Seeder
         string $barangay,
         string $crop,
         string $variety,
-        ?string $hvcc,
         int $salt,
         array $wetYears,
         float $plantedHa,
@@ -116,7 +112,6 @@ class PredictiveAnalyticsSeeder extends Seeder
                 [
                     'farmer_id' => $farmer->id,
                     'crop_type' => $crop,
-                    'hvcc_commodity' => $hvcc,
                     'variety' => $variety,
                     'area_harvested' => $area,
                     'total_yield' => round($area * $kgPerHa, 2),
@@ -132,7 +127,6 @@ class PredictiveAnalyticsSeeder extends Seeder
             [
                 'farmer_id' => $farmer->id,
                 'crop_type' => $crop,
-                'hvcc_commodity' => $hvcc,
                 'variety' => $variety,
                 'area_planted' => round($plantedHa, 2),
                 'date_planted' => Carbon::today()->subDays(40)->toDateString(),

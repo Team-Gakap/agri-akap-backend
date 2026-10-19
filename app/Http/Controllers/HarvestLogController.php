@@ -5,7 +5,6 @@ namespace App\Http\Controllers;
 use App\Models\Farmer;
 use App\Models\HarvestLog;
 use App\Support\CropPlotClaimer;
-use App\Support\HvccCatalog;
 use App\Traits\AssertsPlotAreaCap;
 use App\Traits\LogsReportAudit;
 use App\Traits\ResolvesEncodingBarangay;
@@ -61,7 +60,6 @@ class HarvestLogController extends Controller
             'farmer_id' => ['required', 'uuid', 'exists:farmers,id'],
             'farm_plot_id' => ['nullable', 'uuid', 'exists:farm_plots,id'],
             'crop_type' => ['required', 'string', 'max:64'],
-            ...HvccCatalog::optionalFieldRules(),
             'variety' => ['required', 'string', 'max:128'],
             'area_harvested' => ['required', 'numeric', 'min:0'],
             'total_yield' => ['required', 'numeric', 'min:0'],
@@ -84,7 +82,6 @@ class HarvestLogController extends Controller
             $farmer,
             $validated['farm_plot_id'] ?? null,
             (string) $validated['crop_type'],
-            $validated['hvcc_commodity'] ?? null,
         );
         if (isset($claimed['error'])) {
             return response()->json([
@@ -122,11 +119,8 @@ class HarvestLogController extends Controller
             'farm_plot_id' => $validated['farm_plot_id'] ?? null,
             'technician_id' => $user->id,
             'crop_type' => $validated['crop_type'],
-            'crop_category' => $validated['crop_category'] ?? null,
-            'hvcc_commodity' => $validated['hvcc_commodity'] ?? null,
             'variety' => $validated['variety'],
             'area_harvested' => $validated['area_harvested'],
-            'num_hills_trees' => $validated['num_hills_trees'] ?? null,
             'total_yield' => $validated['total_yield'],
             'yield_unit' => 'Kilograms',
             'date_harvested' => $validated['date_harvested'],

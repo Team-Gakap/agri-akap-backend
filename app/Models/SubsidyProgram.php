@@ -21,7 +21,6 @@ class SubsidyProgram extends Model
         'sheet_name',
         'source',
         'target_crop',
-        'hvcc_commodity',
         'target_barangays',
         'seed_class',
         'item_type',

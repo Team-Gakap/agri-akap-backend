@@ -8,6 +8,12 @@ use Illuminate\Validation\ValidationException;
 
 class WalkInOverride
 {
+    private const REASONS = [
+        'tenant_endorsed' => 'Tenant/Lessee Endorsed by Barangay Captain',
+        'pending_rsbsa_batch' => 'Pending RSBSA Enrollment (Encoded in Batch)',
+        'emergency_calamity_hvcdp' => 'Emergency Calamity Buffer Relief (Under DA-HVCDP)',
+    ];
+
     /**
      * Password re-entry plus a statutory reason code (or legacy free-text reason).
      *
@@ -18,7 +24,7 @@ class WalkInOverride
     {
         $code = trim((string) ($validated['override_reason_code'] ?? ''));
         $notes = trim((string) ($validated['override_justification'] ?? $validated['override_reason'] ?? ''));
-        $label = HvccCatalog::overrideReasonLabel($code);
+        $label = self::REASONS[$code] ?? null;
 
         if ($requireReasonCode && $label === null) {
             return [

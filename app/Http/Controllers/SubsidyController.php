@@ -13,7 +13,6 @@ use App\Support\SubsidyAllocation;
 use App\Support\SubsidyCatalog;
 use App\Support\SubsidyExclusionRules;
 use App\Support\AuditRemarks;
-use App\Support\HvccCatalog;
 use App\Support\WalkInOverride;
 use App\Traits\DecodesBase64Image;
 use App\Traits\LogsReportAudit;
@@ -71,8 +70,7 @@ class SubsidyController extends Controller
     {
         $validated = $request->validate([
             'program_name' => 'required|string|max:255',
-            'target_crop' => ['required', Rule::in(['Rice', 'Corn', 'Both', 'HVCC'])],
-            'hvcc_commodity' => ['nullable', 'string', 'max:64'],
+            'target_crop' => ['required', Rule::in(['Rice', 'Corn', 'Both'])],
             'seed_class' => ['nullable', Rule::in(SubsidyCatalog::seedClasses())],
             'item_type' => ['nullable', Rule::in(['seed', 'abono', 'liquid_fertilizer', 'wettable', 'cash'])],
             'max_hectares_limit' => 'required|numeric|min:0.01|max:9999',
@@ -163,9 +161,6 @@ class SubsidyController extends Controller
         $program = SubsidyProgram::create([
             'program_name' => $validated['program_name'],
             'target_crop' => $validated['target_crop'],
-            'hvcc_commodity' => ($validated['target_crop'] ?? '') === 'HVCC'
-                ? ($validated['hvcc_commodity'] ?? null)
-                : null,
             'target_barangays' => $targetBarangays,
             'seed_class' => $seedClass,
             'item_type' => $itemType,
@@ -484,7 +479,7 @@ class SubsidyController extends Controller
             ], 409);
         }
 
-        [$plotArea, $plantArea] = $this->cropAreaSubqueries((string) $program->target_crop, $program->hvcc_commodity);
+        [$plotArea, $plantArea] = $this->cropAreaSubqueries((string) $program->target_crop);
 
         $skippedNoRsbsaQuery = DB::table('farmers')
             ->leftJoinSub($plotArea, 'plots', fn ($join) => $join->on('plots.farmer_id', '=', 'farmers.id'))
@@ -874,7 +869,7 @@ class SubsidyController extends Controller
     {
         $program = SubsidyProgram::query()->findOrFail($id);
 
-        [$plotArea, $plantArea] = $this->cropAreaSubqueries((string) $program->target_crop, $program->hvcc_commodity);
+        [$plotArea, $plantArea] = $this->cropAreaSubqueries((string) $program->target_crop);
 
         $masterlist = DB::table('tbl_subsidy_beneficiaries as beneficiaries')
             ->join('farmers', 'farmers.id', '=', 'beneficiaries.farmer_id')
@@ -1264,7 +1259,7 @@ class SubsidyController extends Controller
                 ], 404);
             }
 
-            $previewArea = $this->cropAreaForFarmer($farmer->id, (string) $program->target_crop, $program->hvcc_commodity);
+            $previewArea = $this->cropAreaForFarmer($farmer->id, (string) $program->target_crop);
             $live = $this->allocationForArea($program, $previewArea);
             if ($live === null) {
                 $minHa = (float) ($program->min_hectares_limit ?? 0);
@@ -1327,7 +1322,7 @@ class SubsidyController extends Controller
         }
 
         $primaryPlot = $farmer->farmPlots()->first();
-        $totalFarmSize = $this->cropAreaForFarmer($farmer->id, (string) $program->target_crop, $program->hvcc_commodity);
+        $totalFarmSize = $this->cropAreaForFarmer($farmer->id, (string) $program->target_crop);
         $minHa = (float) ($program->min_hectares_limit ?? 0);
         if ($minHa > 0 && $totalFarmSize + 0.0000001 < $minHa) {
             return response()->json([
@@ -1507,7 +1502,7 @@ class SubsidyController extends Controller
                     return ['error' => 'This farmer is not eligible for this program.', 'code' => 404, 'outcome' => 'failed'];
                 }
 
-                $liveArea = $this->cropAreaForFarmer($farmer->id, (string) $program->target_crop, $program->hvcc_commodity);
+                $liveArea = $this->cropAreaForFarmer($farmer->id, (string) $program->target_crop);
                 $liveAlloc = $this->allocationForArea($program, $liveArea);
                 if ($liveAlloc === null) {
                     return ['error' => "This farmer's {$program->target_crop} area is below the program minimum.", 'code' => 400, 'outcome' => 'failed'];
@@ -1765,7 +1760,6 @@ class SubsidyController extends Controller
             'id' => $p->id,
             'program_name' => $p->program_name,
             'target_crop' => $p->target_crop,
-            'hvcc_commodity' => $p->hvcc_commodity,
             'target_barangays' => $p->target_barangays,
             'seed_class' => $p->seed_class,
             'item_type' => $p->item_type,
@@ -2207,12 +2201,7 @@ class SubsidyController extends Controller
     private function eligibleFarmerQuery(SubsidyProgram $program, array $filters = []): \Illuminate\Database\Query\Builder
     {
         $crop = ! empty($filters['commodity']) ? (string) $filters['commodity'] : (string) $program->target_crop;
-        $hvccCommodity = $program->hvcc_commodity;
-        if (! empty($filters['commodity']) && HvccCatalog::isKnownCommodity((string) $filters['commodity'])) {
-            $hvccCommodity = (string) $filters['commodity'];
-            $crop = 'HVCC';
-        }
-        [$plotArea, $plantArea] = $this->cropAreaSubqueries($crop, $hvccCommodity);
+        [$plotArea, $plantArea] = $this->cropAreaSubqueries($crop);
         $damage = $this->damageSeveritySubquery(
             ! empty($filters['rdana_validated']) ? ($filters['rdana_months'] ?? null) : null,
             ! empty($filters['rdana_validated']) ? ($filters['rdana_min_severity'] ?? null) : null,
@@ -2746,21 +2735,12 @@ class SubsidyController extends Controller
      * @param  \Illuminate\Database\Query\Builder  $query
      * @return \Illuminate\Database\Query\Builder
      */
-    private function applyPlantingCropFilter(\Illuminate\Database\Query\Builder $query, string $targetCrop, ?string $hvccCommodity = null): \Illuminate\Database\Query\Builder
+    private function applyPlantingCropFilter(\Illuminate\Database\Query\Builder $query, string $targetCrop, ?string $unused = null): \Illuminate\Database\Query\Builder
     {
-        if (strtolower(trim($targetCrop)) !== 'hvcc') {
-            return $this->applyCropFilter($query, 'crop_type', $targetCrop);
-        }
-
-        $query->whereRaw('LOWER(crop_type) = ?', ['hvcc']);
-        if ($hvccCommodity) {
-            $query->whereRaw('LOWER(hvcc_commodity) = ?', [strtolower($hvccCommodity)]);
-        }
-
-        return $query;
+        return $this->applyCropFilter($query, 'crop_type', $targetCrop);
     }
 
-    private function applyCropFilter(\Illuminate\Database\Query\Builder $query, string $column, string $targetCrop, ?string $hvccCommodity = null)
+    private function applyCropFilter(\Illuminate\Database\Query\Builder $query, string $column, string $targetCrop, ?string $unused = null)
     {
         $crop = strtolower(trim($targetCrop));
 
@@ -2769,18 +2749,6 @@ class SubsidyController extends Controller
                 $q->whereRaw("LOWER({$column}) like ?", ['%rice%'])
                     ->orWhereRaw("LOWER({$column}) like ?", ['%corn%']);
             })->whereRaw("LOWER({$column}) not like ?", ['%hvcc%']);
-        }
-
-        if ($crop === 'hvcc') {
-            return $query->where(function ($q) use ($column, $hvccCommodity) {
-                $q->whereRaw("LOWER({$column}) like ?", ['%hvcc%'])
-                    ->orWhereRaw("LOWER({$column}) like ?", ['%high-value%'])
-                    ->orWhereRaw("LOWER({$column}) = ?", ['hvc']);
-                $names = $hvccCommodity ? [$hvccCommodity] : HvccCatalog::allCommodities();
-                foreach ($names as $name) {
-                    $q->orWhereRaw("LOWER({$column}) = ?", [strtolower($name)]);
-                }
-            });
         }
 
         return $query->whereRaw("LOWER({$column}) like ?", ['%'.$crop.'%'])

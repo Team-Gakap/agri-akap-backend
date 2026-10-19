@@ -18,17 +18,71 @@ final class CropPlotClaimer
         return $key === '' || $key === strtolower(ImportedFarmPlot::COMMODITY);
     }
 
-    public static function commodityLabel(string $cropType, ?string $hvccCommodity = null): string
+    public static function commodityLabel(string $cropType, ?string $unused = null): string
     {
         $crop = trim($cropType);
-        $hvcc = trim((string) $hvccCommodity);
-        $key = strtolower($crop);
-
-        if ($key === 'hvcc' || str_starts_with($key, 'hvcc') || $key === 'high-value' || $key === 'high-value crops' || $key === 'hvc') {
-            return $hvcc !== '' ? $hvcc : 'High-Value Crops';
-        }
 
         return $crop !== '' ? $crop : ImportedFarmPlot::COMMODITY;
+    }
+
+    public static function stapleCrop(?string $value): ?string
+    {
+        $key = strtolower(trim((string) $value));
+        $compact = str_replace([' ', '/', '_', '-'], '', $key);
+        if ($compact === '') {
+            return null;
+        }
+
+        if (in_array($compact, ['rice', 'palay', 'ricepalay'], true)
+            || (str_contains($key, 'rice') && str_contains($key, 'palay'))) {
+            return 'rice';
+        }
+
+        if (in_array($compact, ['corn', 'maize', 'mais', 'cornmaize'], true)) {
+            return 'corn';
+        }
+
+        return null;
+    }
+
+    public static function plotMatches(string $plotCommodity, string $cropType, ?string $unused = null): bool
+    {
+        $plotStaple = self::stapleCrop($plotCommodity);
+        $cropStaple = self::stapleCrop($cropType);
+        if ($plotStaple !== null && $cropStaple !== null) {
+            return $plotStaple === $cropStaple;
+        }
+
+        return strtolower(trim($plotCommodity)) === strtolower(trim($cropType));
+    }
+
+    public static function wherePlotCommodityMatches($query, string $column, string $cropType): void
+    {
+        $staple = self::stapleCrop($cropType);
+        if ($staple === 'rice') {
+            $query->where(function ($inner) use ($column) {
+                $inner->whereRaw(
+                    "REPLACE(REPLACE(REPLACE(REPLACE(LOWER(TRIM({$column})), ' ', ''), '/', ''), '_', ''), '-', '') in (?, ?, ?)",
+                    ['rice', 'palay', 'ricepalay']
+                )->orWhere(function ($both) use ($column) {
+                    $both->whereRaw("LOWER({$column}) like ?", ['%rice%'])
+                        ->whereRaw("LOWER({$column}) like ?", ['%palay%']);
+                });
+            });
+
+            return;
+        }
+
+        if ($staple === 'corn') {
+            $query->whereRaw(
+                "REPLACE(REPLACE(REPLACE(REPLACE(LOWER(TRIM({$column})), ' ', ''), '/', ''), '_', ''), '-', '') in (?, ?, ?)",
+                ['corn', 'maize', 'mais']
+            );
+
+            return;
+        }
+
+        $query->whereRaw('LOWER(TRIM('.$column.')) = ?', [strtolower(trim($cropType))]);
     }
 
     /**
@@ -50,7 +104,7 @@ final class CropPlotClaimer
 
                 return ['plot' => $plot];
             }
-            if (! HvccCatalog::plotMatches((string) $plot->commodity, $cropType, $hvccCommodity)) {
+            if (! self::plotMatches((string) $plot->commodity, $cropType)) {
                 return ['error' => "Selected plot is {$plot->commodity}, but this form is for {$label} only."];
             }
 
@@ -58,7 +112,7 @@ final class CropPlotClaimer
         }
 
         $match = $plots->first(
-            fn (FarmPlot $plot) => HvccCatalog::plotMatches((string) $plot->commodity, $cropType, $hvccCommodity)
+            fn (FarmPlot $plot) => self::plotMatches((string) $plot->commodity, $cropType)
         );
         if ($match) {
             return ['plot' => $match];

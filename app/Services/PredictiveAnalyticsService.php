@@ -15,7 +15,7 @@ use Illuminate\Support\Facades\Schema;
  *
  * Projected kilograms = active planted hectares × seasonal kilograms per hectare.
  * The rate prefers that barangay's harvest history for the same season, then the
- * municipal seasonal average, then assumed rates (rice 4,500, corn 5,000, HVCC 3,500).
+ * municipal seasonal average, then assumed rates (rice 4,500, corn 5,000).
  * With two or more historical seasons the rate is 70% pooled seasonal yield per
  * hectare and 30% a least-squares trend.
  */
@@ -116,7 +116,7 @@ class PredictiveAnalyticsService
                 'generated_at' => $today->format('F j, Y g:i A'),
                 'method_note' => 'Projected yield equals active planted hectares times a seasonal kilograms-per-hectare rate. '
                     .'The rate uses that barangay\'s harvest history for the same season, then the municipal seasonal average, '
-                    .'then assumed rates (rice 4,500, corn 5,000, HVCC 3,500 kg/ha). '
+                    .'then assumed rates (rice 4,500, corn 5,000 kg/ha). '
                     .'When two or more past seasons exist, the rate is 70% pooled historical yield per hectare and 30% a least-squares trend. '
                     .'Surplus or shortfall compares the projection with the same season last year.',
                 'formula' => 'buffer_bags = round(planted_ha × (risk_score / 100) × '.self::BUFFER_BAGS_PER_HA.'). '
@@ -147,7 +147,6 @@ class PredictiveAnalyticsService
 
         $columns = [
             'harvest_logs.crop_type',
-            'harvest_logs.hvcc_commodity',
             'harvest_logs.total_yield',
             'harvest_logs.yield_unit',
             'harvest_logs.area_harvested',
@@ -162,7 +161,10 @@ class PredictiveAnalyticsService
 
         foreach ($query->get($columns) as $row) {
             $season = $this->seasonOf(Carbon::parse($row->date_harvested));
-            $crop = $this->commodityBucket($row->crop_type, $row->hvcc_commodity ?? null);
+            $crop = $this->commodityBucket($row->crop_type);
+            if ($crop === null) {
+                continue;
+            }
             $name = $this->resolveBarangay(
                 $row->farm_location,
                 $row->location_brgy,
@@ -199,7 +201,6 @@ class PredictiveAnalyticsService
 
         $columns = [
             'planting_logs.crop_type',
-            'planting_logs.hvcc_commodity',
             'planting_logs.area_planted',
             'planting_logs.status',
             'planting_logs.farm_location',
@@ -208,9 +209,6 @@ class PredictiveAnalyticsService
         ];
         if (Schema::hasColumn('farmers', 'farm_brgy')) {
             $columns[] = 'farmers.farm_brgy';
-        }
-        if (! Schema::hasColumn('planting_logs', 'hvcc_commodity')) {
-            $columns = array_values(array_filter($columns, fn ($c) => $c !== 'planting_logs.hvcc_commodity'));
         }
         if (! Schema::hasColumn('planting_logs', 'farm_location')) {
             $columns = array_values(array_filter($columns, fn ($c) => $c !== 'planting_logs.farm_location'));
@@ -230,7 +228,10 @@ class PredictiveAnalyticsService
             if ($hectares <= 0) {
                 continue;
             }
-            $crop = $this->commodityBucket($row->crop_type, $row->hvcc_commodity ?? null);
+            $crop = $this->commodityBucket($row->crop_type);
+            if ($crop === null) {
+                continue;
+            }
             $name = $this->resolveBarangay(
                 $row->farm_location ?? null,
                 $row->location_brgy ?? null,
@@ -455,7 +456,7 @@ class PredictiveAnalyticsService
      */
     private function commoditySeries(array $municipal, array $rows, array $target, ?string $commodity): array
     {
-        $order = $commodity ? [$commodity] : ['Rice', 'Corn', 'HVCC'];
+        $order = $commodity ? [$commodity] : ['Rice', 'Corn'];
         $projected = [];
         $confidenceRank = ['Assumed' => 0, 'Low' => 1, 'Moderate' => 2, 'High' => 3];
         $confidence = [];
@@ -592,26 +593,23 @@ class PredictiveAnalyticsService
         return ['season' => 'Dry', 'year' => (int) $date->year - 1];
     }
 
-    private function commodityBucket(?string $cropType, ?string $hvccCommodity): string
+    private function commodityBucket(?string $cropType): ?string
     {
         $normalized = strtolower(trim((string) $cropType));
-        if (str_contains($normalized, 'rice')) {
+        if (str_contains($normalized, 'rice') && ! str_contains($normalized, 'hvcc')) {
             return 'Rice';
         }
         if (str_contains($normalized, 'corn')) {
             return 'Corn';
         }
-        if ($hvccCommodity || $normalized !== '') {
-            return 'HVCC';
-        }
 
-        return 'HVCC';
+        return null;
     }
 
     private function normalizeCommodityFilter(?string $commodity): ?string
     {
         $value = trim((string) $commodity);
-        if (in_array($value, ['Rice', 'Corn', 'HVCC'], true)) {
+        if (in_array($value, ['Rice', 'Corn'], true)) {
             return $value;
         }
 
@@ -623,7 +621,7 @@ class PredictiveAnalyticsService
         return match ($commodity) {
             'Rice' => 4500.0,
             'Corn' => 5000.0,
-            default => 3500.0,
+            default => 4500.0,
         };
     }
 

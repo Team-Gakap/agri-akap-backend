@@ -5,7 +5,6 @@ namespace App\Http\Controllers;
 use App\Models\Farmer;
 use App\Models\PestMonitoring;
 use App\Support\CropPlotClaimer;
-use App\Support\HvccCatalog;
 use App\Traits\AssertsPlotAreaCap;
 use App\Traits\DecodesBase64Image;
 use App\Traits\LogsReportAudit;
@@ -107,7 +106,6 @@ class PestMonitoringController extends Controller
             'farmer_id' => ['required', 'uuid', 'exists:farmers,id'],
             'farm_plot_id' => ['nullable', 'uuid', 'exists:farm_plots,id'],
             'crop' => ['required', 'string', 'max:64'],
-            ...HvccCatalog::optionalFieldRules(),
             'crop_stage' => ['nullable', 'string', 'max:64'],
             'variety' => ['nullable', 'string', 'max:128'],
             'area_planted' => ['required', 'numeric', 'min:0'],
@@ -136,7 +134,6 @@ class PestMonitoringController extends Controller
             $farmer,
             $validated['farm_plot_id'] ?? null,
             (string) $validated['crop'],
-            $validated['hvcc_commodity'] ?? null,
         );
         if (isset($claimed['error'])) {
             return response()->json([
@@ -182,8 +179,6 @@ class PestMonitoringController extends Controller
             'farm_plot_id' => $validated['farm_plot_id'] ?? null,
             'technician_id' => $user->id,
             'crop' => $validated['crop'],
-            'crop_category' => $validated['crop_category'] ?? null,
-            'hvcc_commodity' => $validated['hvcc_commodity'] ?? null,
             'crop_stage' => $validated['crop_stage'] ?? null,
             'variety' => $validated['variety'] ?? null,
             'area_planted' => $validated['area_planted'],

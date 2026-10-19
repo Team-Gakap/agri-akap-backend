@@ -2370,7 +2370,7 @@ class DashboardController extends Controller
 
     /**
      * Per-barangay yield forecast and drought/typhoon risk for MAO planning.
-     * GET /api/dashboard/predictive-analytics?commodity=Rice|Corn|HVCC
+     * GET /api/dashboard/predictive-analytics?commodity=Rice|Corn
      */
     public function predictiveAnalytics(Request $request, PredictiveAnalyticsService $analytics): JsonResponse
     {

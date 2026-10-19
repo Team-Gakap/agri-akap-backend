@@ -12,7 +12,7 @@ use App\Services\CropStageService;
 use App\Services\FarmAreaBudgetService;
 use App\Services\SmsService;
 use App\Support\AuditRemarks;
-use App\Support\HvccCatalog;
+use App\Support\CropPlotClaimer;
 use App\Support\OfficialBarangays;
 use App\Support\OfficialLocations;
 use App\Traits\ResolvesEncodingBarangay;
@@ -95,7 +95,7 @@ class FarmerController extends Controller
         if ($commodity !== '') {
             $query->where(function ($outer) use ($commodity) {
                 $outer->whereHas('farmPlots', function ($q) use ($commodity) {
-                    HvccCatalog::wherePlotCommodityMatches($q, 'commodity', $commodity);
+                    CropPlotClaimer::wherePlotCommodityMatches($q, 'commodity', $commodity);
                 })->orWhereDoesntHave('farmPlots', function ($q) {
                     $q->whereRaw("LOWER(TRIM(COALESCE(commodity, ''))) not in ('', 'unspecified')");
                 });
