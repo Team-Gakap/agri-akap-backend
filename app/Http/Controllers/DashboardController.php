@@ -19,6 +19,7 @@ use App\Models\StandingCropLog;
 use App\Models\SubsidyBeneficiary;
 use App\Models\WeatherCache;
 use App\Services\CropStageService;
+use App\Services\PredictiveAnalyticsService;
 use App\Services\ReportAggregationService;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
@@ -2364,6 +2365,20 @@ class DashboardController extends Controller
         return response()->json([
             'status' => 'success',
             'data' => $data,
+        ]);
+    }
+
+    /**
+     * Per-barangay yield forecast and drought/typhoon risk for MAO planning.
+     * GET /api/dashboard/predictive-analytics?commodity=Rice|Corn|HVCC
+     */
+    public function predictiveAnalytics(Request $request, PredictiveAnalyticsService $analytics): JsonResponse
+    {
+        $commodity = $request->query('commodity');
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $analytics->build(is_string($commodity) ? $commodity : null),
         ]);
     }
 

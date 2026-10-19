@@ -288,6 +288,8 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:admin');
     Route::get('/dashboard/risk-index', [DashboardController::class, 'riskIndex'])
         ->middleware('role:admin');
+    Route::get('/dashboard/predictive-analytics', [DashboardController::class, 'predictiveAnalytics'])
+        ->middleware('role:admin');
     Route::get('/dashboard/report', [DashboardController::class, 'accomplishmentReport'])
         ->middleware('role:admin');
     Route::get('/reports/export/{type}', [ReportExportController::class, 'export'])
