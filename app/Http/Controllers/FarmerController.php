@@ -486,6 +486,7 @@ class FarmerController extends Controller
             $plots = $validatedData['plots'] ?? [];
             unset($validatedData['plots']);
             $validatedData = $this->normalizeAssociations($validatedData);
+            $validatedData = $this->applyEnrollmentDefaults($validatedData, $plots, true);
 
             $validatedData['total_farm_area_ha'] = $this->farmAreaBudget->quotaFromRegistrationPlots($plots);
 
@@ -732,6 +733,7 @@ class FarmerController extends Controller
             $plots = $validated['plots'] ?? null;
             unset($validated['plots']);
             $validated = $this->normalizeAssociations($validated, $farmer);
+            $validated = $this->applyEnrollmentDefaults($validated, is_array($plots) ? $plots : [], false);
 
             if (is_array($plots)) {
                 $validated['total_farm_area_ha'] = $this->farmAreaBudget->quotaFromRegistrationPlots($plots);
@@ -886,12 +888,18 @@ class FarmerController extends Controller
         $birth = $farmer->birthdate ? \Illuminate\Support\Carbon::parse($farmer->birthdate) : null;
         $farmer->setAttribute('is_senior', $birth ? $birth->age >= 60 : false);
 
-        if ($farmer->relationLoaded('rffaPlots')) {
-            $commodity = $farmer->rffaPlots
+        $plotSource = null;
+        if ($farmer->relationLoaded('rffaPlots') && $farmer->rffaPlots->isNotEmpty()) {
+            $plotSource = $farmer->rffaPlots;
+        } elseif ($farmer->relationLoaded('farmPlots') && $farmer->farmPlots->isNotEmpty()) {
+            $plotSource = $farmer->farmPlots;
+        }
+        if ($plotSource !== null) {
+            $commodity = $plotSource
                 ->pluck('commodity')
                 ->map(fn ($c) => trim((string) $c))
                 ->first(fn (string $c) => $c !== '' && strcasecmp($c, 'unspecified') !== 0);
-            $farmer->setAttribute('commodity', $commodity ?: ($farmer->rffaPlots->first()?->commodity));
+            $farmer->setAttribute('commodity', $commodity ?: $plotSource->first()?->commodity);
         }
 
         if ($farmer->relationLoaded('farmPlots')) {
@@ -939,6 +947,54 @@ class FarmerController extends Controller
                 'message' => 'You can only manage farmers whose farm is in your assigned barangay.',
             ], 403));
         }
+    }
+
+    /**
+     * Masterlist enrollment does not collect religion, civil status, livelihood, etc.
+     * On create, fill the same placeholders the RSBSA importer uses. On update, leave
+     * those columns alone unless the client sent an empty value.
+     *
+     * @param  array<string, mixed>  $data
+     * @param  list<array<string, mixed>>  $plots
+     * @return array<string, mixed>
+     */
+    private function applyEnrollmentDefaults(array $data, array $plots = [], bool $isCreate = true): array
+    {
+        $defaults = [
+            'permanent_house_no' => 'N/A',
+            'permanent_street' => 'N/A',
+            'mothers_maiden_first_name' => 'N/A',
+            'mothers_maiden_surname' => 'N/A',
+            'civil_status' => 'Single',
+            'highest_education' => 'None',
+            'livelihood_type' => 'Farmer',
+            'is_mobile_owner' => true,
+        ];
+
+        foreach ($defaults as $key => $value) {
+            $missing = ! array_key_exists($key, $data) || $data[$key] === null || $data[$key] === '';
+            if ($isCreate && $missing) {
+                $data[$key] = $value;
+            } elseif (! $isCreate && array_key_exists($key, $data) && ($data[$key] === null || $data[$key] === '')) {
+                $data[$key] = $value;
+            }
+        }
+
+        $first = $plots[0] ?? null;
+        if (empty($data['farm_brgy']) && is_array($first)) {
+            $data['farm_brgy'] = $first['location_brgy'] ?? null;
+        }
+        if (empty($data['farm_city']) && is_array($first)) {
+            $data['farm_city'] = $first['location_city'] ?? null;
+        }
+
+        foreach (['farm_psgc', 'farmer_psgc', 'masterlist_remarks'] as $optional) {
+            if (array_key_exists($optional, $data) && $data[$optional] === '') {
+                $data[$optional] = null;
+            }
+        }
+
+        return $data;
     }
 
     /**

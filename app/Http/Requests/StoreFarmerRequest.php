@@ -18,10 +18,9 @@ class StoreFarmerRequest extends FormRequest
     public function rules(): array
     {
         return [
-            // ── Part 1: Personal Information ──────────────────────────────
             'rsbsa_no' => 'nullable|string|max:255|unique:farmers,rsbsa_no',
             'transaction_code' => 'required|string|max:255|unique:farmers,transaction_code',
-            'photo_base64' => 'nullable|string', // optional; decoded server-side
+            'photo_base64' => 'nullable|string',
 
             'surname' => 'required|string|max:100',
             'first_name' => 'required|string|max:100',
@@ -34,7 +33,6 @@ class StoreFarmerRequest extends FormRequest
             'place_of_birth_city' => 'nullable|string|max:100',
             'place_of_birth_province' => 'nullable|string|max:100',
 
-            // ── Contact & Mobile Owner ─────────────────────────────────────
             'mobile_number' => 'required|string|max:15',
             'is_mobile_owner' => 'boolean',
             'mobile_owner_first_name' => 'nullable|string|max:100',
@@ -42,25 +40,23 @@ class StoreFarmerRequest extends FormRequest
             'mobile_owner_surname' => 'nullable|string|max:100',
             'mobile_owner_ext_name' => 'nullable|string|max:10',
 
-            // ── Mother's Maiden Name ───────────────────────────────────────
-            'mothers_maiden_first_name' => 'required|string|max:100',
+            // Optional — masterlist enrollment fills importer placeholders server-side.
+            'mothers_maiden_first_name' => 'nullable|string|max:100',
             'mothers_maiden_middle_name' => 'nullable|string|max:100',
-            'mothers_maiden_surname' => 'required|string|max:100',
+            'mothers_maiden_surname' => 'nullable|string|max:100',
             'mothers_maiden_ext_name' => 'nullable|string|max:10',
 
-            // ── Demographics ───────────────────────────────────────────────
-            'civil_status' => 'required|in:Single,Married,Widow/er,Legally Separated',
+            'civil_status' => 'nullable|in:Single,Married,Widow/er,Legally Separated',
             'spouse_first_name' => 'nullable|string|max:100',
             'spouse_middle_name' => 'nullable|string|max:100',
             'spouse_surname' => 'nullable|string|max:100',
             'spouse_ext_name' => 'nullable|string|max:10',
-            'highest_education' => 'required|in:Pre-school,Elementary,High School non K-12,Junior High School K-12,Senior High School K-12,College,Vocational,Post-graduate,None',
+            'highest_education' => 'nullable|in:Pre-school,Elementary,High School non K-12,Junior High School K-12,Senior High School K-12,College,Vocational,Post-graduate,None',
             'religion' => 'nullable|string|max:100',
             'id_type' => 'nullable|string|max:100',
             'id_type_other' => 'nullable|required_if:id_type,Others|string|max:150',
             'id_number' => 'nullable|string|max:100',
 
-            // ── Vulnerability & Associations ───────────────────────────────
             'is_icc_ip' => 'boolean',
             'icc_ip_name' => 'nullable|string|max:255',
             'is_pwd' => 'boolean',
@@ -71,7 +67,6 @@ class StoreFarmerRequest extends FormRequest
             'associations' => 'nullable|array',
             'associations.*' => 'nullable|string|max:255',
 
-            // ── Addresses (PSGC names; Echague barangays validated in withValidator) ──
             'permanent_house_no' => 'nullable|string|max:50',
             'permanent_street' => 'nullable|string|max:100',
             'permanent_brgy' => 'required|string|max:100',
@@ -86,13 +81,17 @@ class StoreFarmerRequest extends FormRequest
             'provincial_province' => 'nullable|string|max:100',
             'provincial_region' => 'nullable|string|max:100',
 
-            // ── Part 2: Livelihood ─────────────────────────────────────────
-            'livelihood_type' => 'required|in:Farmer,Farm Worker,Fisher,Agri-Youth',
+            'farm_brgy' => 'nullable|string|max:100',
+            'farm_city' => 'nullable|string|max:100',
+            'farm_psgc' => 'nullable|string|max:12',
+            'farmer_psgc' => 'nullable|string|max:12',
+            'masterlist_remarks' => 'nullable|string|max:2000',
+
+            'livelihood_type' => 'nullable|in:Farmer,Farm Worker,Fisher,Agri-Youth',
             'livelihood_detail' => 'nullable|string|max:100',
             'other_livelihood_type' => 'nullable|in:Farmer,Farm Worker,Fisher,Agri-Youth,Other',
             'other_livelihood_detail' => 'nullable|required_if:other_livelihood_type,Other|string|max:150',
 
-            // ── Part 3: Farm Plots (at least one required) ─────────────────
             'plots' => 'required|array|min:1',
             'plots.*.parcel_name' => 'nullable|string|max:100',
             'plots.*.location_brgy' => 'required|string|max:100',

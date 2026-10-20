@@ -17,6 +17,16 @@ trait ValidatesFarmerLocationsAndTenure
             'Permanent barangay'
         );
 
+        $farmCity = $this->input('farm_city');
+        if (is_string($farmCity) && trim($farmCity) !== '') {
+            $this->validateBarangayForCity(
+                $validator,
+                'farm_brgy',
+                'farm_city',
+                'Farm barangay'
+            );
+        }
+
         $provincialCity = $this->input('provincial_city');
         if (is_string($provincialCity) && trim($provincialCity) !== '') {
             $this->validateBarangayForCity(
