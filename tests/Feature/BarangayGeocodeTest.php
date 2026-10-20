@@ -29,12 +29,17 @@ class BarangayGeocodeTest extends TestCase
                 'SEX' => 'MALE',
                 'BIRTHDATE' => '1984-11-16',
                 'FARM GEOCODE' => 203112033,
+                'FARMER GEOCODE' => 203112001,
+                'REMARKS 2' => 'NO FARM',
             ]),
         ]));
 
         $farmer = Farmer::query()->where('rsbsa_no', '02-31-12-033-000171')->first();
         $this->assertNotNull($farmer);
         $this->assertSame('PH0203112033', $farmer->farm_psgc);
+        $this->assertSame('PH0203112001', $farmer->farmer_psgc);
+        $this->assertSame('NO FARM', $farmer->masterlist_remarks);
+        $this->assertSame('approved', $farmer->verification_status);
         $id = $farmer->id;
         $qr = $farmer->qr_code_hash;
 
@@ -57,7 +62,60 @@ class BarangayGeocodeTest extends TestCase
         $this->assertSame($id, $farmer->id);
         $this->assertSame($qr, $farmer->qr_code_hash);
         $this->assertSame('PH0203112033', $farmer->farm_psgc);
+        $this->assertSame('PH0203112001', $farmer->farmer_psgc);
+        $this->assertSame('NO FARM', $farmer->masterlist_remarks);
+        $this->assertSame('approved', $farmer->verification_status);
         $this->assertSame('0.7500', (string) $farmer->total_farm_area_ha);
+    }
+
+    public function test_reimport_promotes_pending_masterlist_farmer_without_changing_rts(): void
+    {
+        $pending = Farmer::factory()->create([
+            'rsbsa_no' => '02-31-12-033-000171',
+            'transaction_code' => 'IMP-PENDINGTEST',
+            'verification_status' => 'pending',
+            'verified_at' => null,
+        ]);
+        $rts = Farmer::factory()->create([
+            'rsbsa_no' => '02-31-12-033-000039',
+            'transaction_code' => 'IMP-RTSTEST',
+            'verification_status' => 'rts',
+            'rts_reason' => 'Incomplete address',
+            'verified_at' => null,
+        ]);
+
+        $import = new FarmersImport;
+        $import->collection(collect([
+            $this->sheetRow([
+                'SYSTEM_GENERATED_RSBSA_NO' => '02-31-12-033-000171',
+                'LAST NAME' => 'ABA',
+                'FIRST NAME' => 'ROBINSON',
+                'FARMER ADDRESS 1' => 'NILUMISU',
+                'FARM ADDRESS 1' => 'NILUMISU',
+                'CONTACT NO' => 9556482835,
+                'FARM AREA' => 0.5,
+                'SEX' => 'MALE',
+                'BIRTHDATE' => '1984-11-16',
+            ]),
+            $this->sheetRow([
+                'SYSTEM_GENERATED_RSBSA_NO' => '02-31-12-033-000039',
+                'LAST NAME' => 'ORARA',
+                'FIRST NAME' => 'DANILO',
+                'FARMER ADDRESS 1' => 'NILUMISU',
+                'FARM ADDRESS 1' => 'NILUMISU',
+                'CONTACT NO' => 9355331820,
+                'FARM AREA' => 0.5,
+                'SEX' => 'MALE',
+                'BIRTHDATE' => '1960-01-01',
+            ]),
+        ]));
+
+        $pending->refresh();
+        $rts->refresh();
+        $this->assertSame('approved', $pending->verification_status);
+        $this->assertNotNull($pending->verified_at);
+        $this->assertSame('rts', $rts->verification_status);
+        $this->assertSame('Incomplete address', $rts->rts_reason);
     }
 
     public function test_barangay_stats_group_farmers_that_share_a_geocode(): void

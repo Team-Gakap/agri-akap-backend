@@ -26,7 +26,7 @@ class Farmer extends Model
         'permanent_city', 'permanent_province', 'permanent_region',
 
         // Farm location (distribution / drop-off barangay)
-        'farm_brgy', 'farm_city', 'farm_psgc',
+        'farm_brgy', 'farm_city', 'farm_psgc', 'farmer_psgc',
 
         // Provincial Address
         'provincial_house_no', 'provincial_street', 'provincial_brgy',
@@ -53,6 +53,7 @@ class Farmer extends Model
         'livelihood_detail', 'other_livelihood_type', 'other_livelihood_detail',
         'total_farm_area_ha',
         'subsidy_exclusion_reason',
+        'masterlist_remarks',
     ];
 
     protected $casts = [

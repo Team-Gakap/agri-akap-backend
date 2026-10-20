@@ -886,6 +886,14 @@ class FarmerController extends Controller
         $birth = $farmer->birthdate ? \Illuminate\Support\Carbon::parse($farmer->birthdate) : null;
         $farmer->setAttribute('is_senior', $birth ? $birth->age >= 60 : false);
 
+        if ($farmer->relationLoaded('rffaPlots')) {
+            $commodity = $farmer->rffaPlots
+                ->pluck('commodity')
+                ->map(fn ($c) => trim((string) $c))
+                ->first(fn (string $c) => $c !== '' && strcasecmp($c, 'unspecified') !== 0);
+            $farmer->setAttribute('commodity', $commodity ?: ($farmer->rffaPlots->first()?->commodity));
+        }
+
         if ($farmer->relationLoaded('farmPlots')) {
             $geo = $farmer->farmPlots->contains(function ($plot) {
                 return $plot->geotag_status === 'mapped' || $plot->hasGeoTagEvidence();

@@ -88,6 +88,8 @@ class FarmersImport implements ToCollection, WithHeadingRow, WithChunkReading
                 'rsbsa_no' => $data['rsbsa_no'],
                 'transaction_code' => 'IMP-'.Str::upper(Str::random(10)),
                 'qr_code_hash' => (string) Str::uuid(),
+                'verification_status' => 'approved',
+                'verified_at' => $now,
                 'surname' => $data['surname'],
                 'first_name' => $data['first_name'],
                 'middle_name' => $data['middle_name'],
@@ -105,6 +107,7 @@ class FarmersImport implements ToCollection, WithHeadingRow, WithChunkReading
                 'farm_brgy' => $data['farm_brgy'],
                 'farm_city' => $data['farm_city'],
                 'farm_psgc' => $data['farm_psgc'] ?? null,
+                'farmer_psgc' => $data['farmer_psgc'] ?? null,
                 'mobile_number' => $data['mobile_number'],
                 'is_mobile_owner' => 1,
                 'mothers_maiden_first_name' => 'N/A',
@@ -117,6 +120,7 @@ class FarmersImport implements ToCollection, WithHeadingRow, WithChunkReading
                 'is_4ps_beneficiary' => $data['is_4ps_beneficiary'] ? 1 : 0,
                 'is_icc_ip' => $data['is_icc_ip'] ? 1 : 0,
                 'subsidy_exclusion_reason' => $data['subsidy_exclusion_reason'],
+                'masterlist_remarks' => $data['remarks_raw'] ?? null,
                 'deleted_at' => null,
                 'created_at' => $now,
                 'updated_at' => $now,
@@ -148,23 +152,57 @@ class FarmersImport implements ToCollection, WithHeadingRow, WithChunkReading
             'updated_at',
         ];
 
-        DB::transaction(function () use ($upsertRows, $profileColumns) {
+        DB::transaction(function () use ($upsertRows, $profileColumns, $rsbsaList, $now) {
             foreach (array_chunk($upsertRows, 200) as $chunk) {
-                // farm_psgc is written on insert. A blank cell must not clear a stored code.
+                // Geocodes and remarks are written on insert. A blank cell must not clear a stored value.
                 DB::table('farmers')->upsert($chunk, ['rsbsa_no'], $profileColumns);
 
-                $coded = array_values(array_filter(
+                $withFarmPsgc = array_values(array_filter(
                     $chunk,
                     fn (array $row) => ! empty($row['farm_psgc'])
                 ));
-                if ($coded !== []) {
+                if ($withFarmPsgc !== []) {
                     DB::table('farmers')->upsert(
-                        $coded,
+                        $withFarmPsgc,
                         ['rsbsa_no'],
                         array_merge($profileColumns, ['farm_psgc'])
                     );
                 }
+
+                $withFarmerPsgc = array_values(array_filter(
+                    $chunk,
+                    fn (array $row) => ! empty($row['farmer_psgc'])
+                ));
+                if ($withFarmerPsgc !== []) {
+                    DB::table('farmers')->upsert(
+                        $withFarmerPsgc,
+                        ['rsbsa_no'],
+                        array_merge($profileColumns, ['farmer_psgc'])
+                    );
+                }
+
+                $withRemarks = array_values(array_filter(
+                    $chunk,
+                    fn (array $row) => ! empty($row['masterlist_remarks'])
+                ));
+                if ($withRemarks !== []) {
+                    DB::table('farmers')->upsert(
+                        $withRemarks,
+                        ['rsbsa_no'],
+                        array_merge($profileColumns, ['masterlist_remarks'])
+                    );
+                }
             }
+
+            // Re-uploads promote only pending rows. RTS and approved stay as they are.
+            DB::table('farmers')
+                ->whereIn('rsbsa_no', $rsbsaList)
+                ->where('verification_status', 'pending')
+                ->update([
+                    'verification_status' => 'approved',
+                    'verified_at' => $now,
+                    'updated_at' => $now,
+                ]);
         });
 
         ImportedFarmPlot::insertMissingByRsbsa($rsbsaList, $commodityByRsbsa);

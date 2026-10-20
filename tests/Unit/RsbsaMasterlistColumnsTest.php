@@ -68,8 +68,16 @@ class RsbsaMasterlistColumnsTest extends TestCase
 
         $row = RsbsaMasterlistColumns::extractFarmerRow($this->row([
             'FARM GEOCODE' => 203112033,
+            'FARMER GEOCODE' => 203112001,
         ]));
         $this->assertSame('PH0203112033', $row['farm_psgc']);
+        $this->assertSame('PH0203112001', $row['farmer_psgc']);
+
+        $noFarmCode = RsbsaMasterlistColumns::extractFarmerRow($this->row([
+            'FARMER GEOCODE' => 203112033,
+        ]));
+        $this->assertNull($noFarmCode['farm_psgc']);
+        $this->assertSame('PH0203112033', $noFarmCode['farmer_psgc']);
     }
 
     public function test_blank_remarks_clear_exclusion_and_inactive_spacing_matches(): void

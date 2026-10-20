@@ -215,7 +215,8 @@ class RsbsaMasterlistColumns
             'is_icc_ip' => self::parseYesNo($get('is_indigenous')),
             'subsidy_exclusion_reason' => $exclusion,
             'remarks_raw' => $remarks,
-            'farm_psgc' => self::normalizePsgc($get('farm_geocode') ?? $get('farmer_geocode')),
+            'farm_psgc' => self::normalizePsgc($get('farm_geocode')),
+            'farmer_psgc' => self::normalizePsgc($get('farmer_geocode')),
         ];
     }
 
