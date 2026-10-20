@@ -20,12 +20,9 @@ class BarangayCoordinateSeeder extends Seeder
      * @var array<string, string>
      */
     private const NAME_ALIASES = [
-        'Cabugao' => 'Cabugao (Poblacion)',
-        'San Manuel' => 'San Manuel (formerly Atelan)',
-        'Silauan Norte' => 'Silauan Norte (Poblacion)',
-        'Silauan Sur' => 'Silauan Sur (Poblacion)',
-        'Soyung' => 'Soyung (Poblacion)',
-        'Taggappan' => 'Taggappan (Poblacion)',
+        'Cabugao' => 'Cabugao Pob.',
+        'Silauan Norte' => 'Silauan Norte Pob.',
+        'Silauan Sur' => 'Silauan Sur Pob.',
     ];
 
     public function run(): void

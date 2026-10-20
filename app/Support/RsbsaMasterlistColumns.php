@@ -184,6 +184,10 @@ class RsbsaMasterlistColumns
 
         $mobile = self::normalizeMobile($get('mobile_number'));
 
+        // Store the masterlist spelling (Garit Norte, Cabugao Pob.), not the sheet's capitals.
+        $farmBrgy = OfficialBarangays::canonicalize($farmBrgy);
+        $residenceBrgy = $residenceBrgy !== null ? OfficialBarangays::canonicalize($residenceBrgy) : null;
+
         // Home address stays as written; do not force Echague onto residence.
         $permanentBrgy = $residenceBrgy ?: $farmBrgy;
         $permanentCity = $get('residence_municipality') ?: 'Unknown';

@@ -13,6 +13,7 @@ use App\Services\FarmAreaBudgetService;
 use App\Services\SmsService;
 use App\Support\AuditRemarks;
 use App\Support\CropPlotClaimer;
+use App\Support\FarmAddressSync;
 use App\Support\OfficialBarangays;
 use App\Support\OfficialLocations;
 use App\Traits\ResolvesEncodingBarangay;
@@ -92,7 +93,17 @@ class FarmerController extends Controller
 
         // Crop forms: matching plot, or a farmer whose plots are still unspecified.
         // A farmer who only grows a different crop stays off this list.
-        if ($commodity !== '') {
+        // "unclassified" is a review list for commodity text that is neither rice nor corn.
+        if (strcasecmp($commodity, 'unclassified') === 0) {
+            $query->whereHas('farmPlots', function ($q) {
+                $q->whereRaw("LOWER(TRIM(COALESCE(commodity, ''))) not in ('', 'unspecified')")
+                    ->whereRaw('LOWER(commodity) not like ?', ['%rice%'])
+                    ->whereRaw('LOWER(commodity) not like ?', ['%palay%'])
+                    ->whereRaw('LOWER(commodity) not like ?', ['%corn%'])
+                    ->whereRaw('LOWER(commodity) not like ?', ['%maize%'])
+                    ->whereRaw('LOWER(commodity) not like ?', ['%mais%']);
+            });
+        } elseif ($commodity !== '') {
             $query->where(function ($outer) use ($commodity) {
                 $outer->whereHas('farmPlots', function ($q) use ($commodity) {
                     CropPlotClaimer::wherePlotCommodityMatches($q, 'commodity', $commodity);
@@ -191,7 +202,9 @@ class FarmerController extends Controller
     public function import(Request $request): JsonResponse
     {
         $request->validate([
-            'excel_file' => 'required|file|mimes:xlsx,xls,csv|max:10240',
+            // 25 MB covers a 7,000+ row workbook. The server also needs
+            // upload_max_filesize, post_max_size, and max_execution_time raised to match.
+            'excel_file' => 'required|file|mimes:xlsx,xls,csv|max:25600',
         ]);
         $remarks = AuditRemarks::require($request, 'A justification is required before importing the RSBSA masterlist.');
 
@@ -482,6 +495,8 @@ class FarmerController extends Controller
                 $farmer->farmPlots()->create($this->enrollmentPlotAttributes($plotData));
             }
 
+            FarmAddressSync::syncFromPlotPayload($farmer, $plots);
+
             DB::commit();
 
             $this->logReportAudit('farmer.registered', $farmer, [
@@ -545,6 +560,8 @@ class FarmerController extends Controller
                 'birthdate' => $validated['birthdate'],
                 'mobile_number' => $validated['mobile_number'],
                 'permanent_brgy' => $barangay,
+                'farm_brgy' => $barangay,
+                'farm_city' => $defaults['city'],
                 'permanent_street' => $validated['declared_sitio'] ?? null,
                 'declared_sitio' => $validated['declared_sitio'] ?? null,
                 'permanent_city' => $defaults['city'],
@@ -731,6 +748,7 @@ class FarmerController extends Controller
                     }
                     $farmer->farmPlots()->create($plotData);
                 }
+                FarmAddressSync::syncFromPlotPayload($farmer, $plots);
             }
 
             $farmer->update($validated);
@@ -847,18 +865,12 @@ class FarmerController extends Controller
     }
 
     /**
-     * Registry and encode search filter the farmer's home address.
-     * Farm location is a separate column and does not pull the farmer into this barangay.
+     * Registry and encode search filter the farmer's farm address.
+     * Residence is only used when farm_brgy was never stored.
      */
     private function constrainBarangay($query, string $barangay): void
     {
-        $names = array_map('strtolower', OfficialBarangays::equivalentNames($barangay));
-        if ($names === []) {
-            return;
-        }
-
-        $placeholders = implode(',', array_fill(0, count($names), '?'));
-        $query->whereRaw("LOWER(TRIM(permanent_brgy)) IN ($placeholders)", $names);
+        FarmAddressSync::constrain($query, $barangay);
     }
 
     private function decorateFarmer(Farmer $farmer, ?float $mappedHa = null): Farmer
@@ -913,11 +925,10 @@ class FarmerController extends Controller
             ], 403));
         }
 
-        $homeBrgy = trim((string) ($farmer->permanent_brgy ?? ''));
-        if (strcasecmp($homeBrgy, $assigned) !== 0) {
+        if (! FarmAddressSync::belongsToBarangay($farmer, $assigned)) {
             abort(response()->json([
                 'status' => 'error',
-                'message' => 'You can only manage farmers whose address is in your assigned barangay.',
+                'message' => 'You can only manage farmers whose farm is in your assigned barangay.',
             ], 403));
         }
     }

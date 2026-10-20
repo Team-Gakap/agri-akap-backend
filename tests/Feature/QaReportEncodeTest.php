@@ -16,13 +16,15 @@ class QaReportEncodeTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_encode_search_uses_farmer_address_and_crop_and_claims_the_imported_plot(): void
+    public function test_encode_search_uses_farm_address_and_crop_and_claims_the_imported_plot(): void
     {
         $admin = User::factory()->admin()->create();
         $home = $this->farmer('San Fabian', 'Angoluan', 'Rice/Palay', 1.25);
         $otherCrop = $this->farmer('San Fabian', 'San Fabian', 'Corn', 0.8);
         $unspecified = $this->farmer('San Fabian', 'San Fabian', 'Unspecified', 0.4);
         $farmOnly = $this->farmer('Angoluan', 'San Fabian', 'Rice/Palay', 1.0);
+        $riceVariant = $this->farmer('Diasan', 'San Fabian', 'RiceWFallow', 0.6);
+        $unclassified = $this->farmer('Diasan', 'Diasan', 'Vegetables', 0.3);
 
         Sanctum::actingAs($admin);
 
@@ -30,16 +32,25 @@ class QaReportEncodeTest extends TestCase
         $listed->assertOk();
         $ids = collect($listed->json('data.data'))->pluck('id');
 
-        $this->assertTrue($ids->contains($home->id));
+        $this->assertFalse($ids->contains($home->id));
         $this->assertTrue($ids->contains($unspecified->id));
         $this->assertFalse($ids->contains($otherCrop->id));
-        $this->assertFalse($ids->contains($farmOnly->id));
+        $this->assertTrue($ids->contains($farmOnly->id));
+        $this->assertTrue($ids->contains($riceVariant->id));
+        $this->assertFalse($ids->contains($unclassified->id));
+
+        $review = $this->getJson('/api/farmers?commodity=unclassified&per_page=50');
+        $review->assertOk();
+        $reviewIds = collect($review->json('data.data'))->pluck('id');
+        $this->assertTrue($reviewIds->contains($unclassified->id));
+        $this->assertFalse($reviewIds->contains($otherCrop->id));
+        $this->assertFalse($reviewIds->contains($farmOnly->id));
 
         $plotId = $home->farmPlots()->value('id');
         $payload = [
             'farmer_id' => $home->id,
             'farm_plot_id' => $plotId,
-            'barangay_name' => 'San Fabian',
+            'barangay_name' => 'Angoluan',
             'crop_type' => 'Rice',
             'variety' => 'NSIC Rc222',
             'farm_location' => 'Angoluan',
@@ -66,7 +77,7 @@ class QaReportEncodeTest extends TestCase
         $pest = $this->postJson('/api/pest-monitoring', [
             'farmer_id' => $home->id,
             'farm_plot_id' => $plotId,
-            'barangay_name' => 'San Fabian',
+            'barangay_name' => 'Angoluan',
             'crop' => 'Rice',
             'area_planted' => 1.25,
             'days_after_planting' => 30,
@@ -80,7 +91,7 @@ class QaReportEncodeTest extends TestCase
         $damage = $this->postJson('/api/damage-assessments', [
             'farmer_id' => $home->id,
             'farm_plot_id' => $plotId,
-            'barangay_name' => 'San Fabian',
+            'barangay_name' => 'Angoluan',
             'crop_type' => 'Rice',
             'calamity_type' => 'Typhoon',
             'date_of_calamity' => '2026-08-01',
@@ -95,8 +106,8 @@ class QaReportEncodeTest extends TestCase
     public function test_active_program_dashboard_matches_the_target_list(): void
     {
         $admin = User::factory()->admin()->create();
-        $this->farmer('San Fabian', 'Angoluan', 'Rice/Palay', 1.5);
-        $this->farmer('Angoluan', 'Angoluan', 'Corn', 2.0);
+        $rice = $this->farmer('San Fabian', 'Angoluan', 'Rice/Palay', 1.5);
+        $corn = $this->farmer('Angoluan', 'Angoluan', 'Corn', 2.0);
 
         $program = SubsidyProgram::create([
             'id' => (string) Str::uuid(),
@@ -121,9 +132,12 @@ class QaReportEncodeTest extends TestCase
         $claimed = (int) $target->json('data.meta.claimed');
         $this->assertGreaterThan(0, $eligible);
 
+        $beneficiaryIds = collect($target->json('data.beneficiaries'))->pluck('farmer_id');
+        $this->assertTrue($beneficiaryIds->contains($rice->id));
+        $this->assertFalse($beneficiaryIds->contains($corn->id));
         $homes = collect($target->json('data.beneficiaries'))->pluck('barangay');
-        $this->assertTrue($homes->contains('San Fabian'));
-        $this->assertFalse($homes->contains('Angoluan'));
+        $this->assertTrue($homes->contains('Angoluan'));
+        $this->assertFalse($homes->contains('San Fabian'));
 
         $overview = $this->getJson('/api/dashboard/overview');
         $overview->assertOk();

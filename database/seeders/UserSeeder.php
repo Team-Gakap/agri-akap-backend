@@ -52,7 +52,7 @@ class UserSeeder extends Seeder
                 'name' => 'Barangay Official',
                 'password' => Hash::make('password123'),
                 'role' => 'barangay_official',
-                'assigned_barangay' => 'Silauan Norte (Poblacion)',
+                'assigned_barangay' => 'Silauan Norte Pob.',
                 'is_active' => true,
             ]
         );

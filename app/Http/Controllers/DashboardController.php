@@ -19,6 +19,8 @@ use App\Models\StandingCropLog;
 use App\Models\SubsidyBeneficiary;
 use App\Models\WeatherCache;
 use App\Services\CropStageService;
+use App\Support\CropPlotClaimer;
+use App\Support\FarmAddressSync;
 use App\Services\PredictiveAnalyticsService;
 use App\Services\ReportAggregationService;
 use Carbon\Carbon;
@@ -71,19 +73,21 @@ class DashboardController extends Controller
             ], 403);
         }
 
-        $farmers = Farmer::query()->where('permanent_brgy', $barangay)->count();
+        $farmerQuery = Farmer::query();
+        FarmAddressSync::constrain($farmerQuery, (string) $barangay);
+        $farmers = $farmerQuery->count();
 
         $plantingEntries = 0;
         if (Schema::hasTable('planting_logs')) {
             $plantingEntries = PlantingLog::query()
-                ->whereHas('farmer', fn ($f) => $f->where('permanent_brgy', $barangay))
+                ->whereHas('farmer', fn ($f) => FarmAddressSync::constrain($f, (string) $barangay))
                 ->count();
         }
 
         $pestReports = 0;
         if (Schema::hasTable('pest_monitoring')) {
             $pestReports = PestMonitoring::query()
-                ->whereHas('farmer', fn ($f) => $f->where('permanent_brgy', $barangay))
+                ->whereHas('farmer', fn ($f) => FarmAddressSync::constrain($f, (string) $barangay))
                 ->count();
         }
 
@@ -92,7 +96,7 @@ class DashboardController extends Controller
             $pendingDamage = DamageAssessment::query()
                 ->where('status', 'Pending')
                 ->where(function ($q) use ($barangay) {
-                    $q->whereHas('farmer', fn ($f) => $f->where('permanent_brgy', $barangay))
+                    $q->whereHas('farmer', fn ($f) => FarmAddressSync::constrain($f, (string) $barangay))
                         ->orWhereHas('farmPlot', fn ($fp) => $fp->where('location_brgy', $barangay));
                 })
                 ->count();
@@ -631,13 +635,7 @@ class DashboardController extends Controller
 
     private function commodityBucket(string $commodity): string
     {
-        $normalized = strtolower(trim($commodity));
-
-        return match (true) {
-            str_contains($normalized, 'rice') => 'rice',
-            str_contains($normalized, 'corn') => 'corn',
-            default => 'other',
-        };
+        return CropPlotClaimer::stapleCrop($commodity) ?? 'other';
     }
 
     /**
@@ -736,19 +734,31 @@ class DashboardController extends Controller
             return [];
         }
 
-        return DB::table('farm_plots')
+        $buckets = [];
+        DB::table('farm_plots')
             ->whereNull('deleted_at')
             ->selectRaw("COALESCE(NULLIF(commodity, ''), 'Other') as commodity")
             ->selectRaw('COUNT(*) as total_plots')
             ->selectRaw('SUM(size_ha) as total_area_ha')
             ->groupByRaw('1')
-            ->orderByDesc('total_plots')
             ->get()
+            ->each(function ($row) use (&$buckets) {
+                $staple = CropPlotClaimer::stapleCrop((string) $row->commodity);
+                $label = $staple ? ucfirst($staple) : (trim((string) $row->commodity) !== '' ? (string) $row->commodity : 'Other');
+                if (! isset($buckets[$label])) {
+                    $buckets[$label] = ['commodity' => $label, 'total_plots' => 0, 'total_area_ha' => 0.0];
+                }
+                $buckets[$label]['total_plots'] += (int) $row->total_plots;
+                $buckets[$label]['total_area_ha'] += (float) $row->total_area_ha;
+            });
+
+        return collect($buckets)
             ->map(fn ($row) => [
-                'commodity' => $row->commodity,
-                'total_plots' => (int) $row->total_plots,
-                'total_area_ha' => round((float) $row->total_area_ha, 2),
+                'commodity' => $row['commodity'],
+                'total_plots' => $row['total_plots'],
+                'total_area_ha' => round($row['total_area_ha'], 2),
             ])
+            ->sortByDesc('total_area_ha')
             ->values()
             ->all();
     }
@@ -780,7 +790,7 @@ class DashboardController extends Controller
         }
 
         $rows = $query
-            ->selectRaw("COALESCE(NULLIF(farmers.permanent_brgy, ''), 'Unspecified') as barangay")
+            ->selectRaw(FarmAddressSync::sqlDisplay('farmers').' as barangay')
             ->selectRaw('COALESCE(SUM(tbl_subsidy_beneficiaries.calculated_allocation), 0) as allocated')
             ->selectRaw("COALESCE(SUM(CASE WHEN tbl_subsidy_beneficiaries.status = 'Claimed' THEN tbl_subsidy_beneficiaries.calculated_allocation ELSE 0 END), 0) as claimed")
             ->groupByRaw('1')
@@ -790,7 +800,7 @@ class DashboardController extends Controller
             $fallback = DB::table('tbl_subsidy_beneficiaries')
                 ->join('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
                 ->whereNull('farmers.deleted_at')
-                ->selectRaw("COALESCE(NULLIF(farmers.permanent_brgy, ''), 'Unspecified') as barangay")
+                ->selectRaw(FarmAddressSync::sqlDisplay('farmers').' as barangay')
                 ->selectRaw('COALESCE(SUM(tbl_subsidy_beneficiaries.calculated_allocation), 0) as allocated')
                 ->selectRaw("COALESCE(SUM(CASE WHEN tbl_subsidy_beneficiaries.status = 'Claimed' THEN tbl_subsidy_beneficiaries.calculated_allocation ELSE 0 END), 0) as claimed")
                 ->groupByRaw('1');

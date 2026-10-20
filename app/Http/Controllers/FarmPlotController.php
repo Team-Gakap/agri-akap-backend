@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\FarmPlot;
 use App\Models\Farmer;
 use App\Services\FarmAreaBudgetService;
+use App\Support\FarmAddressSync;
 use App\Services\PolygonIntegrityService;
 use App\Traits\LogsReportAudit;
 use Illuminate\Http\JsonResponse;
@@ -213,7 +214,12 @@ class FarmPlotController extends Controller
                 [$lng, $lat, $id],
             );
 
-            return FarmPlot::with('farmer:id,first_name,surname,rsbsa_no,permanent_brgy')->findOrFail($id);
+            $created = FarmPlot::with('farmer:id,first_name,surname,rsbsa_no,permanent_brgy,farm_brgy')->findOrFail($id);
+            if ($created->farmer) {
+                FarmAddressSync::syncFromStoredPlots($created->farmer);
+            }
+
+            return $created;
         });
 
         $this->logReportAudit('farm_plot.created', $plot, [
@@ -373,6 +379,9 @@ class FarmPlotController extends Controller
         ]);
         $plot->fill($validated);
         $plot->save();
+        if ($plot->farmer && ($request->has('location_brgy') || $request->has('location_city'))) {
+            FarmAddressSync::syncFromStoredPlots($plot->farmer);
+        }
 
         if ($lat !== null && $lng !== null && ($request->has('latitude') || $request->has('longitude') || $points !== null)) {
             DB::update(
@@ -401,7 +410,11 @@ class FarmPlotController extends Controller
     {
         $plot = FarmPlot::with('farmer')->findOrFail($id);
         $snapshot = $plot->only(['farmer_id', 'location_brgy', 'commodity', 'size_ha']);
+        $farmer = $plot->farmer;
         $plot->delete();
+        if ($farmer) {
+            FarmAddressSync::syncFromStoredPlots($farmer);
+        }
 
         $this->logReportAudit('farm_plot.deleted', $plot, [
             'before' => $snapshot,

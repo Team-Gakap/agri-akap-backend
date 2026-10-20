@@ -6,6 +6,8 @@ use App\Models\Distribution;
 use App\Models\Farmer;
 use App\Models\FarmPlot;
 use App\Models\SubsidyBeneficiary;
+use App\Support\CropPlotClaimer;
+use App\Support\FarmAddressSync;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -26,7 +28,7 @@ class PublicDashboardController extends Controller
         ]);
 
         $farmers = $this->filteredFarmers($filters)->get([
-            'id', 'sex', 'birthdate', 'is_pwd', 'permanent_brgy', 'rsbsa_no',
+            'id', 'sex', 'birthdate', 'is_pwd', 'permanent_brgy', 'farm_brgy', 'rsbsa_no',
         ]);
         $gender = $this->farmerGenderAndPwd($farmers);
         $demographics = $this->demographicBreakdown($farmers);
@@ -61,11 +63,11 @@ class PublicDashboardController extends Controller
                 'recent_activity' => $distributionData['recent_activity'],
                 'filters' => [
                     'barangays' => Farmer::query()
-                        ->whereNotNull('permanent_brgy')
-                        ->where('permanent_brgy', '!=', '')
+                        ->selectRaw(FarmAddressSync::sqlDisplay().' as brgy')
+                        ->whereRaw(FarmAddressSync::sqlDisplay()." != 'Unspecified'")
                         ->distinct()
-                        ->orderBy('permanent_brgy')
-                        ->pluck('permanent_brgy')
+                        ->orderBy('brgy')
+                        ->pluck('brgy')
                         ->values(),
                     'years' => range(2022, Carbon::now()->year),
                 ],
@@ -141,10 +143,10 @@ class PublicDashboardController extends Controller
     {
         return Farmer::query()
             ->with('rffaPlots')
-            ->when($filters['barangay'] ?? null, fn ($query, $barangay) => $query->where('permanent_brgy', $barangay))
+            ->when($filters['barangay'] ?? null, fn ($query, $barangay) => FarmAddressSync::constrain($query, $barangay))
             ->when($filters['commodity'] ?? null, fn ($query, $commodity) => $query->whereHas(
                 'farmPlots',
-                fn ($plots) => $plots->whereRaw('LOWER(commodity) = ?', [strtolower($commodity)])
+                fn ($plots) => CropPlotClaimer::wherePlotCommodityMatches($plots, 'commodity', $commodity)
             ));
     }
 
@@ -178,7 +180,7 @@ class PublicDashboardController extends Controller
     private function barangayInclusionRanking($farmers): array
     {
         return $farmers
-            ->groupBy(fn ($farmer) => trim((string) $farmer->permanent_brgy) ?: 'Unspecified')
+            ->groupBy(fn ($farmer) => FarmAddressSync::label($farmer->farm_brgy, $farmer->permanent_brgy))
             ->map(function ($rows, $barangay) {
                 $total = $rows->count();
                 $female = $rows->where('sex', 'Female')->count();
@@ -201,14 +203,19 @@ class PublicDashboardController extends Controller
     {
         return FarmPlot::query()
             ->with('farmer:id,sex')
-            ->whereHas('farmer', fn ($farmers) => $farmers
-                ->when($filters['barangay'] ?? null, fn ($query, $barangay) => $query->where('permanent_brgy', $barangay)))
-            ->when($filters['commodity'] ?? null, fn ($query, $commodity) => $query->whereRaw(
-                'LOWER(commodity) = ?', [strtolower($commodity)]
-            ))
+            ->whereHas('farmer', function ($farmers) use ($filters) {
+                if (! empty($filters['barangay'])) {
+                    FarmAddressSync::constrain($farmers, (string) $filters['barangay']);
+                }
+            })
+            ->when($filters['commodity'] ?? null, fn ($query, $commodity) => CropPlotClaimer::wherePlotCommodityMatches($query, 'commodity', $commodity))
             ->get(['commodity', 'size_ha', 'farmer_id'])
             ->filter(fn ($plot) => $plot->farmer)
-            ->groupBy(fn ($plot) => ucfirst(strtolower($plot->commodity)))
+            ->groupBy(function ($plot) {
+                $staple = CropPlotClaimer::stapleCrop($plot->commodity);
+
+                return $staple ? ucfirst($staple) : (trim((string) $plot->commodity) ?: 'Other');
+            })
             ->map(fn ($plots, $commodity) => [
                 'commodity' => $commodity,
                 'male_hectares' => round((float) $plots->filter(fn ($plot) => $plot->farmer->sex === 'Male')->sum('size_ha'), 2),
@@ -222,12 +229,17 @@ class PublicDashboardController extends Controller
     {
         $rows = Distribution::query()
             ->with('farmer:id,sex,birthdate,is_pwd')
-            ->whereHas('farmer', fn ($farmers) => $farmers
-                ->when($filters['barangay'] ?? null, fn ($query, $barangay) => $query->where('permanent_brgy', $barangay))
-                ->when($filters['commodity'] ?? null, fn ($query, $commodity) => $query->whereHas(
-                    'farmPlots',
-                    fn ($plots) => $plots->whereRaw('LOWER(commodity) = ?', [strtolower($commodity)])
-                )))
+            ->whereHas('farmer', function ($farmers) use ($filters) {
+                if (! empty($filters['barangay'])) {
+                    FarmAddressSync::constrain($farmers, (string) $filters['barangay']);
+                }
+                if (! empty($filters['commodity'])) {
+                    $farmers->whereHas(
+                        'farmPlots',
+                        fn ($plots) => CropPlotClaimer::wherePlotCommodityMatches($plots, 'commodity', (string) $filters['commodity'])
+                    );
+                }
+            })
             ->when($filters['year'] ?? null, fn ($query, $year) => $query->whereYear('claimed_at', $year))
             ->get(['id', 'farmer_id', 'status', 'claimed_at']);
 
@@ -286,7 +298,7 @@ class PublicDashboardController extends Controller
                 ->join('farmers', 'farmers.rsbsa_no', '=', 'tbl_subsidy_beneficiaries.farmer_rsbsa_no')
                 ->join('tbl_subsidy_programs', 'tbl_subsidy_programs.id', '=', 'tbl_subsidy_beneficiaries.program_id')
                 ->whereNull('farmers.deleted_at')
-                ->when($filters['barangay'] ?? null, fn ($query, $barangay) => $query->where('farmers.permanent_brgy', $barangay))
+                ->when($filters['barangay'] ?? null, fn ($query, $barangay) => FarmAddressSync::constrain($query, $barangay))
                 ->when($filters['commodity'] ?? null, fn ($query, $commodity) => $query->where('tbl_subsidy_programs.target_crop', $commodity));
             SubsidyBeneficiary::applyNotDeleted($enrolledQuery);
             $enrolled = (int) $enrolledQuery->count();
@@ -296,7 +308,7 @@ class PublicDashboardController extends Controller
                 ->join('tbl_subsidy_programs', 'tbl_subsidy_programs.id', '=', 'tbl_subsidy_beneficiaries.program_id')
                 ->whereNull('farmers.deleted_at')
                 ->where('tbl_subsidy_beneficiaries.status', 'Claimed')
-                ->when($filters['barangay'] ?? null, fn ($query, $barangay) => $query->where('farmers.permanent_brgy', $barangay))
+                ->when($filters['barangay'] ?? null, fn ($query, $barangay) => FarmAddressSync::constrain($query, $barangay))
                 ->when($filters['commodity'] ?? null, fn ($query, $commodity) => $query->where('tbl_subsidy_programs.target_crop', $commodity));
             SubsidyBeneficiary::applyNotDeleted($claimedQuery);
             $claimed = (int) $claimedQuery->count();

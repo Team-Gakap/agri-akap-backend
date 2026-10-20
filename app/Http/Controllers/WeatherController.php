@@ -14,6 +14,7 @@ use App\Services\WeatherAlertService;
 use App\Services\WeatherHistoricalService;
 use App\Services\WeatherHourlyService;
 use App\Services\WeatherService;
+use App\Support\OfficialBarangays;
 use App\Traits\LogsReportAudit;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
@@ -39,8 +40,9 @@ class WeatherController extends Controller
     {
         $barangay = $request->query('barangay');
         if (! is_string($barangay) || trim($barangay) === '') {
-            $barangay = 'Soyung (Poblacion)';
+            $barangay = 'Soyung';
         }
+        $barangay = OfficialBarangays::canonicalize($barangay);
 
         $today = Carbon::now(WeatherService::TIMEZONE)->toDateString();
         $end = Carbon::now(WeatherService::TIMEZONE)->addDays(3)->toDateString();

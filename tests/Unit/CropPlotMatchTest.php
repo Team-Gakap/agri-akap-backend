@@ -11,8 +11,12 @@ class CropPlotMatchTest extends TestCase
     {
         $this->assertTrue(CropPlotClaimer::plotMatches('Rice/Palay', 'Rice'));
         $this->assertTrue(CropPlotClaimer::plotMatches('Palay', 'Rice'));
+        $this->assertTrue(CropPlotClaimer::plotMatches('RiceWFallow', 'Rice'));
+        $this->assertTrue(CropPlotClaimer::plotMatches('Lowland Rice', 'Rice'));
         $this->assertTrue(CropPlotClaimer::plotMatches('Maize', 'Corn'));
+        $this->assertTrue(CropPlotClaimer::plotMatches('Mais', 'Corn'));
         $this->assertFalse(CropPlotClaimer::plotMatches('Corn', 'Rice'));
         $this->assertFalse(CropPlotClaimer::plotMatches('Rice/Palay', 'Corn'));
+        $this->assertFalse(CropPlotClaimer::plotMatches('RiceWFallow', 'Corn'));
     }
 }

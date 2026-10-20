@@ -40,7 +40,7 @@ class FacebookRainfallCardTest extends TestCase
             'precipitation_probability' => 60,
         ]);
         WeatherCache::create([
-            'barangay_name' => 'Soyung (Poblacion)',
+            'barangay_name' => 'Soyung',
             'forecast_date' => $today,
             'precipitation_sum' => 75.0,
             'precipitation_probability' => 90,
@@ -59,7 +59,7 @@ class FacebookRainfallCardTest extends TestCase
 
         $byName = collect($payload['barangays'])->keyBy('name');
         $this->assertSame(RainfallBands::LIGHT, $byName['Salvacion']['band']);
-        $this->assertSame(RainfallBands::YELLOW, $byName['Soyung (Poblacion)']['band']);
+        $this->assertSame(RainfallBands::YELLOW, $byName['Soyung']['band']);
         $this->assertSame(RainfallBands::NONE, $byName['Dicaraoyan']['band']);
 
         $legendKeys = collect($payload['legend'])->pluck('key')->all();

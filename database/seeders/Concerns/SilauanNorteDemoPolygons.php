@@ -14,7 +14,7 @@ use RuntimeException;
  */
 final class SilauanNorteDemoPolygons
 {
-    public const BARANGAY = 'Silauan Norte (Poblacion)';
+    public const BARANGAY = 'Silauan Norte Pob.';
 
     /**
      * Interior anchors: [centerLat, centerLng, widthMeters, heightMeters].

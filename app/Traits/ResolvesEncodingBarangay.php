@@ -4,6 +4,7 @@ namespace App\Traits;
 
 use App\Models\Farmer;
 use App\Models\User;
+use App\Support\FarmAddressSync;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -29,10 +30,10 @@ trait ResolvesEncodingBarangay
                 ], 403);
             }
 
-            if ($farmer && $farmer->permanent_brgy !== $barangay) {
+            if ($farmer && ! FarmAddressSync::belongsToBarangay($farmer, $barangay)) {
                 return response()->json([
                     'status' => 'error',
-                    'message' => 'You can only encode farmers from your assigned barangay.',
+                    'message' => 'You can only encode farmers whose farm is in your assigned barangay.',
                 ], 403);
             }
 
@@ -48,10 +49,10 @@ trait ResolvesEncodingBarangay
                 ], 422);
             }
 
-            if ($farmer && $farmer->permanent_brgy !== $barangay) {
+            if ($farmer && ! FarmAddressSync::belongsToBarangay($farmer, (string) $barangay)) {
                 return response()->json([
                     'status' => 'error',
-                    'message' => 'Selected farmer does not belong to the target barangay.',
+                    'message' => 'Selected farmer does not have a farm in the target barangay.',
                 ], 422);
             }
 
@@ -70,11 +71,11 @@ trait ResolvesEncodingBarangay
         $barangayParam = $request->input('barangay');
 
         if ($user->role === 'barangay_official' && $user->assigned_barangay) {
-            $query->whereHas($farmerRelation, fn ($f) => $f->where('permanent_brgy', $user->assigned_barangay));
+            $query->whereHas($farmerRelation, fn ($f) => FarmAddressSync::constrain($f, (string) $user->assigned_barangay));
         } elseif ($user->isMunicipalAdmin() && ! empty($barangayParam)) {
-            $query->whereHas($farmerRelation, fn ($f) => $f->where('permanent_brgy', $barangayParam));
+            $query->whereHas($farmerRelation, fn ($f) => FarmAddressSync::constrain($f, (string) $barangayParam));
         } elseif (! empty($barangayParam)) {
-            $query->whereHas($farmerRelation, fn ($f) => $f->where('permanent_brgy', $barangayParam));
+            $query->whereHas($farmerRelation, fn ($f) => FarmAddressSync::constrain($f, (string) $barangayParam));
         }
     }
 
@@ -91,10 +92,10 @@ trait ResolvesEncodingBarangay
                 ], 403);
             }
 
-            if ($farmer && $farmer->permanent_brgy !== $user->assigned_barangay) {
+            if ($farmer && ! FarmAddressSync::belongsToBarangay($farmer, (string) $user->assigned_barangay)) {
                 return response()->json([
                     'status' => 'error',
-                    'message' => 'You can only remove records from your assigned barangay.',
+                    'message' => 'You can only remove records for farmers whose farm is in your assigned barangay.',
                 ], 403);
             }
         }

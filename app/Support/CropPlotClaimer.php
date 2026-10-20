@@ -28,17 +28,24 @@ final class CropPlotClaimer
     public static function stapleCrop(?string $value): ?string
     {
         $key = strtolower(trim((string) $value));
-        $compact = str_replace([' ', '/', '_', '-'], '', $key);
-        if ($compact === '') {
+        if ($key === '' || $key === 'unspecified' || $key === 'other' || $key === 'n/a' || $key === '#n/a') {
             return null;
         }
 
-        if (in_array($compact, ['rice', 'palay', 'ricepalay'], true)
-            || (str_contains($key, 'rice') && str_contains($key, 'palay'))) {
-            return 'rice';
+        if (str_contains($key, 'hvcc') || str_contains($key, 'high-value') || str_contains($key, 'high value')) {
+            return null;
         }
 
-        if (in_array($compact, ['corn', 'maize', 'mais', 'cornmaize'], true)) {
+        $hasRice = str_contains($key, 'rice') || str_contains($key, 'palay');
+        $hasCorn = str_contains($key, 'corn') || str_contains($key, 'maize') || preg_match('/\bmais\b/', $key) === 1;
+
+        if ($hasRice && $hasCorn) {
+            return null;
+        }
+        if ($hasRice) {
+            return 'rice';
+        }
+        if ($hasCorn) {
             return 'corn';
         }
 
@@ -61,28 +68,45 @@ final class CropPlotClaimer
         $staple = self::stapleCrop($cropType);
         if ($staple === 'rice') {
             $query->where(function ($inner) use ($column) {
-                $inner->whereRaw(
-                    "REPLACE(REPLACE(REPLACE(REPLACE(LOWER(TRIM({$column})), ' ', ''), '/', ''), '_', ''), '-', '') in (?, ?, ?)",
-                    ['rice', 'palay', 'ricepalay']
-                )->orWhere(function ($both) use ($column) {
-                    $both->whereRaw("LOWER({$column}) like ?", ['%rice%'])
-                        ->whereRaw("LOWER({$column}) like ?", ['%palay%']);
-                });
+                $inner->whereRaw("LOWER({$column}) like ?", ['%rice%'])
+                    ->orWhereRaw("LOWER({$column}) like ?", ['%palay%']);
             });
+            self::excludeOtherStaple($query, $column, 'corn');
 
             return;
         }
 
         if ($staple === 'corn') {
-            $query->whereRaw(
-                "REPLACE(REPLACE(REPLACE(REPLACE(LOWER(TRIM({$column})), ' ', ''), '/', ''), '_', ''), '-', '') in (?, ?, ?)",
-                ['corn', 'maize', 'mais']
-            );
+            $query->where(function ($inner) use ($column) {
+                $inner->whereRaw("LOWER({$column}) like ?", ['%corn%'])
+                    ->orWhereRaw("LOWER({$column}) like ?", ['%maize%'])
+                    ->orWhereRaw("LOWER({$column}) like ?", ['%mais%']);
+            });
+            self::excludeOtherStaple($query, $column, 'rice');
 
             return;
         }
 
         $query->whereRaw('LOWER(TRIM('.$column.')) = ?', [strtolower(trim($cropType))]);
+    }
+
+    /**
+     * Keep a rice filter from also matching a mixed or corn label, and the reverse.
+     */
+    private static function excludeOtherStaple($query, string $column, string $other): void
+    {
+        if ($other === 'corn') {
+            $query->whereRaw("LOWER({$column}) not like ?", ['%corn%'])
+                ->whereRaw("LOWER({$column}) not like ?", ['%maize%'])
+                ->whereRaw("LOWER({$column}) not like ?", ['%mais%']);
+        } else {
+            $query->whereRaw("LOWER({$column}) not like ?", ['%rice%'])
+                ->whereRaw("LOWER({$column}) not like ?", ['%palay%']);
+        }
+
+        $query->whereRaw("LOWER({$column}) not like ?", ['%hvcc%'])
+            ->whereRaw("LOWER({$column}) not like ?", ['%high-value%'])
+            ->whereRaw("LOWER({$column}) not like ?", ['%high value%']);
     }
 
     /**

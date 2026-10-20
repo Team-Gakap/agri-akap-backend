@@ -8,6 +8,51 @@ use Database\Seeders\Concerns\EchagueBarangays;
 final class OfficialBarangays
 {
     /**
+     * Masterlist spellings plus older app and GeoJSON labels for the six
+     * barangays whose names changed.
+     *
+     * @var array<string, list<string>>
+     */
+    private const ALIAS_GROUPS = [
+        'Cabugao Pob.' => [
+            'Cabugao Pob.',
+            'CABUGAO POB.',
+            'Cabugao (Poblacion)',
+            'Cabugao (Pob.)',
+            'Cabugao',
+        ],
+        'San Manuel' => [
+            'San Manuel',
+            'SAN MANUEL',
+            'San Manuel (formerly Atelan)',
+        ],
+        'Silauan Norte Pob.' => [
+            'Silauan Norte Pob.',
+            'SILAUAN NORTE POB.',
+            'Silauan Norte (Poblacion)',
+            'Silauan Norte (Pob.)',
+            'Silauan Norte',
+        ],
+        'Silauan Sur Pob.' => [
+            'Silauan Sur Pob.',
+            'SILAUAN SUR POB.',
+            'Silauan Sur (Poblacion)',
+            'Silauan Sur (Pob.)',
+            'Silauan Sur',
+        ],
+        'Soyung' => [
+            'Soyung',
+            'SOYUNG',
+            'Soyung (Poblacion)',
+        ],
+        'Taggappan' => [
+            'Taggappan',
+            'TAGGAPPAN',
+            'Taggappan (Poblacion)',
+        ],
+    ];
+
+    /**
      * Official Echague barangay names (64). Prefer tbl_barangays; fall back to the seeder list.
      *
      * @return list<string>
@@ -34,30 +79,27 @@ final class OfficialBarangays
     }
 
     /**
-     * Map PSGC barangay labels to official MAO / tbl_barangays names.
+     * Map a sheet, PSGC, or previously stored label onto the masterlist spelling.
+     * Unknown names are returned trimmed and otherwise unchanged.
      */
-    public static function normalizePsgcName(string $psgcName): string
+    public static function canonicalize(?string $name): string
     {
-        $trimmed = trim($psgcName);
+        $trimmed = trim((string) $name);
         if ($trimmed === '') {
             return '';
         }
 
-        $aliases = [
-            'Cabugao' => 'Cabugao (Poblacion)',
-            'San Manuel' => 'San Manuel (formerly Atelan)',
-            'Silauan Norte' => 'Silauan Norte (Poblacion)',
-            'Silauan Sur' => 'Silauan Sur (Poblacion)',
-            'Soyung' => 'Soyung (Poblacion)',
-            'Taggappan' => 'Taggappan (Poblacion)',
-        ];
-
-        if (isset($aliases[$trimmed])) {
-            return $aliases[$trimmed];
+        $key = self::normalizeKey($trimmed);
+        foreach (self::ALIAS_GROUPS as $canonical => $aliases) {
+            foreach ($aliases as $alias) {
+                if (self::normalizeKey($alias) === $key) {
+                    return $canonical;
+                }
+            }
         }
 
-        foreach (self::names() as $official) {
-            if (strcasecmp($official, $trimmed) === 0) {
+        foreach (EchagueBarangays::ALL as $official) {
+            if (self::normalizeKey($official) === $key) {
                 return $official;
             }
         }
@@ -66,8 +108,16 @@ final class OfficialBarangays
     }
 
     /**
+     * Map PSGC barangay labels to official MAO / tbl_barangays names.
+     */
+    public static function normalizePsgcName(string $psgcName): string
+    {
+        return self::canonicalize($psgcName);
+    }
+
+    /**
      * Names that should match a registry filter: the typed value, its official
-     * label, and the short PSGC alias when one exists.
+     * label, and every known alias for that barangay.
      *
      * @return list<string>
      */
@@ -78,20 +128,22 @@ final class OfficialBarangays
             return [];
         }
 
-        $aliases = [
-            'Cabugao' => 'Cabugao (Poblacion)',
-            'San Manuel' => 'San Manuel (formerly Atelan)',
-            'Silauan Norte' => 'Silauan Norte (Poblacion)',
-            'Silauan Sur' => 'Silauan Sur (Poblacion)',
-            'Soyung' => 'Soyung (Poblacion)',
-            'Taggappan' => 'Taggappan (Poblacion)',
-        ];
-
-        $names = [$trimmed, self::normalizePsgcName($trimmed)];
-        foreach ($aliases as $short => $official) {
-            if (strcasecmp($trimmed, $short) === 0 || strcasecmp($trimmed, $official) === 0) {
-                $names[] = $short;
-                $names[] = $official;
+        $canonical = self::canonicalize($trimmed);
+        $names = [$trimmed, $canonical];
+        foreach (self::ALIAS_GROUPS as $groupCanonical => $aliases) {
+            $matchesGroup = self::normalizeKey($canonical) === self::normalizeKey($groupCanonical);
+            if (! $matchesGroup) {
+                foreach ($aliases as $alias) {
+                    if (self::normalizeKey($alias) === self::normalizeKey($trimmed)) {
+                        $matchesGroup = true;
+                        break;
+                    }
+                }
+            }
+            if ($matchesGroup) {
+                $names[] = $groupCanonical;
+                array_push($names, ...$aliases);
+                break;
             }
         }
 
@@ -101,7 +153,7 @@ final class OfficialBarangays
             if ($candidate === '') {
                 continue;
             }
-            $unique[strtolower($candidate)] = $candidate;
+            $unique[self::normalizeKey($candidate)] = $candidate;
         }
 
         return array_values($unique);
@@ -110,5 +162,10 @@ final class OfficialBarangays
     public static function isEchagueCity(?string $city): bool
     {
         return $city !== null && strcasecmp(trim($city), 'Echague') === 0;
+    }
+
+    private static function normalizeKey(string $name): string
+    {
+        return preg_replace('/\s+/', ' ', mb_strtolower(trim($name))) ?? '';
     }
 }

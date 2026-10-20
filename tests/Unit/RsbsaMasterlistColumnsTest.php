@@ -2,6 +2,8 @@
 
 namespace Tests\Unit;
 
+use App\Support\CropPlotClaimer;
+use App\Support\OfficialBarangays;
 use App\Support\RsbsaMasterlistColumns;
 use App\Support\SubsidyExclusionRules;
 use Tests\TestCase;
@@ -81,6 +83,50 @@ class RsbsaMasterlistColumnsTest extends TestCase
         $this->assertNull(SubsidyExclusionRules::matchedLabel('STUDENT'));
         $this->assertNull(SubsidyExclusionRules::matchedLabel('NOT RESIDENCE'));
         $this->assertSame('No Farm', SubsidyExclusionRules::matchedLabel('NO FARM SOLD'));
+    }
+
+    public function test_masterlist_commodity_labels_bucket_as_rice_or_corn(): void
+    {
+        $rice = RsbsaMasterlistColumns::extractFarmerRow($this->row([
+            'COMMODITY' => 'RiceWFallow',
+        ]));
+        $palay = RsbsaMasterlistColumns::extractFarmerRow($this->row([
+            'COMMODITY' => 'Rice/Palay',
+        ]));
+        $corn = RsbsaMasterlistColumns::extractFarmerRow($this->row([
+            'COMMODITY' => 'Corn',
+        ]));
+
+        $this->assertSame('rice', CropPlotClaimer::stapleCrop($rice['commodity']));
+        $this->assertSame('rice', CropPlotClaimer::stapleCrop($palay['commodity']));
+        $this->assertSame('rice', CropPlotClaimer::stapleCrop('Lowland Rice'));
+        $this->assertSame('corn', CropPlotClaimer::stapleCrop($corn['commodity']));
+        $this->assertSame('corn', CropPlotClaimer::stapleCrop('Maize'));
+        $this->assertSame('corn', CropPlotClaimer::stapleCrop('Mais'));
+        $this->assertNull(CropPlotClaimer::stapleCrop('Unspecified'));
+        $this->assertNull(CropPlotClaimer::stapleCrop('High-Value'));
+    }
+
+    public function test_farm_address_uses_masterlist_barangay_spelling(): void
+    {
+        $cabugao = RsbsaMasterlistColumns::extractFarmerRow($this->row([
+            'FARM ADDRESS 1' => 'CABUGAO POB.',
+            'FARMER ADDRESS 1' => 'SAN MANUEL',
+        ]));
+        $this->assertSame('Cabugao Pob.', $cabugao['farm_brgy']);
+        $this->assertSame('San Manuel', $cabugao['permanent_brgy']);
+
+        $garit = RsbsaMasterlistColumns::extractFarmerRow($this->row([
+            'FARM ADDRESS 1' => 'GARIT NORTE',
+            'FARMER ADDRESS 1' => 'SILAUAN NORTE POB.',
+        ]));
+        $this->assertSame('Garit Norte', $garit['farm_brgy']);
+        $this->assertSame('Silauan Norte Pob.', $garit['permanent_brgy']);
+
+        $this->assertSame('Soyung', OfficialBarangays::canonicalize('Soyung (Poblacion)'));
+        $this->assertSame('Taggappan', OfficialBarangays::canonicalize('Taggappan (Poblacion)'));
+        $this->assertSame('Silauan Sur Pob.', OfficialBarangays::canonicalize('Silauan Sur (Pob.)'));
+        $this->assertContains('Cabugao (Poblacion)', OfficialBarangays::equivalentNames('Cabugao Pob.'));
     }
 
     /**

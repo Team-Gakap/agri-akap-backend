@@ -13,7 +13,7 @@ use Throwable;
 
 class WeatherService
 {
-    /** Soyung (Poblacion) field pin — fallback / display default. */
+    /** Soyung field pin — fallback / display default. */
     public const LATITUDE = 16.701478906510456;
 
     public const LONGITUDE = 121.66391107686333;

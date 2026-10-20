@@ -7,6 +7,8 @@ use App\Models\Fca;
 use App\Models\SubsidyBeneficiary;
 use App\Models\SubsidyProgram;
 use App\Models\SubsidyProgramVariety;
+use App\Support\CropPlotClaimer;
+use App\Support\FarmAddressSync;
 use App\Support\FarmerPriority;
 use App\Support\OfficialBarangays;
 use App\Support\SubsidyAllocation;
@@ -629,7 +631,7 @@ class SubsidyController extends Controller
                 'last_name' => $farmer->surname,
                 'first_name' => $farmer->first_name,
                 'middle_name' => $farmer->middle_name,
-                'barangay' => $farmer->permanent_brgy ?: 'Unspecified',
+                'barangay' => FarmAddressSync::label($farmer->farm_brgy ?? null, $farmer->permanent_brgy ?? null),
                 'mobile_number' => $farmer->mobile_number,
                 'farm_area' => round((float) $farmer->farm_area, 4),
                 'is_pwd' => (bool) $farmer->is_pwd,
@@ -890,7 +892,7 @@ class SubsidyController extends Controller
                 'farmers.surname as last_name',
                 'farmers.first_name',
                 'farmers.middle_name',
-                DB::raw("COALESCE(NULLIF(TRIM(farmers.permanent_brgy), ''), 'Unspecified') as barangay"),
+                DB::raw(FarmAddressSync::sqlDisplay('farmers').' as barangay'),
                 'farmers.mobile_number',
                 'farmers.is_pwd',
                 'farmers.is_temporary',
@@ -2179,7 +2181,7 @@ class SubsidyController extends Controller
             'last_name' => $row->surname,
             'first_name' => $row->first_name,
             'middle_name' => $row->middle_name,
-            'barangay' => $row->permanent_brgy ?: 'Unspecified',
+            'barangay' => FarmAddressSync::label($row->farm_brgy ?? null, $row->permanent_brgy ?? null),
             'farm_brgy' => $row->farm_brgy,
             'permanent_brgy' => $row->permanent_brgy,
             'farm_area' => $area,
@@ -2238,7 +2240,7 @@ class SubsidyController extends Controller
         $this->applyBarangayScope($query, $program);
 
         if (! empty($filters['barangays'])) {
-            $query->whereIn('farmers.permanent_brgy', $filters['barangays']);
+            FarmAddressSync::whereIn($query, $filters['barangays']);
         }
 
         if (! empty($filters['rsbsa_nos'])) {
@@ -2727,7 +2729,7 @@ class SubsidyController extends Controller
     {
         $barangays = $program->target_barangays;
         if (is_array($barangays) && count($barangays) > 0) {
-            $query->whereIn('farmers.permanent_brgy', $barangays);
+            FarmAddressSync::whereIn($query, $barangays);
         }
     }
 
@@ -2746,13 +2748,17 @@ class SubsidyController extends Controller
 
         if ($crop === 'both') {
             return $query->where(function ($q) use ($column) {
-                $q->whereRaw("LOWER({$column}) like ?", ['%rice%'])
-                    ->orWhereRaw("LOWER({$column}) like ?", ['%corn%']);
-            })->whereRaw("LOWER({$column}) not like ?", ['%hvcc%']);
+                $q->where(function ($rice) use ($column) {
+                    CropPlotClaimer::wherePlotCommodityMatches($rice, $column, 'Rice');
+                })->orWhere(function ($corn) use ($column) {
+                    CropPlotClaimer::wherePlotCommodityMatches($corn, $column, 'Corn');
+                });
+            });
         }
 
-        return $query->whereRaw("LOWER({$column}) like ?", ['%'.$crop.'%'])
-            ->whereRaw("LOWER({$column}) not like ?", ['%hvcc%']);
+        CropPlotClaimer::wherePlotCommodityMatches($query, $column, $targetCrop);
+
+        return $query;
     }
 
     /**

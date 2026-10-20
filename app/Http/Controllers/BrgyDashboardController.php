@@ -10,6 +10,8 @@ use App\Models\SubsidyBeneficiary;
 use App\Models\WeatherCache;
 use App\Models\WeatherHourly;
 use App\Services\CropStageService;
+use App\Support\CropPlotClaimer;
+use App\Support\FarmAddressSync;
 use App\Services\WeatherHourlyService;
 use App\Services\WeatherService;
 use Carbon\Carbon;
@@ -65,7 +67,8 @@ class BrgyDashboardController extends Controller
      */
     private function descriptive(string $barangay): array
     {
-        $farmers = Farmer::query()->where('permanent_brgy', $barangay);
+        $farmers = Farmer::query();
+        FarmAddressSync::constrain($farmers, $barangay);
         $totalFarmers = (clone $farmers)->count();
         $verifiedFarmers = (clone $farmers)
             ->whereNotNull('rsbsa_no')
@@ -83,7 +86,7 @@ class BrgyDashboardController extends Controller
         $activePests = $this->unverifiedPests($barangay);
 
         $subsidyBase = SubsidyBeneficiary::query()
-            ->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay));
+            ->whereHas('farmer', fn ($farmer) => FarmAddressSync::constrain($farmer, $barangay));
         $claimedSubsidies = (clone $subsidyBase)->where('status', 'Claimed')->count();
         $unclaimedSubsidies = (clone $subsidyBase)->where('status', 'Pending')->count();
 
@@ -133,7 +136,7 @@ class BrgyDashboardController extends Controller
             return $out;
         }
 
-        $farmerIds = Farmer::query()->where('permanent_brgy', $barangay)->pluck('id');
+        $farmerIds = Farmer::query()->tap(fn ($query) => FarmAddressSync::constrain($query, $barangay))->pluck('id');
 
         DB::table('farm_plots')
             ->whereNull('deleted_at')
@@ -146,12 +149,7 @@ class BrgyDashboardController extends Controller
             ->groupByRaw('1')
             ->get()
             ->each(function ($row) use (&$out) {
-                $normalized = strtolower(trim((string) $row->commodity));
-                $key = match (true) {
-                    str_contains($normalized, 'rice') => 'rice',
-                    str_contains($normalized, 'corn') => 'corn',
-                    default => 'other',
-                };
+                $key = CropPlotClaimer::stapleCrop((string) $row->commodity) ?? 'other';
                 $out[$key] += (float) $row->total_area_ha;
             });
 
@@ -171,7 +169,7 @@ class BrgyDashboardController extends Controller
             return $out;
         }
 
-        $farmerIds = Farmer::query()->where('permanent_brgy', $barangay)->pluck('id');
+        $farmerIds = Farmer::query()->tap(fn ($query) => FarmAddressSync::constrain($query, $barangay))->pluck('id');
 
         DB::table('planting_logs')
             ->where('status', 'Active')
@@ -181,12 +179,7 @@ class BrgyDashboardController extends Controller
             ->groupByRaw('1')
             ->get()
             ->each(function ($row) use (&$out) {
-                $normalized = strtolower(trim((string) $row->crop));
-                $key = match (true) {
-                    str_contains($normalized, 'rice') => 'rice',
-                    str_contains($normalized, 'corn') => 'corn',
-                    default => 'other',
-                };
+                $key = CropPlotClaimer::stapleCrop((string) $row->crop) ?? 'other';
                 $out[$key] += (float) $row->total;
             });
 
@@ -198,7 +191,7 @@ class BrgyDashboardController extends Controller
         return DamageAssessment::query()
             ->where('status', 'Pending')
             ->where(function ($q) use ($barangay) {
-                $q->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay))
+                $q->whereHas('farmer', fn ($farmer) => FarmAddressSync::constrain($farmer, $barangay))
                     ->orWhereHas('farmPlot', fn ($plot) => $plot->where('location_brgy', $barangay));
             })
             ->count();
@@ -248,7 +241,7 @@ class BrgyDashboardController extends Controller
         if (Schema::hasTable('harvest_logs')) {
             HarvestLog::query()
                 ->where(function ($q) use ($barangay) {
-                    $q->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay))
+                    $q->whereHas('farmer', fn ($farmer) => FarmAddressSync::constrain($farmer, $barangay))
                         ->orWhere('farm_location', $barangay)
                         ->orWhereHas('farmPlot', fn ($plot) => $plot->where('location_brgy', $barangay));
                 })
@@ -270,7 +263,7 @@ class BrgyDashboardController extends Controller
         if (Schema::hasTable('damage_assessments')) {
             DamageAssessment::query()
                 ->where(function ($q) use ($barangay) {
-                    $q->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay))
+                    $q->whereHas('farmer', fn ($farmer) => FarmAddressSync::constrain($farmer, $barangay))
                         ->orWhereHas('farmPlot', fn ($plot) => $plot->where('location_brgy', $barangay));
                 })
                 ->whereDate('date_of_calamity', '>=', $start->toDateString())
@@ -451,7 +444,7 @@ class BrgyDashboardController extends Controller
         $pendingDamage = DamageAssessment::query()
             ->where('status', 'Pending')
             ->where(function ($q) use ($barangay) {
-                $q->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay))
+                $q->whereHas('farmer', fn ($farmer) => FarmAddressSync::constrain($farmer, $barangay))
                     ->orWhereHas('farmPlot', fn ($plot) => $plot->where('location_brgy', $barangay));
             })
             ->get(['calamity_name', 'area_destroyed_ha', 'area_planted_ha', 'damage_percentage']);
@@ -541,7 +534,7 @@ class BrgyDashboardController extends Controller
     {
         $query = PestMonitoring::query()
             ->where(function ($q) use ($barangay) {
-                $q->whereHas('farmer', fn ($farmer) => $farmer->where('permanent_brgy', $barangay))
+                $q->whereHas('farmer', fn ($farmer) => FarmAddressSync::constrain($farmer, $barangay))
                     ->orWhere('farm_location', $barangay)
                     ->orWhereHas('farmPlot', fn ($plot) => $plot->where('location_brgy', $barangay));
             });
