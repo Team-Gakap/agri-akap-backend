@@ -44,6 +44,40 @@ This repository contains the core application logic, database schemas, and RESTf
 
 ---
 
+## Local development
+
+Requirements: PHP 8.4 with the extensions in `composer.json`, Composer, and MariaDB/MySQL.
+
+1. Create `.env` from `.env.example` if it does not exist, then set the local database name, user, and password. Create that database in MariaDB/MySQL.
+2. From this directory, install PHP dependencies and prepare the database:
+
+   ```bash
+   composer install
+   php artisan key:generate
+   php artisan migrate
+   ```
+
+   `key:generate` is only needed when `APP_KEY` is empty. Optional demo accounts/data can be loaded with `php artisan db:seed`.
+3. Start the API:
+
+   ```bash
+   php artisan serve --host=127.0.0.1 --port=8000
+   ```
+
+   Verify it responds with `{"status":"ok"}` at `http://127.0.0.1:8000/api/ping`. The Laravel root URL may return 404; this application is an API.
+
+4. For local web CAPTCHA testing, use Cloudflare's public Turnstile test keys as a pair:
+
+   ```dotenv
+   TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
+   ```
+
+   Set this in the backend's local `.env`, then clear cached configuration with `php artisan config:clear` and restart the API. The frontend uses the matching test site key automatically on localhost when `VITE_TURNSTILE_SITE_KEY` is unset. If you have set that frontend variable, use `1x00000000000000000000AA` or remove the override. These public test keys are for local testing only; configure your real site/secret key pair for deployment.
+
+Run the frontend separately; its Vite development mode uses this local API by default. Set `VITE_API_URL` in the frontend's `.env.local` only if you need to use a different API URL.
+
+---
+
 ## Railway deployment — weather scheduler
 
 The Laravel scheduler in `routes/console.php` runs daily/hourly Open-Meteo syncs. The web service (`bin/start.sh`) does **not** run the scheduler automatically.
